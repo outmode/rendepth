@@ -1,5 +1,4 @@
-
-![Rendepth_Title](https://github.com/user-attachments/assets/70807b0b-576d-4c82-a82f-04f926c7fbca)
+![Rendepth_Title](https://github.com/user-attachments/assets/227300ae-5ac2-494f-ac21-4e37f473bba9)
 
 Free and Open Source Stereoscopic 3D Media Player.
 
