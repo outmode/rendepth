@@ -1434,6 +1434,7 @@ void preloadImage(int overrideId = -1) {
 	auto preloadId = preloadDir > 0 ? nextId : prevId;
 	if (overrideId >= 0) preloadId = overrideId;
 	if (doingPreload) endPreload(true);
+	if (preloadId == fileIndex) return;
 	asyncData.path = fileList[preloadId].path;
 	asyncData.surface = nullptr;
 	asyncData.fileIndex = preloadId;
