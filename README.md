@@ -18,6 +18,8 @@ Stereo 3D Samples
 
 ![Japan_1080P_rgbd](https://github.com/user-attachments/assets/c30d9f27-8c2c-40be-a23e-934211771656)
 
+#### Enjoying Rendepth? Consider donating to support further development: https://rendepth.com/donate
+
 Build Instructions
 ------
 - Clone this repository: `git clone https://github.com/outmode/rendepth.git`
