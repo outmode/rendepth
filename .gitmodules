@@ -22,9 +22,9 @@
 [submodule "ThirdParty/rapidjson"]
 	path = ThirdParty/rapidjson
 	url = https://github.com/Tencent/rapidjson.git
-[submodule "Package/Depth-Anything-V2"]
-	path = Package/Depth-Anything-V2
-	url = https://github.com/DepthAnything/Depth-Anything-V2.git
 [submodule "ThirdParty/fCWT"]
 	path = ThirdParty/fCWT
 	url = https://github.com/outmode/fCWT.git
+[submodule "Package/Depth-Anything-V2"]
+	path = Package/Depth-Anything-V2
+	url = https://github.com/outmode/Depth-Anything-V2.git
