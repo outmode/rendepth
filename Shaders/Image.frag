@@ -38,8 +38,9 @@ layout (set = 3, binding = 0) uniform ImageDataFrag {
 	float gridAngle;
 	float depthEffect;
 	int effectRandom;
-	int swapInterlace;
-	int padding[2];
+	int swapLeftRight;
+	int force;
+	int padding;
 };
 
 #define Disabled 0
@@ -50,13 +51,15 @@ layout (set = 3, binding = 0) uniform ImageDataFrag {
 #define Left 2
 #define Right 3
 #define Anaglyph 4
-#define SBS_Full 5
-#define SBS_Half 6
-#define Free_View 7
-#define Horizontal 8
-#define Vertical 9
-#define Checkerboard 10
-#define Depth_Zoom 11
+#define RGB_Depth 5
+#define SBS_Full 6
+#define SBS_Half 7
+#define Free_View_Grid 8
+#define Free_View_LRL 9
+#define Horizontal 10
+#define Vertical 11
+#define Checkerboard 12
+#define Depth_Zoom 13
 
 #define Color_Only 0
 #define Color_Anaglyph 1
@@ -64,8 +67,9 @@ layout (set = 3, binding = 0) uniform ImageDataFrag {
 #define Side_By_Side_Full 3
 #define Side_By_Side_Swap 4
 #define Side_By_Side_Half 5
-#define Stereo_Free_View 6
-#define Grid_Array 7
+#define Stereo_Free_View_Grid 6
+#define Stereo_Free_View_LRL 7
+#define Grid_Array 8
 
 const float stereoScale = 50000.0;
 const float zNear = 0.1;
@@ -151,6 +155,11 @@ vec3 blurImage(vec2 uv) {
 vec3 combineStereoViews(vec3 leftColor, vec3 rightColor) {
 	vec3 result = vec3(1.0);
 	ivec2 currentPixel = ivec2(gl_FragCoord);
+	if (swapLeftRight == 1) {
+		vec3 tempColor = leftColor;
+		leftColor = rightColor;
+		rightColor = tempColor;
+	}
 	if (mode == Anaglyph) {
 		result = clamp(leftColor * leftFilter, vec3(0.0), vec3(1.0)) + clamp(rightColor * rightFilter, vec3(0.0), vec3(1.0));
 		result = correctColor(result);
@@ -158,6 +167,8 @@ vec3 combineStereoViews(vec3 leftColor, vec3 rightColor) {
 		result = leftColor;
 	} else if (mode == Right) {
 		result = rightColor;
+	} else if (mode == RGB_Depth) {
+		result = leftColor;
 	} else if (mode == Horizontal) {
 		if (currentPixel.y % 2 == 0) result = leftColor;
 		else result = rightColor;
@@ -168,10 +179,6 @@ vec3 combineStereoViews(vec3 leftColor, vec3 rightColor) {
 		if (currentPixel.x % 2 == 0 && currentPixel.y % 2 == 0) result = leftColor;
 		else if (currentPixel.x % 2 == 1 && currentPixel.y % 2 == 1) result = leftColor;
 		else result = rightColor;
-	}
-	if (swapInterlace == 1 && (mode == Horizontal || mode == Vertical || mode == Checkerboard)) {
-		if (result == leftColor) result = rightColor;
-		else if (result == rightColor) result = leftColor;
 	}
 	return result;
 }
@@ -276,9 +283,12 @@ void main() {
 		vec2 tempUV = monoUV;
 		monoUV = depthUV;
 		depthUV = tempUV;
-	} else if (type == Stereo_Free_View) {
+	} else if (type == Stereo_Free_View_Grid) {
 		monoUV = fragUV * 0.5;
 		depthUV = vec2(monoUV.x + 0.5, monoUV.y);
+	} else if (type == Stereo_Free_View_LRL) {
+		monoUV = vec2(fragUV.x * 0.333, fragUV.y);
+		depthUV = vec2(monoUV.x + 0.333, monoUV.y);
 	} else if (type == Grid_Array) {
 		gridLeftUV = vec2(fragUV.x / gridSize.x, fragUV.y / gridSize.y);
 		gridRightUV = gridLeftUV;
@@ -308,6 +318,8 @@ void main() {
 				clamp(imageColor.rgb * rightFilter, vec3(0.0), vec3(1.0));
 		} else if (mode == Mono && type == Color_Anaglyph) {
 			imageColor.rgb = getAnaglyphGrayscale(imageColor.rgb);
+		} else if (mode == RGB_Depth) {
+			imageColor.rgb = vec3(0.5);
 		}
 		imageColor.a = 1.0;
 	} else if (mode == Native) {
@@ -317,6 +329,9 @@ void main() {
 		if (type == Color_Anaglyph) {
 			imageColor.rgb = getAnaglyphGrayscale(imageColor.rgb);
 		}
+	} else if (mode == RGB_Depth) {
+		imageColor = getColor(imageTexture, depthUV);
+		if (force == 1) imageColor.rgb = vec3(1.0);
 	} else if (mode == Depth_Zoom) {
 		vec2 zoomFragUV = fragUV * 0.95 + 0.025;
 		vec2 zoomMonoUV = vec2(zoomFragUV.x * 0.5, zoomFragUV.y);
@@ -338,7 +353,8 @@ void main() {
 				imageColor.rgb = combineStereoViews(leftColor, rightColor);
 			}
 		} else if (type == Side_By_Side_Full || type == Side_By_Side_Half ||
-				type == Side_By_Side_Swap || type == Stereo_Free_View) {
+				type == Side_By_Side_Swap || type == Stereo_Free_View_Grid ||
+				type == Stereo_Free_View_LRL) {
 			vec3 leftColor = getColor(imageTexture, monoUV).rgb;
 			vec3 rightColor = getColor(imageTexture, depthUV).rgb;
 			imageColor.rgb = combineStereoViews(leftColor, rightColor);

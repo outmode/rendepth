@@ -29,7 +29,7 @@ layout (set = 3, binding = 0) uniform IconDataFrag {
 	float visibility;
 	float rotation;
 	int animated;
-	int padding;
+	int force;
 };
 
 const float pi = 3.14159265359;
@@ -46,4 +46,5 @@ void main() {
 	iconColor.rgb *= color.rgb;
 	iconColor.a *= alpha;
 	outColor = iconColor;
+	if (force == 1) outColor.rgb = color.rgb;
 }
