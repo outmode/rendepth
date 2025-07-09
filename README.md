@@ -39,36 +39,6 @@ Build Instructions
 - `RENDEPTH_DLL_DIR` points to MinGW shared library folder on Windows.
 - `RENDEPTH_OMP_DYLIB` points to the `libomp` shared library on macOS.
 - `RENDEPTH_MAC_BUNDLE` set `ON` to create macOS bundle after building.
-  
-Notes
-------
-Third Party `fCWT` currently has a bug on certain compilers failing to find `assert.h`. Please edit the file `rendepth/ThirdParty/fCWT/src/fcwt/fcwt.cpp` as below:
-```
-#include "fcwt.h"
-#include <cassert>
-#include <cstring>
-```
-Near the top of the file, around line 40.
-
-Third Party `Depth-Anything-V2` will work, out-of-box, however Intel Arc and DirectML support won't. To add support for Arc GPUs and DirectML (which enables AMD GPUs on Windows), please edit `rendepth/Package/Depth-Anything-V2/depth_anything_v2/dpt.py` as follows:
-```
-import os
-directml_available = False
-if os.name == 'nt':
-  try:
-    import torch_directml
-    directml_available = True
-  except ImportError:
-    directml_available = False
-```
-Near line 10 under the other imports.
-```
-DEVICE = 'cuda' if torch.cuda.is_available() else "xpu" if torch.xpu.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
-  if directml_available and DEVICE == "cpu":
-    DEVICE = torch_directml.device()
-image = image.to(DEVICE)
-```
-Near line 225 of function `image2tensor`.
 
 ### Made by Outmode.
 
