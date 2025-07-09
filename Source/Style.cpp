@@ -66,7 +66,11 @@ float Style::getIconSliderSpace(Scale scale) {
 }
 
 float Style::getInfo(Scale scale) {
-	return infoMap[scale];
+	return infoMarginMap[scale];
+}
+
+float Style::getHelpFontSize(Scale scale) {
+	return helpFontMap[scale];
 }
 
 float Style::getInfoFontSize(Scale scale) {

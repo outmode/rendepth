@@ -31,15 +31,17 @@
 #include <map>
 #include <filesystem>
 
-enum Mode {
+enum ViewMode {
 	Native,
 	Mono,
 	Left,
 	Right,
 	Anaglyph,
+	RGB_Depth,
 	SBS_Full,
 	SBS_Half,
-	Free_View,
+	Free_View_Grid,
+	Free_View_LRL,
 	Horizontal,
 	Vertical,
 	Checkerboard,
@@ -53,9 +55,15 @@ enum StereoFormat {
 	Side_By_Side_Full,
 	Side_By_Side_Swap,
 	Side_By_Side_Half,
-	Stereo_Free_View,
+	Stereo_Free_View_Grid,
+	Stereo_Free_View_LRL,
 	Grid_Array,
 	Unknown_Format
+};
+
+enum EyesFormat {
+	Left_Right,
+	Right_Left
 };
 
 enum class IconType {
@@ -67,7 +75,7 @@ enum class IconType {
 };
 
 enum class IconGroup {
-	None, SettingsDepth, SettingsStereo, SettingsGrid
+	None, SettingsDepth, SettingsGrid
 };
 
 enum class IconMode {
@@ -84,11 +92,13 @@ static inline std::vector<std::pair<std::string, StereoFormat>> tagType = {
 	{ "_rgb", Color_Only },
 	{ "_sbs_half_width", Side_By_Side_Half },
 	{ "_sbs", Side_By_Side_Full },
-	{ "_free_view", Stereo_Free_View },
+	{ "_free_view_lrl", Stereo_Free_View_LRL },
+	{ "_free_view", Stereo_Free_View_Grid },
 	{ "_qs", Grid_Array },
 	{ "_half_2x1", Side_By_Side_Half },
 	{ "_2x1", Side_By_Side_Full },
-	{ ".jps", Side_By_Side_Swap } };
+	{ ".jps", Side_By_Side_Swap },
+	{ ".pns", Side_By_Side_Swap } };
 
 static inline glm::vec2 exportGridDim = glm::ivec2(9, 8);
 static inline float exportGridMaxRes = 864.0;
@@ -127,6 +137,7 @@ struct Icon {
 	std::function<void()> callback;
 	double visibility;
 	bool active;
+	bool shown;
 	Canvas slider;
 };
 
@@ -173,20 +184,21 @@ struct Context {
 	bool gotoRand;
 	double deltaTime;
 	float displayScale;
+	float pixelDensity;
 	glm::vec2 windowSize;
+	glm::vec2 windowSizeBase;
 	glm::vec2 displaySize;
 	glm::vec2 virtualSize;
 	glm::vec2 imageSize;
 	glm::vec3 gridSize;
 	glm::vec2 safeSize;
 	glm::vec2 displayAspect;
-	float refreshRate;
 	bool fullscreen;
 	bool maximized;
 	float visibility;
 	bool loading;
 	double currentZoom;
-	Mode mode;
+	ViewMode mode;
 	int view;
 	bool display3D;
 	std::vector<Icon>* appIcons;
@@ -211,7 +223,7 @@ struct Context {
 	bool displayMenu;
 	BackgroundStyle backgroundStyle;
 	int effectRandom;
-	int swapInterlace;
+	int swapLeftRight;
 	glm::vec2 imageBounds;
 };
 

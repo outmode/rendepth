@@ -30,6 +30,7 @@ class Utils {
 public:
 	static Utils& get();
 	static glm::vec2 getSafeSize(glm::vec2 imageSize, glm::vec2 displaySize, float safeArea = 1.0f, bool expand = false);
+	static bool isFullWidth(glm::vec2 imageSize);
 	static double lerp(double a, double b, double f);
 	static glm::vec2 lerp(glm::vec2 a, glm::vec2 b, double f);
 	static double tween(double value, double target, double speed);

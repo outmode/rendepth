@@ -201,7 +201,7 @@ glm::vec2 Core::getTextSize(TTF_Font* font, const std::string& text) {
 }
 
 std::string Core::getFileText(const FileInfo& imageInfo, glm::vec2 imageSize) {
-	auto nameMaxLen = 22;
+	auto nameMaxLen = 28;
 	auto displayName = imageInfo.name;
 	if (displayName.length() > nameMaxLen) {
 		displayName = displayName.substr(0, nameMaxLen - 3) + "...";

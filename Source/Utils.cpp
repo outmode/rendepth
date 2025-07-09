@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Outmode
+  // Copyright (c) 2025 Outmode
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -45,6 +45,11 @@ glm::vec2 Utils::getSafeSize(glm::vec2 imageSize, glm::vec2 displaySize, float s
 	if (imageAspect >= safeAspect)
 		return { std::round(safeSize.x), std::round(safeSize.x / imageAspect) };
 	return {std::round(safeSize.y * imageAspect), std::round(safeSize.y) };
+}
+
+bool Utils::isFullWidth(glm::vec2 imageSize) {
+	float aspect = imageSize.x / imageSize.y;
+	return  aspect > 2.0 && !(aspect < 1.0);
 }
 
 double Utils::lerp(double a, double b, double f){

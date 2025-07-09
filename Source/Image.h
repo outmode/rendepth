@@ -45,6 +45,7 @@ public:
 	inline static SDL_GPUTexture* blitTexture = nullptr;
 	inline static SDL_GPUTexture* iconTexture = nullptr;
 	inline static SDL_GPUTexture* helpTexture = nullptr;
+	inline static SDL_GPUTexture* infoTexture = nullptr;
 	inline static SDL_GPUTexture* menuTexture = nullptr;
 	inline static SDL_GPUTexture* sliderTexture = nullptr;
 	inline static SDL_GPUTexture* exportTexture = nullptr;
@@ -52,6 +53,7 @@ public:
 	inline static SDL_Surface* menuTextSurface = nullptr;
 	inline static SDL_Surface* ssimSurface = nullptr;
 	inline static TTF_Font* helpFont = nullptr;
+	inline static TTF_Font* infoFont = nullptr;
 	inline static TTF_Font* menuFont = nullptr;
 
 	struct Vertex {
@@ -88,8 +90,9 @@ public:
 		float gridAngle;
 		float depthEffect;
 		int effectRandom;
-		int swapInterlace;
-		int padding[2];
+		int swapLeftRight;
+		int force;
+		int padding;
 	};
 
 	struct IconDataVert {
@@ -104,7 +107,7 @@ public:
 		float visibility;
 		float rotation;
 		int animated;
-		int padding;
+		int force;
 	};
 
 	inline static ImageDataVert imageDataVert{};
@@ -118,15 +121,22 @@ public:
 	inline static double safePercent = 0.8f;
 	inline static glm::vec4 clearColorLight{ 0.99, 0.99, 0.99, 1.0f };
 	inline static glm::vec4 clearColorDark{ 0.11, 0.11, 0.11, 1.0f };
+	inline static glm::vec4 clearColorDepth{ 0.5, 0.5, 0.5, 1.0f };
+	inline static glm::vec4 uiColorDepth{ 1.0, 1.0, 1.0, 1.0f };
+	inline static glm::vec4 uiColorBGDepth{ 0.75, 0.75, 0.75, 1.0f };
 	inline static glm::vec4 clearColorSolid = clearColorDark;
 	inline static glm::vec4 clearColorCurrent = clearColorDark;
 	inline static bool useBackgroundBlur = true;
 	inline static bool useBackgroundSolid = false;
 	inline static glm::vec2 helpTextSize;
+	inline static glm::vec2 infoTextSize;
 	inline static glm::vec2 menuTextureSize { 1024.0, 1024.0 };
 	inline static glm::vec2 menuTextureOffset { 2.0, 2.0 };
 	inline static bool displayHelp = false;
 	inline static bool displayTip = false;
+	inline static bool displayInfo = false;
+	inline static float infoCurrentVisibility = 0.0;
+	inline static float infoTargetVisibility = 0.0;
 	inline static std::unordered_map<std::string, OptionsTexture> optionTextures;
 	inline static std::vector<std::string> optionsLabels{};
 	inline static const int maxImageSize = 16384;
@@ -167,6 +177,7 @@ public:
 	inline static glm::vec3 menuMargin{ 0 };
 	inline static SDL_DisplayID currentDisplay = 0;
 	inline static float mouseScale = 1.0;
+	inline static bool useBorderlessWindow = true;
 	inline static Style style;
 };
 

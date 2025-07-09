@@ -60,6 +60,7 @@ public:
 	float getIconDragger(Scale scale);
 	float getIconBar(Scale scale);
 	float getInfo(Scale scale);
+	float getHelpFontSize(Scale scale);
 	float getInfoFontSize(Scale scale);
 	float getMenuFontSize(Scale scale);
 	float getChoiceSize(Scale scale);
@@ -87,16 +88,22 @@ private:
 		{ Alpha::Weak, 0.33 },
 	};
 
-	std::map<Scale, float> infoFontMap {
+	std::map<Scale, float> helpFontMap {
 		{ Scale::Small, 28.0f },
 		{ Scale::Medium, 30.0f },
 		{ Scale::Large, 34.0f },
 	};
 
+	std::map<Scale, float> infoFontMap {
+			{ Scale::Small, 20.0f },
+			{ Scale::Medium, 22.0f },
+			{ Scale::Large, 26.0f },
+		};
+
 	std::map<Scale, float> menuFontMap {
-		{ Scale::Small, 16.0f },
-		{ Scale::Medium, 22.0f },
-		{ Scale::Large, 28.0f },
+		{ Scale::Small, 14.0f },
+		{ Scale::Medium, 20.0f },
+		{ Scale::Large, 26.0f },
 	};
 
 	std::map<Scale, float> choiceMap {
@@ -106,9 +113,9 @@ private:
 	};
 
 	std::map<Scale, float> optionsMap {
-		{ Scale::Small, 122.0 },
-		{ Scale::Medium, 156.0 },
-		{ Scale::Large, 234.0 }
+		{ Scale::Small, 128.0 },
+		{ Scale::Medium, 150.0 },
+		{ Scale::Large, 228.0 }
 	};
 
 	std::map<Scale, float> iconRadiusMap {
@@ -153,16 +160,16 @@ private:
 		{ Scale::Large, 12.0f }
 	};
 
-	std::map<Scale, float> infoMap {
-		{ Scale::Small, 42.0 },
-		{ Scale::Medium, 42.0 },
-		{ Scale::Large, 62.0 }
+	std::map<Scale, float> infoMarginMap {
+		{ Scale::Small, 24.0 },
+		{ Scale::Medium, 24.0 },
+		{ Scale::Large, 24.0 }
 	};
 
 	std::map<Scale, float> buttonMarginMap {
-			{ Scale::Small, 3.0 },
-			{ Scale::Medium, 3.0 },
-			{ Scale::Large, 3.0 }
+			{ Scale::Small, 2.5 },
+			{ Scale::Medium, 2.5 },
+			{ Scale::Large, 2.5 }
 	};
 
 	const glm::mat3 leftFilter = glm::mat3(

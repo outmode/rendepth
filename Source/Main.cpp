@@ -62,8 +62,9 @@ Image imageView{};
 
 glm::vec2 windowSize{};
 auto switchedImage = false;
-bool isFullscreen = false;
-bool isMaximized = false;
+auto isFullscreen = false;
+auto isMaximized = false;
+auto quitAppNextFrame = false;
 auto currentVisibility = 1.0;
 auto targetVisibility = 1.0;
 auto currentZoom = 1.0;
@@ -79,6 +80,9 @@ auto doubleClickTime = 0.25;
 auto lastSwitchTime = 0.0;
 auto mouseLastActive = 0.0;
 auto mouseMoveWait = 3.0;
+auto displayInfoTime = 0.0;
+auto displayInfoEnabled = true;
+auto showDisplayInfoOnce = false;
 auto currentStereoMode = Native;
 auto preferredStereoMode = Anaglyph;
 auto defaultStereoMode = Anaglyph;
@@ -111,16 +115,23 @@ auto lastSlideshowTime = 0.0;
 auto displayTipTime = 0.0;
 auto displayTipWait = 2.0;
 auto similarityThreshold = 0.67;
-auto swapInterlace = false;
+auto swapLeftRight = false;
 auto mouseLeftWindow = false;
 auto mouseIsDown = false;
+auto deltaIndex = 0;
+const int deltaCount = 16;
+std::array<double, deltaCount> deltaTimes{};
 std::string openFolderResult;
 std::string upscaleResolution = "1920";
 std::string depthSize = "540";
 StereoFormat exportFormat = Color_Anaglyph;
 std::string exportTag = "anaglyph";
+EyesFormat eyesFormat = Left_Right;
 SortOrder sortOrder = Alpha_Ascending;
 std::string exportFolderName = "3D Export";
+std::string infoSettingKey = "Display Info";
+std::string borderlessSettingKey = "Borderless Window";
+std::string currentInfoLabel;
 Style style;
 
 std::vector<FileInfo> fileList{};
@@ -250,8 +261,8 @@ static std::string stringLower(std::string s) {
 	return s;
 }
 
-static const std::vector<std::string> supportedExts { ".jpg", ".jpeg", ".jps",
-	".png", ".tga", ".bmp" };
+static const std::vector<std::string> supportedExts { ".jpeg", ".jpg", ".jps",
+	".png", ".pns", ".tga", ".bmp" };
 bool isSupportedImage(const std::string& path) {
 	auto filePath = std::filesystem::path(path);
 	auto fileExt = stringLower(filePath.extension().string());
@@ -309,7 +320,7 @@ static void cancelSlideshow() {
 }
 
 static void setDisplay3D(bool display);
-static void setStereoMode(Mode mode);
+static void setStereoMode(ViewMode mode);
 static void refreshDisplay3D(StereoFormat type);
 static void toggleFullscreen();
 static void toggleSlideshow();
@@ -373,7 +384,8 @@ Icon IconLogo = {
 	},
 	[]() {},
 	1.0,
-	true
+	true,
+	false
 };
 
 Icon IconBack = {
@@ -391,7 +403,8 @@ Icon IconBack = {
 			alignLeftCenter, areaTopLeftImage, areaLeftSide };},
 	[]() { gotoPreviousImage(); },
 	1.0,
-	true
+	true,
+	false
 };
 
 Icon IconForward = {
@@ -410,7 +423,8 @@ Icon IconForward = {
 	},
 	[]() { gotoNextImage(); },
 	1.0,
-	true
+	true,
+	false
 };
 
 Icon IconStereo3D = {
@@ -419,7 +433,7 @@ Icon IconStereo3D = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Display 3D",
+	"Toggle 2D/3D",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -433,6 +447,7 @@ Icon IconStereo3D = {
 		toggleStereo();
 	},
 	1.0,
+	false,
 	false
 };
 
@@ -452,6 +467,7 @@ Icon IconLoading = {
 	},
 	[]() {},
 	0.0,
+	false,
 	false
 };
 
@@ -461,15 +477,17 @@ Icon IconFullscreen = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Toggle Fullscreen",
+	"Toggle Full Screen",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
 			sizeStandard,
-		{ -positionEdge, style.getIconRadius(Style::getCurrentScale()) + style.getIconSpacer(Style::getCurrentScale()) + style.getInfo(Style::getCurrentScale()) },
+{ -(positionEdge + style.getIconRadius(Style::getCurrentScale()) + style.getIconGutter(Style::getCurrentScale()) +
+	style.getIconSpacer(Style::getCurrentScale()) * 2.0),
+	style.getIconRadius(Style::getCurrentScale()) + style.getIconSpacer(Style::getCurrentScale()) + style.getInfo(Style::getCurrentScale()) },
 			alignRightTop,
 			{-positionEdge * 3.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0},
-			{0.0, positionEdge * 2.0 + style.getInfo(Style::getCurrentScale()),
+			{0.0, positionEdge * 3.0 + style.getInfo(Style::getCurrentScale()),
 				1.0, 0.0}};
 	},
 	[]() {
@@ -477,6 +495,59 @@ Icon IconFullscreen = {
 		toggleFullscreen();
 	},
 	1.0,
+	false,
+	false
+};
+
+Icon IconClose = {
+	IconType::Close,
+	IconType::Close,
+	IconGroup::None,
+	IconMode::Button,
+	IconState::Idle,
+	"Close Application",
+	style.getColor(Style::Color::White, Style::Alpha::Solid),
+	[]()->Canvas {
+		return {
+			sizeStandard,
+		{ -positionEdge,
+			style.getIconRadius(Style::getCurrentScale()) + style.getIconSpacer(Style::getCurrentScale()) + style.getInfo(Style::getCurrentScale()) },
+			alignRightTop,
+			{-positionEdge * 3.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0},
+			{0.0, positionEdge * 3.0 + style.getInfo(Style::getCurrentScale()),
+				1.0, 0.0}};
+	},
+	[]() {
+		quitAppNextFrame = true;
+	},
+	1.0,
+	false,
+	false
+};
+
+Icon IconHelp = {
+	IconType::Info,
+	IconType::Info,
+	IconGroup::None,
+	IconMode::Button,
+	IconState::Idle,
+	"Toggle Tooltips",
+	style.getColor(Style::Color::White, Style::Alpha::Solid),
+	[]()->Canvas {
+		return {
+			sizeStandard,
+{ -positionEdge, style.getIconRadius(Style::getCurrentScale()) * 3.0 + style.getIconSpacer(Style::getCurrentScale()) * 2.0 + style.getInfo(Style::getCurrentScale()) },
+			alignRightTop,
+			{-positionEdge * 3.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0},
+			{0.0, positionEdge * 3.0 + style.getInfo(Style::getCurrentScale()),
+				1.0, 0.0}};
+	},
+	[]() {
+		displayInfoEnabled = !displayInfoEnabled;
+		saveOptions();
+	},
+	1.0,
+	false,
 	false
 };
 
@@ -500,6 +571,7 @@ Icon IconPlay = {
 		toggleSlideshow();
 	},
 	1.0,
+	false,
 	false
 };
 
@@ -512,7 +584,7 @@ Icon IconOpen = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Open File",
+	"Open 2D/3D Image",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -527,6 +599,7 @@ Icon IconOpen = {
 		openFile();
 	},
 	1.0,
+	true,
 	false
 };
 
@@ -536,7 +609,7 @@ Icon IconSave = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Save File",
+	"Export 3D Image",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -552,6 +625,7 @@ Icon IconSave = {
 		saveFile();
 	},
 	1.0,
+	false,
 	false
 };
 
@@ -561,7 +635,7 @@ Icon IconBatch = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Save Folder",
+	"Convert Folder to RGBD",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -576,6 +650,7 @@ Icon IconBatch = {
 		openFolder();
 	},
 	1.0,
+	false,
 	false
 };
 
@@ -585,7 +660,7 @@ Icon IconOptions = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Open Options",
+	"Show Options",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -599,6 +674,7 @@ Icon IconOptions = {
 		toggleOptions();
 	},
 	1.0,
+	false,
 	false
 };
 
@@ -608,7 +684,7 @@ Icon IconSettings = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Open Settings",
+	"Toggle 3D Settings",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -624,29 +700,30 @@ Icon IconSettings = {
 		toggleStereoSettings();
 	},
 	1.0,
+	false,
 	false
 };
 
 Choice ChoiceStereo {
 	"3D Mode",
-	{ "Anaglyph", "SBS Full", "SBS Half", "Free View",
-		"Horizontal", "Vertical", "Checkerboard", "Disabled" },
+	{ "Anaglyph", "Color + Depth", "SBS Full", "SBS Half",
+		"Free View", "Horizontal", "Vertical", "Checkerboard"},
 };
 
 Choice ChoiceExport {
 	"Export Format",
 	{ "Anaglyph", "Color + Depth", "SBS Full", "SBS Half",
-		"Free View", "Light Field", "Color Only" },
+		"Free View", "Free View LRL","Light Field", "Color Only" },
 };
 
 Choice ChoiceModel {
-	"Depth Model",
-	{ "Small", "Base", "Large" },
+	"Depth Conversion",
+	{ "Performance", "Balanced", "Quality" },
 };
 
 Choice ChoiceResolution {
-	"Minimum Resolution",
-	{ "1920", "2560", "3840" },
+	"Upscale Resolution",
+	{ "Full HD", "Quad HD", "Ultra HD" },
 };
 
 Choice ChoiceBackground {
@@ -666,11 +743,16 @@ Choice ChoiceSlideshow {
 
 Choice ChoiceTags {
 	"Add 3D Tag",
-	{ "Original", "Side by Side", "Color Only" },
+	{ "Original", "SBS Full", "SBS Half", "Color Only" },
+};
+
+Choice ChoiceEyes {
+	"Swap Eyes",
+	{ "Left / Right", "Right / Left" },
 };
 
 static std::vector menuChoices = { ChoiceStereo, ChoiceExport, ChoiceModel, ChoiceResolution,
-	ChoiceBackground, ChoiceSorting, ChoiceSlideshow, ChoiceTags };
+	ChoiceBackground, ChoiceSorting, ChoiceSlideshow,ChoiceEyes, ChoiceTags  };
 
 static std::unordered_map<std::string, int> menuSelection = {
 	{ ChoiceStereo.label, 0 },
@@ -680,7 +762,8 @@ static std::unordered_map<std::string, int> menuSelection = {
 	{ ChoiceBackground.label, 0 },
 	{ ChoiceSorting.label, 0 },
 	{ ChoiceSlideshow.label, 0 },
-	{ ChoiceTags.label, 0 }
+	{ ChoiceTags.label, 0 },
+	{ ChoiceEyes.label, 0 },
 };
 
 static std::unordered_map<std::string, int> menuRollover = {
@@ -692,21 +775,25 @@ static std::unordered_map<std::string, int> menuRollover = {
 	{ ChoiceSorting.label, -1 },
 	{ ChoiceSlideshow.label, -1 },
 	{ ChoiceTags.label, -1 },
+	{ ChoiceEyes.label, -1 },
 };
 
-static void setPreferredStereo(Mode mode, bool saveMode = true);
+static void setPreferredStereo(ViewMode mode, bool saveMode = true);
+static void setShowStereoSettings(bool show);
 static std::array stereoModes = {
-	Anaglyph, SBS_Full, SBS_Half, Free_View, Horizontal, Vertical, Checkerboard, Mono };
+	Anaglyph, RGB_Depth, SBS_Full, SBS_Half, Free_View_Grid, Horizontal, Vertical, Checkerboard };
 static void changeStereo(int option) {
 	setPreferredStereo(stereoModes[option], true);
 	Image::saveMenuLayout(&context);
+	setShowStereoSettings(false);
+	checkMouseState();
 }
 
 static std::array exportFormats = {
 	Color_Anaglyph, Color_Plus_Depth, Side_By_Side_Full, Side_By_Side_Half,
-	Stereo_Free_View, Grid_Array, Color_Only };
+	Stereo_Free_View_Grid, Stereo_Free_View_LRL, Grid_Array, Color_Only };
 static std::array exportTags = { "anaglyph",  "rgbd", "sbs", "sbs_half_width",
-	"free_view", "qs", "rgb" };
+	"free_view", "free_view_lrl", "qs", "rgb" };
 static void changeExport(int option) {
 	exportFormat = exportFormats[option];
 	exportTag = exportTags[option];
@@ -738,11 +825,18 @@ static bool addStereoTag(const std::string& link, const std::string& tag) {
 	return success;
 }
 
-static std::array importTags = { "", "sbs", "rgb" };
+static std::array importTags = { "", "sbs", "sbs_half_width", "rgb" };
 static void changeImport(int option, bool init) {
 	std::string tag = importTags[option];
 	if (!init && !fileList.empty())
 		addStereoTag(fileList[fileIndex].link, tag);
+}
+
+static std::array eyesFormats = {
+	Left_Right, Right_Left };
+static void changeEyes(int option) {
+	eyesFormat = eyesFormats[option];
+	swapLeftRight = eyesFormat == Right_Left;
 }
 
 static auto depthCloseWait = 1200;
@@ -768,7 +862,6 @@ static void closeDepthGeneration() {
 
 static std::array<std::string, 3> depthQuality = { "0", "1", "2" };
 static std::array<std::string, 3> depthSizes = { "560", "640", "720" };
-
 static void changeModel(int option, bool init) {
 	qualityMode = depthQuality[option];
 	depthSize = depthSizes[option];
@@ -809,7 +902,8 @@ static std::unordered_map<std::string, std::function<void(int)>> menuCallback = 
 	{ ChoiceBackground.label,[](int option) { changeBackground(option); } },
 	{ ChoiceSorting.label, [](int option) { changeSorting(option, firstInit); } },
 	{ ChoiceSlideshow.label, [](int option) { changeSlideshow(option); } },
-    { ChoiceTags.label, [](int option) { changeImport(option, firstInit); } }
+    { ChoiceTags.label, [](int option) { changeImport(option, firstInit); } },
+	{ ChoiceEyes.label, [](int option) { changeEyes(option); } }
 };
 
 double sliderStart = 0.5;
@@ -868,6 +962,7 @@ Icon IconStrength = {
 	[]() { updateStrengthSlider(); },
 	1.0,
 	true,
+	false,
 {
 	{ style.getIconDragger(Style::getCurrentScale()), style.getIconBar(Style::getCurrentScale()) },
 	{ 0.0, 0.0 },
@@ -881,7 +976,7 @@ Icon IconDepth = {
 	IconGroup::SettingsDepth,
 	IconMode::Slider,
 	IconState::Idle,
-	"Stereo Depth",
+	"Depth Range",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -893,7 +988,8 @@ Icon IconDepth = {
 	},
 		[]() { updateDepthSlider(); },
 		1.0,
-		true,
+	true,
+	false,
 	{
 		{ style.getIconDragger(Style::getCurrentScale()), style.getIconBar(Style::getCurrentScale()) },
 		{ 0.0, 0.0 },
@@ -907,7 +1003,7 @@ Icon IconOffset = {
 	IconGroup::SettingsDepth,
 	IconMode::Slider,
 	IconState::Idle,
-	"Stereo Offset",
+	"Parallax Offset",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -920,6 +1016,7 @@ Icon IconOffset = {
 			[]() { updateOffsetSlider(); },
 			1.0,
 			true,
+		false,
 		{
 			{ style.getIconDragger(Style::getCurrentScale()), style.getIconBar(Style::getCurrentScale()) },
 			{ 0.0, 0.0 },
@@ -929,13 +1026,14 @@ Icon IconOffset = {
 
 static std::vector appIcons = { IconLoading, IconFullscreen, IconOpen, IconBatch, IconSave,
 	IconOptions, IconSettings, IconBack, IconForward, IconStereo3D,
-	IconStrength, IconDepth, IconOffset, IconPlay };
+	IconStrength, IconDepth, IconOffset, IconPlay, IconHelp, IconClose };
 
 static const SDL_DialogFileFilter filters[] = {
-	{ "All Images",  "jpg;jpeg;jps;png;tga;bmp" },
-	{ "JPEG Images", "jpg;jpeg" },
+	{ "All Images",  "jpg;jpeg;jps;png;pns;tga;bmp" },
+	{ "JPG Images", "jpg;jpeg" },
 	{ "JPS Images", "jps" },
 	{ "PNG Images",  "png" },
+	{ "PNS Images",  "pns" },
 	{ "TGA Images",  "tga" },
 	{ "BMP Images",  "bmp" }
 };
@@ -1054,6 +1152,16 @@ void saveOptions() {
 		nameCache.push_back(convertName);
 	}
 
+	auto infoSetting = infoSettingKey.c_str();
+	document.AddMember(rapidjson::GenericStringRef(infoSetting),
+		displayInfoEnabled, allocator);
+	nameCache.push_back(infoSetting);
+
+	auto borderlessSetting = borderlessSettingKey.c_str();
+	document.AddMember(rapidjson::GenericStringRef(borderlessSetting),
+		Image::useBorderlessWindow, allocator);
+	nameCache.push_back(borderlessSetting);
+
     rapidjson::StringBuffer output;
     rapidjson::PrettyWriter writer(output);
     document.Accept(writer);
@@ -1099,6 +1207,16 @@ void loadOptions() {
 			if (conversion.second.second) conversion.second.second();
 		}
 	}
+
+	auto infoSetting = infoSettingKey.c_str();
+	if (document.HasMember(infoSetting)) {
+		displayInfoEnabled = document[infoSetting].GetBool();
+	}
+
+	auto borderlessSetting = borderlessSettingKey.c_str();
+	if (document.HasMember(borderlessSetting)) {
+		Image::useBorderlessWindow = document[borderlessSetting].GetBool();
+	}
 }
 
 static void updateStereoIcon() {
@@ -1143,7 +1261,7 @@ static void setDisplay3D(bool display) {
 }
 
 static void refreshDisplay3D(StereoFormat type) {
-	if (preferredStereoMode == SBS_Full|| preferredStereoMode == SBS_Half) {
+	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half) {
 		context.mode = preferredStereoMode;
 		if (type == Color_Only) setDisplay3D(false);
 		return;
@@ -1160,13 +1278,13 @@ static void refreshDisplay3D(StereoFormat type) {
 	}
 }
 
-static void setStereoMode(Mode mode) {
+static void setStereoMode(ViewMode mode) {
 	currentStereoMode = mode;
 	context.mode = currentStereoMode;
 	Image::updateSize(&context);
 }
 
-static void setPreferredStereo(Mode mode, bool saveMode) {
+static void setPreferredStereo(ViewMode mode, bool saveMode) {
 	if (saveMode) defaultStereoMode = mode;
 	preferredStereoMode = mode;
 	updateStereoIcon();
@@ -1225,6 +1343,14 @@ static glm::vec2 refreshWindowSize() {
 	windowSize = { (float)windowWidth, (float)windowHeight };
 	context.windowSize = windowSize;
 	return windowSize;
+}
+
+static glm::vec2 refreshWindowSizeBase() {
+	int windowWidth, windowHeight;
+	SDL_GetWindowSize(context.window, &windowWidth, &windowHeight);
+	auto windowSizeBase = glm::vec2(windowWidth, windowHeight);
+	context.windowSizeBase = windowSizeBase;
+	return windowSizeBase;
 }
 
 static void updateFullscreenState() {
@@ -1422,7 +1548,8 @@ void preloadComplete(SDL_Surface* preloadData, FileInfo& preloadFile) {
 		auto ssim = Image::getSimilarity(Image::ssimSurface, ssimSize.x, ssimSize.y);
 		preloadFile.similarity = ssim;
 		if (ssim > similarityThreshold) {
-			preloadFile.preloadType = Side_By_Side_Full;
+			glm::vec2 imageRes = {preloadData->w, preloadData->h };
+			preloadFile.preloadType = Utils::isFullWidth(imageRes) ? Side_By_Side_Full : Side_By_Side_Half;
 		}
 	}
 }
@@ -1460,6 +1587,63 @@ static void endPreload(bool success) {
 	doingPreload = false;
 }
 
+static void updateDisplayScale() {
+	Style::calculateScale(context.virtualSize / context.displayScale);
+	Image::initFonts(&context);
+	Image::initMenuTexture();
+	Image::createMenuAssets(&context);
+	Image::saveMenuLayout(&context);
+	updateButtonCanvasSizes();
+	Core::drawText(&context, Core::lastDrawnText, Image::helpFont,
+			Image::helpTexture, Image::helpTextSize, "Help Texture");
+}
+
+static auto grabMargin = 32.0;
+static auto resizeMargin = 12.0;
+static auto windowDraggable = false;
+static SDL_HitTestResult windowHitCallback(SDL_Window* window,
+	const SDL_Point* area, void *data) {
+	auto context = (Context*)data;
+	windowDraggable = false;
+
+	auto topBarSize = grabMargin * context->displayScale / context->pixelDensity;
+	auto sideEdgeSize = resizeMargin * context->displayScale / context->pixelDensity;
+
+	if (area->x < sideEdgeSize) {
+		if (area->y < sideEdgeSize) {
+			return SDL_HITTEST_RESIZE_TOPLEFT;
+		}
+		if (area->y > context->windowSizeBase.y - sideEdgeSize) {
+			return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+		}
+		return SDL_HITTEST_RESIZE_LEFT;
+	}
+
+	if (area->x > context->windowSizeBase.x - sideEdgeSize) {
+		if (area->y < sideEdgeSize) {
+			return SDL_HITTEST_RESIZE_TOPRIGHT;
+		}
+		if (area->y > context->windowSizeBase.y - sideEdgeSize) {
+			return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+		}
+		return SDL_HITTEST_RESIZE_RIGHT;
+	}
+
+	if (area->y < topBarSize) {
+		windowDraggable = true;
+		return SDL_HITTEST_DRAGGABLE;
+	}
+
+	if (area->y < sideEdgeSize) {
+		return SDL_HITTEST_RESIZE_TOP;
+	}
+
+	if (area->y > context->windowSizeBase.y - sideEdgeSize) {
+		return SDL_HITTEST_RESIZE_BOTTOM;
+	}
+
+	return SDL_HITTEST_NORMAL;
+}
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	std::string fileToLoad{};
 	if (argc >= 2) fileToLoad = std::string(argv[1]);
@@ -1483,7 +1667,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	context.displayMenu = false;
 	context.backgroundStyle = Blur;
 	context.effectRandom = 0;
-	context.swapInterlace = false;
+	context.swapLeftRight = false;
 
 	loadOptions();
 
@@ -1511,12 +1695,15 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 		}
 	}
 
+	if (Image::useBorderlessWindow) SDL_SetWindowHitTest(context.window, windowHitCallback, &context);
+
 	setDisplay3D(false);
 
 	if (!fileList.empty() && fileList.size() > fileIndex) refreshDisplay3D(fileList[fileIndex].type);
 
 	hideUI();
 	refreshWindowSize();
+	refreshWindowSizeBase();
 
 	return SDL_APP_CONTINUE;
 }
@@ -1539,7 +1726,18 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	context.deltaTime = timeNow - lastTime;
 	lastTime = timeNow;
 
-	currentVisibility = Utils::tween(currentVisibility, targetVisibility, visibilitySpeed / context.refreshRate);
+	deltaTimes[deltaIndex] = context.deltaTime;
+	deltaIndex = (deltaIndex + 1) % deltaCount;
+
+	auto deltaAverage = 0.0;
+	for (auto time : deltaTimes) {
+		deltaAverage += time;
+	}
+	deltaAverage /= deltaCount;
+
+	currentVisibility = Utils::tween(currentVisibility, targetVisibility, visibilitySpeed * deltaAverage);
+	Image::infoCurrentVisibility = Utils::tween(Image::infoCurrentVisibility,
+		Image::infoTargetVisibility, visibilitySpeed * deltaAverage);
 
 	if (switchedImage) {
 		if (context.loading) {
@@ -1561,6 +1759,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 				switchedImage = false;
 			}
 		}
+		checkMouseState();
 	}
 
 	if (justConverted) setDisplay3D(true);
@@ -1579,14 +1778,15 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		context.effectRandom = randEffect(randGen);
 		switchedImage = false;
 		lastSlideshowTime = timeNow;
-		menuChoices[7].active = true;
+		menuChoices[8].active = true;
 		menuSelection[ChoiceTags.label] = 0;
 		auto fileType = Core::getImageType(
 			std::filesystem::path(fileList[fileIndex].path).filename().string());
 		if (fileType == Unknown_Format) menuSelection[ChoiceTags.label] = 0;
 		else if (fileType == Side_By_Side_Full) menuSelection[ChoiceTags.label] = 1;
-		else if (fileType == Color_Only) menuSelection[ChoiceTags.label] = 2;
-		else menuChoices[7].active = false;
+		else if (fileType == Side_By_Side_Half) menuSelection[ChoiceTags.label] = 2;
+		else if (fileType == Color_Only) menuSelection[ChoiceTags.label] = 3;
+		else menuChoices[8].active = false;
 		if (isPlayingSlideshow) preloadImage(nextRandIndex);
 		else preloadImage();
 	} else if (doingPreload) {
@@ -1603,10 +1803,12 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		} else {
 			iconTargetVisibility = (isConverting && !isPlayingSlideshow) ? 1.0 : 0.0;
 		}
-		icon.visibility = Utils::tween(icon.visibility, iconTargetVisibility, iconVisibilitySpeed / context.refreshRate);
+		icon.visibility = Utils::tween(icon.visibility, iconTargetVisibility, iconVisibilitySpeed * deltaAverage);
+		if (icon.type == IconType::File && fileList.empty()) icon.visibility = 1.0;
 	}
 
-	context.loadingRotation += (float)context.deltaTime;
+
+	context.loadingRotation += (float)deltaAverage;
 	if (context.loadingRotation > 2.0) context.loadingRotation = fmod(context.loadingRotation, 2.0f);
 
 	static auto zoomSpeed = 16.0;
@@ -1621,7 +1823,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		wheelSpeed = 0;
 	}
 
-	currentZoom = Utils::tween(currentZoom, targetZoom, zoomSpeed / context.refreshRate);
+	currentZoom = Utils::tween(currentZoom, targetZoom, zoomSpeed * deltaAverage);
 
 	auto oneHalf = glm::vec2(0.5);
 	auto halfWindow = context.windowSize * oneHalf;
@@ -1632,7 +1834,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	context.currentZoom = currentZoom;
 
 	auto motionScale = glm::vec2(1.0);
-	if (display3D && preferredStereoMode == Free_View) {
+	if (display3D && preferredStereoMode == Free_View_Grid) {
 		motionScale.x = 0.0;
 		motionScale.y = 0.0;
 	}
@@ -1655,12 +1857,13 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	context.stereoDepth = currentStereoDepth;
 	context.stereoOffset = currentStereoOffset;
 	context.gridAngle = currentGridAngle;
-	context.swapInterlace = (int)swapInterlace;
+	context.swapLeftRight = (int)swapLeftRight;
 	context.windowSize = windowSize;
 	context.safeSize = Image::updateRatio(&context, windowSize);
 
 	auto visibleSize = windowSize;
-	if (preferredStereoMode == SBS_Half) visibleSize.x *= 0.5;
+	if (preferredStereoMode == SBS_Half || preferredStereoMode == RGB_Depth)
+		visibleSize.x *= 0.5;
 	if (doingFileOp) hideUI(false);
 
 	if (Image::draw(&context) < 0) {
@@ -1678,7 +1881,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	}
 
 	if (isPlayingSlideshow) {
-		depthEffect += context.deltaTime / slideshowWaitTime;
+		depthEffect += deltaAverage / slideshowWaitTime;
 		depthEffect = std::clamp(depthEffect, 0.0, 1.0);
 		context.depthEffect = depthEffect;
 		if (timeNow - lastSlideshowTime > slideshowWaitTime) {
@@ -1691,6 +1894,13 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		if (timeNow - displayTipTime > displayTipWait) {
 			Image::displayTip = false;
 			doingFileOp = false;
+		}
+	}
+
+	if (Image::displayInfo) {
+		if (timeNow - displayInfoTime > displayTipWait) {
+			Image::displayInfo = false;
+			Image::infoTargetVisibility = 0.0;
 		}
 	}
 
@@ -1744,6 +1954,16 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		depthPipeError = false;
 	}
 
+	if (windowDraggable && isFullscreen) {
+		auto mouseX = 0.0f, mouseY = 0.0f;
+		auto mouseFlags = SDL_GetGlobalMouseState(&mouseX, &mouseY);
+		if (mouseFlags & SDL_BUTTON_LMASK) {
+			isFullscreen = false;
+			setFullscreen(isFullscreen);
+		}
+	}
+
+	if (quitAppNextFrame) return SDL_APP_SUCCESS;
 	return SDL_APP_CONTINUE;
 }
 
@@ -1766,13 +1986,13 @@ void checkMouseState() {
 	for (auto& icon : appIcons) {
 		auto displayLoading = !(icon.type == IconType::Loading && (!isConverting || isPlayingSlideshow));
 		auto displaySettings = !(icon.type == IconType::Settings &&
-			(!display3D || currentStereoMode == Depth_Zoom || (!fileList.empty() && fileList[fileIndex].type != Color_Plus_Depth &&
-				fileList[fileIndex].type != Grid_Array)));
+			(!display3D || currentStereoMode == Depth_Zoom || preferredStereoMode == RGB_Depth ||
+				(!fileList.empty() && fileList[fileIndex].type != Color_Plus_Depth && fileList[fileIndex].type != Grid_Array)));
 		auto displayStereo = !((icon.type == IconType::Glasses || icon.type == IconType::Focus ||
 			icon.type == IconType::Layers) && (!showingStereoSettings || !display3D));
 		auto displayParallax = !(icon.type == IconType::Focus &&
 			(!fileList.empty() && fileList[fileIndex].type == Grid_Array));
-		auto displayOpen = !((icon.type != IconType::File)
+		auto displayOpen = !((icon.type != IconType::File && icon.type != IconType::Close)
 			&& fileList.empty());
 		auto displayMenu = !(context.displayMenu && (icon.type == IconType::Forward || icon.type == IconType::Back ||
 			icon.type == IconType::File || icon.type == IconType::Folder || icon.type == IconType::Save || icon.type == IconType::Window ||
@@ -1780,10 +2000,11 @@ void checkMouseState() {
 			icon.type == IconType::Settings));
 		auto displayXD = !(context.displayMenu && icon.type == IconType::Stereo_3D);
 		auto displaySave = true;
-		if (!fileList.empty())
+		if (!fileList.empty()) {
 			displaySave = !(icon.type == IconType::Save && ((fileList[fileIndex].type == Color_Only ||
 				fileList[fileIndex].type == Color_Anaglyph) || (fileList[fileIndex].type != Color_Plus_Depth &&
-					exportFormat == Color_Plus_Depth)));
+				exportFormat == Color_Plus_Depth)));
+		}
 		if (withinArea(context.mouse, getCoordinates(icon.canvas().topLeft, aspectScale),
 			getCoordinates(icon.canvas().bottomRight, aspectScale))) {
 			icon.state = IconState::Near;
@@ -1797,26 +2018,55 @@ void checkMouseState() {
 			auto iconSize = glm::vec2(icon.canvas().size.x);
 			iconSize *=	aspectScale * context.displayScale;
 			auto iconAspect = iconSize.x / iconSize.y;
-			auto iconX = (context.mouse.x - iconPosition.x - 1.0);
-			auto iconY = (context.mouse.y - iconPosition.y - 1.0) * iconAspect;
+			auto iconX = (context.mouse.x - iconPosition.x);
+			auto iconY = (context.mouse.y - iconPosition.y) * iconAspect;
 			auto isInsideIcon = iconX * iconX + iconY * iconY <= iconSize.x * iconSize.x;
-			if (isInsideIcon || &icon == currentSlider) {
+			if ((isInsideIcon && icon.active) || &icon == currentSlider) {
 				if (icon.type != IconType::Loading) {
 					icon.state = IconState::Over;
 					isIconCaptured = true;
+					if (displayInfoEnabled && icon.active && (!icon.shown ||
+						icon.mode == IconMode::Slider)) {
+						auto doShowInfo = true;
+						if (icon.label != currentInfoLabel) {
+							currentInfoLabel = icon.label;
+							if ((icon.type == IconType::Back || icon.type == IconType::Forward) &&
+									(!fileList.empty() && fileList.size() > fileIndex)) {
+								currentInfoLabel = Core::getFileText(fileList[fileIndex], context.imageSize);
+								if (!isFullscreen) doShowInfo = false;
+							}
+							if (icon.mode == IconMode::Slider) currentInfoLabel += " : " +
+								std::to_string(int(getSliderPercent(icon) * 100)) + "%";
+							if (doShowInfo) {
+								Core::drawText(&context, currentInfoLabel, Image::infoFont, Image::infoTexture,
+										Image::infoTextSize, "Info Texture");
+							}
+							if (showDisplayInfoOnce) icon.shown = true;
+						}
+						if (doShowInfo) {
+							Image::displayInfo = true;
+							Image::infoTargetVisibility = 1.0;
+							displayInfoTime = getTimeNow();
+						}
+					}
 				}
 			}
 		} else {
 			if (&icon == currentSlider) {
 				currentSlider = nullptr;
 			}
-			if (icon.type != IconType::Loading) {
+			if (icon.type != IconType::Loading && !(icon.type == IconType::File && fileList.empty())) {
 				icon.state = IconState::Idle;
 				icon.active = false;
 			} else {
 				icon.active = true;
 			}
 		}
+	}
+
+	if (!isIconCaptured) {
+		Image::displayInfo = false;
+		Image::infoTargetVisibility = 0.0;
 	}
 
 	if (context.displayMenu) {
@@ -1861,7 +2111,8 @@ void hideUI(bool hideCustomMouse, bool hideRealMouse) {
 static bool shouldShowCustomCursor() {
 	if (isFullscreen) return true;
 	return (isFullscreen || isMaximized) &&
-		(preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half);
+		(preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half
+			|| preferredStereoMode == RGB_Depth);
 }
 
 static void showCustomCursor(bool show) {
@@ -1968,6 +2219,12 @@ static int callDepthGenOnce(const std::string& fileFolderPath, bool realTime, in
 		return 1;
 	}
 
+	Core::drawText(&context, "Loading Depth Model, Please Wait",
+		Image::helpFont, Image::helpTexture,
+		Image::helpTextSize, "Help Texture");
+	Image::displayTip = true;
+	displayTipTime = getTimeNow();
+
 	std::string service = realTime ? "2" : "0";
 	depthCommand = "--model " + qualityMode + " --depth " + depthSize +
 		" --upscale " + upscaleResolution + " --maxsize " + std::to_string(Image::maxImageSize) +
@@ -2005,20 +2262,11 @@ static void callDepthGen(int imageIndex) {
 	}
 }
 
-static void updateDisplayScale() {
-	Style::calculateScale(context.virtualSize / context.displayScale);
-	Image::initFonts(&context);
-	Image::initMenuTexture();
-	Image::createMenuAssets(&context);
-	Image::saveMenuLayout(&context);
-	updateButtonCanvasSizes();
-	Core::drawText(&context, Core::lastDrawnText, Image::helpFont,
-			Image::helpTexture, Image::helpTextSize, "Help Texture");
-}
-
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 	if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
 	if (event->type == SDL_EVENT_WINDOW_DISPLAY_CHANGED) {
+		refreshWindowSize();
+
 		auto currentDisplay = event->display.data1;
 		auto displayMode = SDL_GetCurrentDisplayMode(currentDisplay);
 		Image::currentDisplay = currentDisplay;
@@ -2027,20 +2275,22 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
 		auto displaySize = glm::vec3((float)displayMode->w, (float)displayMode->h, 0.0f);
 		context.displaySize = displaySize;
-		auto refreshRate = displayMode->refresh_rate;
-		if (refreshRate < 1.0f) refreshRate = 60.0f;
-		context.refreshRate = refreshRate;
 		showCustomCursor(false);
 		auto displayScale = SDL_GetWindowDisplayScale(context.window);
 		context.displayScale = displayScale;
+		auto pixelDensity = SDL_GetWindowPixelDensity(context.window);
+		context.pixelDensity = pixelDensity;
 #if defined(__APPLE__)
-		Image::mouseScale = displayScale;
+		Image::mouseScale = pixelDensity;
+#elif defined(__linux__) || defined(__unix__)
+		Image::mouseScale = pixelDensity;
 #else
 		Image::mouseScale = 1.0;
 #endif
 		updateDisplayScale();
 	} else if (event->type == SDL_EVENT_WINDOW_RESIZED) {
 		showCustomCursor(false);
+		refreshWindowSizeBase();
 		Image::updateSize(&context);
 		Image::saveMenuLayout(&context);
 		refreshWindowSize();
@@ -2075,6 +2325,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 	} else if (event->type == SDL_EVENT_WINDOW_MOUSE_LEAVE) {
 		mouseLeftWindow = true;
 		hideUI(false);
+	} else if (event->type == SDL_EVENT_WINDOW_HIT_TEST) {
 	} else if (event->type == SDL_EVENT_KEY_DOWN) {
 		if (event->key.key == SDLK_ESCAPE) {
 			if(context.displayMenu) {
@@ -2119,9 +2370,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		}
 
 		if (event->key.key == SDLK_MINUS || event->key.key == SDLK_KP_MINUS) {
-			swapInterlace = false;
+			changeEyes(0);
+			menuSelection[ChoiceEyes.label] = 0;
 		} else if (event->key.key == SDLK_EQUALS || event->key.key == SDLK_KP_PLUS) {
-			swapInterlace = true;
+			changeEyes(1);
+			menuSelection[ChoiceEyes.label] = 1;
 		}
 
 		if (event->key.key == SDLK_SPACE || event->key.key == SDLK_KP_5) {
@@ -2157,9 +2410,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			mouseIsDown = true;
 			for (auto& icon : appIcons) {
 				if (icon.state == IconState::Over && icon.active) {
-					Image::displayTip = false;
 					auto allowCallback = true;
 					auto queueCallback = false;
+					Image::displayTip = false;
+					Image::displayInfo = false;
+					Image::infoTargetVisibility = 0.0;
 					if ((!isConverting && !doingPreload) || icon.type == IconType::Close) {
 						if (icon.mode == IconMode::Button) {
 							if (isPlayingSlideshow && (icon.type != IconType::Forward &&

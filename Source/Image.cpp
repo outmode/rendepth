@@ -33,6 +33,8 @@ glm::vec2 Image::updateRatio(Context* context, glm::vec2 windowSize) {
 	auto visualSize = imageSize;
 	if (context->mode == SBS_Full && (context->maximized || context->fullscreen))
 		visualSize.x *= 2.0;
+	if (context->imageType == Stereo_Free_View_LRL)
+		visualSize.y *= 3.0;
 	auto newImageSize = Utils::getSafeSize(visualSize, windowSize, 1.0f, true);
 	context->displayAspect.x = windowSize.x / windowSize.y;
 	context->displayAspect.y = newImageSize.x / newImageSize.y;
@@ -151,8 +153,9 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData) {
 		ssim = getSimilarity(ssimSurface, ssimSize.x, ssimSize.y);
 	}
 	if (ssim > similarityThreshold && untagged && imageInfo.type == Color_Only) {
-		imageInfo.type = Side_By_Side_Full;
-		context->imageType = Side_By_Side_Full;
+		auto sbsType = Utils::isFullWidth(context->imageSize) ? Side_By_Side_Full : Side_By_Side_Half;
+		imageInfo.type = sbsType;
+		context->imageType = sbsType;
 		context->mode = Mono;
 		imageDataFrag.mode = context->mode;
 		imageDataFrag.type = context->imageType;
@@ -291,7 +294,7 @@ void Image::saveMenuLayout(Context* context) {
 				optionsLeft -= 4;
 				choiceStart.x = choiceCentered;
 				if (optionIndex > 0)
-					choiceStart.y -= optionTextures[choice.label].size.y + buttonMargin * 4.0f;
+					choiceStart.y -= optionTextures[choice.label].size.y + buttonMargin * 5.0f;
 			}
 			auto centerPadOption = style.getOptionsSize(Style::getCurrentScale()) * context->displayScale -
 				optionTextures[option].size.x;
@@ -310,7 +313,7 @@ void Image::saveMenuLayout(Context* context) {
 
 		choiceCentered = (windowSize.x - menuWidth) * 0.5f;
 		choiceStart.x = choiceCentered;
-		choiceStart.y -= optionTextures[choice.label].size.y + buttonMargin * 3.0f;
+		choiceStart.y -= optionTextures[choice.label].size.y + buttonMargin * 2.0f;
 	}
 	menuMargin.y = (firstChoice + buttonMargin * 2.0f + 2.0f) - (style.getIconRadius(Style::getCurrentScale()) * context->displayScale
 		+ style.getIconSpacer(Style::getCurrentScale()) + style.getInfo(Style::getCurrentScale()));
@@ -318,9 +321,8 @@ void Image::saveMenuLayout(Context* context) {
 
 
 int Image::init(Context* context, FileInfo& imageInfo) {
-	int numDisplays;
-	SDL_DisplayID *displays = SDL_GetDisplays(&numDisplays);
-	auto displayMode = SDL_GetCurrentDisplayMode(displays[0]);
+	auto currentDisplay = SDL_GetPrimaryDisplay();
+	auto displayMode = SDL_GetCurrentDisplayMode(currentDisplay);
 	auto displaySize = glm::vec3((float)displayMode->w, (float)displayMode->h, 0.0f);
 	auto virtualSize = glm::vec2(displayMode->w, displayMode->h) * displayMode->pixel_density;
 	context->virtualSize = virtualSize;
@@ -344,8 +346,10 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 		auto ssimSize = blitSSIMTexture(imageData, imageData->w, imageData->h);
 		auto ssim = getSimilarity(ssimSurface, ssimSize.x, ssimSize.y);
 		if (ssim > similarityThreshold && untagged && imageInfo.type == Color_Only) {
-			imageInfo.type = Side_By_Side_Full;
-			context->imageType = Side_By_Side_Full;
+			glm::vec2 imageRes = { imageData->w, imageData->h };
+			auto sbsType = Utils::isFullWidth(imageRes) ? Side_By_Side_Full : Side_By_Side_Half;
+			imageInfo.type = sbsType;
+			context->imageType = sbsType;
 		}
 
 		firstImageSize = glm::vec2((float)imageData->w, (float)imageData->h);
@@ -362,9 +366,6 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	imageSize = glm::vec3(firstImageSize.x, firstImageSize.y, 0);
 
 	context->displaySize = displaySize;
-	auto refreshRate = displayMode->refresh_rate;
-	if (refreshRate < 1.0f) refreshRate = 60.0f;
-	context->refreshRate = refreshRate;
 	context->imageSize = firstImageSize;
 	updateSize(context);
 
@@ -374,6 +375,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	if (fileName.empty()) fileName = "Rendepth";
 
 	auto windowFlags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+	if (useBorderlessWindow) windowFlags |= SDL_WINDOW_BORDERLESS;
 
 	firstImageSize = Utils::getSafeSize(firstImageSize, displaySize,
 			(float)safePercent, true);
@@ -389,16 +391,8 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	SDL_SetWindowPosition(context->window, SDL_WINDOWPOS_CENTERED,
 		SDL_WINDOWPOS_CENTERED);
 	SDL_SetWindowMinimumSize(context->window, 512, 768);
-	context->displayScale = SDL_GetWindowDisplayScale(context->window);
-#if defined(__APPLE__)
-	mouseScale = context->displayScale;
-#else
-	mouseScale = 1.0;
-#endif
-	Style::calculateScale(virtualSize / context->displayScale);
-	SDL_free(displays);
-
 	SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+	SDL_SetHint(SDL_HINT_VIDEO_WAYLAND_SCALE_TO_DISPLAY, "0");
 	SDL_SetWindowFullscreenMode(context->window, nullptr);
 
 	auto gpuFormat = SDL_GPU_SHADERFORMAT_INVALID;
@@ -489,6 +483,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	iconDataFrag.visibility = 1.0;
 	iconDataFrag.rotation = 0.0;
 	iconDataFrag.animated = 0;
+	iconDataFrag.force = 0;
 
 	if (!SDL_ClaimWindowForGPUDevice(context->device, context->window)) {
 		SDL_Log("GPU Cannot Claim Window");
@@ -771,6 +766,34 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 
 	load(context, imageInfo, imageData);
 
+	context->displayScale = SDL_GetWindowDisplayScale(context->window);
+	auto pixelDensity = SDL_GetWindowPixelDensity(context->window);
+	context->pixelDensity = pixelDensity;
+#if defined(__APPLE__)
+	mouseScale = pixelDensity;
+#elif defined(__linux__) || defined(__unix__)
+	mouseScale = pixelDensity;
+#else
+	mouseScale = 1.0;
+#endif
+
+	Style::calculateScale(virtualSize / context->displayScale);
+	initFonts(context);
+	initMenuTexture();
+	createMenuAssets(context);
+	saveMenuLayout(context);
+
+	if (imageInfo.path.empty()) {
+		SDL_SetWindowTitle(context->window, context->appName);
+		Core::drawText(context, "Drag & Drop or Click Load Icon", helpFont,
+			helpTexture, helpTextSize, "Help Texture");
+		displayHelp = true;
+		return 1;
+	}
+
+	Core::drawText(context, "Rendepth 2D-to-3D Conversion", infoFont, infoTexture,
+					infoTextSize, "Info Texture");
+
 	return 0;
 }
 
@@ -783,12 +806,21 @@ int Image::initFonts(Context* context) {
 
 	if (helpFont) TTF_CloseFont(helpFont);
 	helpFont = TTF_OpenFont(fontFileAbsPath.string().c_str(),
-		style.getInfoFontSize(Style::getCurrentScale()) * context->displayScale);
+		style.getHelpFontSize(Style::getCurrentScale()) * context->displayScale);
 	if (helpFont == nullptr) {
 		SDL_Log("Could Not Load Help Font: %s", fontFileAbsPath.string().c_str());
 		return -1;
 	}
 	auto fontStyle = TTF_STYLE_NORMAL;
+	TTF_SetFontStyle(helpFont, fontStyle);
+
+	if (infoFont) TTF_CloseFont(infoFont);
+	infoFont = TTF_OpenFont(fontFileAbsPath.string().c_str(),
+		style.getInfoFontSize(Style::getCurrentScale()) * context->displayScale);
+	if (infoFont == nullptr) {
+		SDL_Log("Could Not Load Info Font: %s", fontFileAbsPath.string().c_str());
+		return -1;
+	}
 	TTF_SetFontStyle(helpFont, fontStyle);
 
 	if (menuFont) TTF_CloseFont(menuFont);
@@ -1016,12 +1048,18 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 		renderFormat = Native;
 		singleImageSize = context->imageSize * glm::vec2(2.0, 1.0);
 		viewportSize = singleImageSize;
-	} else if (stereoFormat == Stereo_Free_View) {
+	} else if (stereoFormat == Stereo_Free_View_Grid) {
 		renderFormat = Left;
 		viewportSize = singleImageSize;
 		singleImageSize = singleImageSize * glm::vec2(0.5, 0.5);
 		viewsX = 2;
 		viewsY = 2;
+	} else if (stereoFormat == Stereo_Free_View_LRL) {
+		renderFormat = Left;
+		viewportSize = singleImageSize * glm::vec2(1.5, 0.5);
+		singleImageSize = singleImageSize * glm::vec2(0.5, 0.5);
+		viewsX = 3;
+		viewsY = 1;
 	} else if (stereoFormat == Grid_Array) {
 		viewsX = (int)exportGridDim.x;
 		viewsY = (int)exportGridDim.y;
@@ -1066,9 +1104,9 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 		return -1;
 	}
 
-	if (context->backgroundStyle == Solid || context->backgroundStyle == Dark) clearColorCurrent = clearColorSolid;
+	if (context->backgroundStyle == Solid) clearColorCurrent = clearColorSolid;
 	else if (context->backgroundStyle == Light) clearColorCurrent = clearColorLight;
-	else clearColorCurrent = clearColorDark;
+	else if (context->backgroundStyle == Dark) clearColorCurrent = clearColorDark;
 
 	SDL_GPUColorTargetInfo colorTargetInfo = {};
 	colorTargetInfo.texture = exportTexture;
@@ -1093,8 +1131,8 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 			SDL_BindGPUFragmentSamplers(renderPass, 0, &sampleBindings[0], 2);
 
 			if (stereoFormat == Side_By_Side_Full || stereoFormat == Side_By_Side_Half ||
-				stereoFormat == Stereo_Free_View) {
-				renderFormat = (Mode)(Left + (renderX + (renderY % 2)) % 2);
+				stereoFormat == Stereo_Free_View_Grid || stereoFormat == Stereo_Free_View_LRL) {
+				renderFormat = (ViewMode)(Left + (renderX + (renderY % 2)) % 2);
 			}
 			imageDataFrag.mode = renderFormat;
 			imageDataFrag.stereoStrength = (float)stereoStrength;
@@ -1143,8 +1181,10 @@ SDL_Surface* Image::getExportTexture(Context* context, StereoFormat stereoFormat
 		stereoImageSize = context->imageSize;
 	} else if (stereoFormat == Color_Plus_Depth) {
 		stereoImageSize = context->imageSize * glm::vec2(2.0, 1.0);
-	} else if (stereoFormat == Stereo_Free_View) {
+	} else if (stereoFormat == Stereo_Free_View_Grid) {
 		stereoImageSize = context->imageSize;
+	} else if (stereoFormat == Stereo_Free_View_LRL) {
+		stereoImageSize = context->imageSize * glm::vec2(1.5, 0.5);
 	} else if (stereoFormat == Grid_Array) {
 		auto maxRes = exportGridMaxRes;
 		auto maxSize = std::max(stereoImageSize.x, stereoImageSize.y);
@@ -1267,9 +1307,10 @@ int Image::draw(Context* context) {
 	}
 
 	if (swapchainTexture != nullptr) {
-		if (context->backgroundStyle == Solid || context->backgroundStyle == Dark) clearColorCurrent = clearColorSolid;
+		if (context->backgroundStyle == Solid) clearColorCurrent = clearColorSolid;
 		else if (context->backgroundStyle == Light) clearColorCurrent = clearColorLight;
-		else clearColorCurrent = clearColorDark;
+		else if (context->backgroundStyle == Dark) clearColorCurrent = clearColorDark;
+		if (context->backgroundStyle == Solid && context->mode == RGB_Depth) clearColorCurrent = clearColorDepth;
 
 		SDL_GPUColorTargetInfo colorTargetInfo{};
 		colorTargetInfo.texture = swapchainTexture;
@@ -1301,10 +1342,11 @@ int Image::draw(Context* context) {
 
 		auto viewsX = 1;
 		auto viewsY = 1;
-		if ((context->mode == SBS_Full || context->mode == SBS_Half) &&
+		if ((context->mode == SBS_Full || context->mode == SBS_Half
+			|| context->mode == RGB_Depth) &&
 			(context->fullscreen || context->maximized)) {
 			viewsX = 2;
-		} else if (context->mode == Free_View) {
+		} else if (context->mode == Free_View_Grid) {
 			viewsX = 2;
 			viewsY = 2;
 		}
@@ -1335,19 +1377,23 @@ int Image::draw(Context* context) {
 					imageDataFrag.gridSize = context->gridSize;
 					imageDataFrag.mode = context->mode;
 					imageDataFrag.type = context->imageType;
-					imageDataFrag.swapInterlace = context->swapInterlace;
+					imageDataFrag.swapLeftRight = context->swapLeftRight;
 
 					imageDataVert.displayImageAspect = glm::vec3(context->displayAspect, 1.0);
 					if (context->mode == SBS_Full && viewsX > 1)
 						imageDataVert.displayImageAspect.x *= 2.0f;
 
-					if (context->mode == SBS_Full|| context->mode == SBS_Half
-						|| context->mode == Free_View) {
+					if (context->mode == SBS_Full|| context->mode == SBS_Half || context->mode == RGB_Depth
+						|| context->mode == Free_View_Grid || context->mode == Free_View_LRL) {
 						if (context->imageType == Color_Only) {
 							imageDataFrag.mode = Native;
 						} else {
 							if (context->display3D) {
 								imageDataFrag.mode = Left + (viewX + (viewY % 2)) % 2;
+								if (context->mode == RGB_Depth) {
+									if (viewX == 0) imageDataFrag.mode = Mono;
+									if (viewX == 1) imageDataFrag.mode = RGB_Depth;
+								}
 							} else {
 								imageDataFrag.mode = Mono;
 							}
@@ -1371,7 +1417,7 @@ int Image::draw(Context* context) {
 						-windowSize.y * 0.5f, windowSize.y * 0.5f);
 					imageDataVert.transform = glm::mat4(1.0f);
 					auto viewOffset = context->offset;
-					if (context->mode == Free_View) {
+					if (context->mode == Free_View_Grid) {
 						viewOffset.x = viewX == 0 ? context->imageBounds.x : -context->imageBounds.x;
 						viewOffset.y = viewY == 0 ? context->imageBounds.y : -context->imageBounds.y;
 					}
@@ -1381,6 +1427,10 @@ int Image::draw(Context* context) {
 					imageDataFrag.visibility = context->visibility;
 					if (displayTip) imageDataFrag.visibility *= 0.5;
 					imageDataFrag.blur = 0;
+					imageDataFrag.force = 0;
+					if (context->mode == RGB_Depth && context->imageType != Color_Plus_Depth && viewX > 0) {
+						imageDataFrag.force = 1;
+					}
 
 					drawImage(commandBuffer, renderPass);
 				}
@@ -1388,7 +1438,8 @@ int Image::draw(Context* context) {
 		}
 
 		viewsX = 1;
-		if ((context->mode == SBS_Full || context->mode == SBS_Half) &&
+		if ((context->mode == SBS_Full || context->mode == SBS_Half
+			|| context->mode == RGB_Depth) &&
 				(context->fullscreen || context->maximized)) {
 			viewsX = 2;
 		}
@@ -1396,10 +1447,13 @@ int Image::draw(Context* context) {
 		for (auto view = 0; view < viewsX; view++) {
 			auto viewColorPink = style.getColor(Style::Color::Pink, Style::Alpha::Strong);
 			auto viewColorPinkSolid = style.getColor(Style::Color::Pink, Style::Alpha::Solid);
+			auto viewColorWhite = style.getColor(Style::Color::White, Style::Alpha::Strong);
 			auto viewColorWhiteSolid = style.getColor(Style::Color::White, Style::Alpha::Solid);
+			auto viewColorWhiteLight = style.getColor(Style::Color::White, Style::Alpha::Weak);
 			auto viewColorGrayLight = style.getColor(Style::Color::Gray, Style::Alpha::Weak);
 			auto viewColorBlack = style.getColor(Style::Color::Black, Style::Alpha::Strong);
 			auto viewColorBlackSolid = style.getColor(Style::Color::Black, Style::Alpha::Solid);
+			auto viewColorBlackLight = style.getColor(Style::Color::Black, Style::Alpha::Weak);
 			auto viewColorBlueSolid = style.getColor(Style::Color::Black, Style::Alpha::Solid);
 			if (context->mode == Anaglyph) {
 				viewColorPink = style.toAnaglyph(viewColorPink);
@@ -1419,8 +1473,10 @@ int Image::draw(Context* context) {
 					auto iconCanvas = icon.canvas();
 					auto sliderPosition = Utils::getCanvasPosition(context, &iconCanvas, nullptr, aspectScale * context->displayScale);
 					auto slideEnd = icon.slider.size.y / icon.slider.size.x * 0.5;
+					auto spriteColor = viewColorGrayLight;
+					if (context->mode == RGB_Depth && view > 0) spriteColor = uiColorDepth;
 					setSpriteUniforms(glm::vec3(sliderPosition, 1.0), glm::vec3(icon.slider.size * context->displayScale, 1.0),
-						viewColorGrayLight, (float)icon.visibility, 1, { 0, 0 },
+						spriteColor, (float)icon.visibility, 1, { 0, 0 },
 						{ 1, 1 }, glm::vec2(slideEnd, 1.0 - slideEnd),
 						glm::vec3(aspectScale, 1.0));
 					drawSprite(commandBuffer, renderPass);
@@ -1437,9 +1493,15 @@ int Image::draw(Context* context) {
 					glm::vec3(glm::vec2(2.0) * style.getIconRadius(Style::getCurrentScale()) * aspectScale * context->displayScale, 1.0f));
 				iconDataVert.gridOffset = getIconCoordinates(
 					context->backgroundStyle == Light ? IconType::Logo_Light : IconType::Logo_Dark);
-				iconDataFrag.color = viewColorWhiteSolid;
+				auto spriteColor = viewColorWhiteSolid;
 				iconDataFrag.visibility = 1.0;
 				iconDataFrag.animated = 0;
+				iconDataFrag.force = 0;
+				if (context->mode == RGB_Depth && view > 0) {
+					spriteColor = uiColorDepth;
+					iconDataFrag.force = 1;
+				}
+				iconDataFrag.color = spriteColor;
 
 				drawIcon(commandBuffer, renderPass);
 			}
@@ -1457,13 +1519,14 @@ int Image::draw(Context* context) {
 				auto helpUvSize = glm::vec2(1.0, 1.0);
 				auto helpTextColor = context->backgroundStyle == Light ?
 					viewColorBlueSolid : viewColorWhiteSolid;
+				if (context->mode == RGB_Depth && view > 0) helpTextColor = uiColorDepth;
 				setSpriteUniforms(helpCenter, helpSize, helpTextColor,
 					1.0f, 1, helpUvOffset, helpUvSize,
 					glm::vec2(0.5), glm::vec3(aspectScale, 1.0));
 				drawSprite(commandBuffer, renderPass);
 			}
 
-			if (context->displayMenu) {
+			if (context->displayMenu && menuTexture != nullptr) {
 				bindPipeline(renderPass, spritePipeline);
 				SDL_GPUTextureSamplerBinding menuSampleBindings[1] = {{ .texture = menuTexture, .sampler = imageSampler }};
 				SDL_BindGPUFragmentSamplers(renderPass, 0, &menuSampleBindings[0], 1);
@@ -1491,7 +1554,9 @@ int Image::draw(Context* context) {
 					auto bgSliceEnd = choiceBgSize.y / choiceBgSize.x * 0.5;
 					auto bgSlice = glm::vec2(bgSliceEnd, 1.0 - bgSliceEnd);
 
-					setSpriteUniforms(choice.layout.position + menuMargin, choiceBgSize, viewColorBlackSolid,
+					auto spriteColor = viewColorBlackSolid;
+					if (context->mode == RGB_Depth && view > 0) spriteColor = uiColorBGDepth;
+					setSpriteUniforms(choice.layout.position + menuMargin, choiceBgSize, spriteColor,
 						1.0f, 1, {0.0, 0.0 }, { 1.0, 1.0 }, bgSlice,
 						glm::vec3(aspectScale, 1.0));
 					drawSprite(commandBuffer, renderPass);
@@ -1499,8 +1564,11 @@ int Image::draw(Context* context) {
 					menuSampleBindings[0] = { .texture = menuTexture, .sampler = imageSampler };
 					SDL_BindGPUFragmentSamplers(renderPass, 0, &menuSampleBindings[0], 1);
 
-					setSpriteUniforms(choice.layout.position + menuMargin, choice.layout.size, viewColorWhiteSolid,
-					1.0f, 1, uvOffset, uvSize,glm::vec2(0.5),
+					spriteColor = viewColorWhiteSolid;
+					auto menuTextVis = 1.0f;
+					if (context->mode == RGB_Depth && view > 0) menuTextVis = 0.0f;
+					setSpriteUniforms(choice.layout.position + menuMargin, choice.layout.size, spriteColor,
+					menuTextVis, 1, uvOffset, uvSize,glm::vec2(0.5),
 					glm::vec3(aspectScale, 1.0));
 					drawSprite(commandBuffer, renderPass);
 
@@ -1511,14 +1579,16 @@ int Image::draw(Context* context) {
 						auto selection = (*context->menuSelection)[choice.label] == optionIndex;
 						auto rollover = (*context->menuRollover)[choice.label] == optionIndex;
 
-						if (selection) {
+						if (selection || (context->mode == RGB_Depth && view > 0)) {
 							menuSampleBindings[0] = { .texture = sliderTexture, .sampler = imageSampler };
 							SDL_BindGPUFragmentSamplers(renderPass, 0, &menuSampleBindings[0], 1);
 							auto buttonSize = glm::vec3(style.getOptionsSize(Style::getCurrentScale()) * context->displayScale,
 								optionTextures[choice.label].size.y + buttonMargin * 2.0f + 2.0f, 1.0);
 							bgSliceEnd = buttonSize.y / buttonSize.x * 0.5;
 							bgSlice = glm::vec2(bgSliceEnd, 1.0 - bgSliceEnd);
-							setSpriteUniforms(choice.layouts[optionIndex].position + menuMargin, buttonSize, viewColorPink,
+							spriteColor = viewColorPink;
+							if (context->mode == RGB_Depth && view > 0) spriteColor = uiColorBGDepth;
+							setSpriteUniforms(choice.layouts[optionIndex].position + menuMargin, buttonSize, spriteColor,
 								1.0f, 1, {0.0, 0.0 }, { 1.0, 1.0 }, bgSlice, glm::vec3(aspectScale, 1.0));
 							drawSprite(commandBuffer, renderPass);
 						}
@@ -1526,13 +1596,50 @@ int Image::draw(Context* context) {
 						menuSampleBindings[0] = { .texture = menuTexture, .sampler = imageSampler };
 						SDL_BindGPUFragmentSamplers(renderPass, 0, &menuSampleBindings[0], 1);
 
+						spriteColor = rollover && !selection ? viewColorPinkSolid : viewColorWhiteSolid;
+						auto menuTextVis = 1.0f;
+						if (context->mode == RGB_Depth && view > 0) menuTextVis = 0.0f;
 						setSpriteUniforms(choice.layouts[optionIndex].position + menuMargin,
-							choice.layouts[optionIndex].size, rollover && !selection ? viewColorPinkSolid : viewColorWhiteSolid,
-							1.0f, 1, uvOffset, uvSize, glm::vec2(0.5), glm::vec3(aspectScale, 1.0));
+							choice.layouts[optionIndex].size, spriteColor,
+							menuTextVis, 1, uvOffset, uvSize, glm::vec2(0.5), glm::vec3(aspectScale, 1.0));
 						drawSprite(commandBuffer, renderPass);
 
 						optionIndex++;
 					}
+				}
+			}
+
+			if (!context->displayMenu && infoTexture != nullptr) {
+				bindPipeline(renderPass, spritePipeline);
+				SDL_GPUTextureSamplerBinding infoSampleBindings[1] = {{ .texture = infoTexture, .sampler = imageSampler } };
+				SDL_BindGPUFragmentSamplers(renderPass, 0, &infoSampleBindings[0], 1);
+
+				auto infoMargin = 12.0f * context->displayScale;
+				auto infoCenter = glm::vec3(windowSize.x * 0.5f,
+					windowSize.y, 0.0f) - glm::vec3(0.0,  infoMargin, 0.0f);
+				auto infoSize = glm::vec3(windowSize.x, infoTextSize.y + infoMargin, 1.0);
+				auto infoUvOffset = glm::vec2(0.0, 0.0);
+				auto infoUvSize = glm::vec2(1.0, 1.0);
+				auto infoColor = viewColorBlack;
+				if (context->mode == RGB_Depth && view > 0) infoColor = uiColorDepth;
+
+				setSpriteUniforms(infoCenter, infoSize, infoColor,
+					infoCurrentVisibility, 0, infoUvOffset, infoUvSize,
+					glm::vec2(0.5), glm::vec3(aspectScale, 1.0));
+				drawSprite(commandBuffer, renderPass);
+
+				if (displayInfo) {
+					infoCenter = glm::vec3(windowSize.x * 0.5f,
+						windowSize.y, 0.0f) - glm::vec3(0.0,  (infoMargin + 2.0f * context->displayScale), 0.0f);
+					infoSize = glm::vec3(infoTextSize, 1.0);
+					infoUvOffset = glm::vec2(0.0, 0.0);
+					infoUvSize = glm::vec2(1.0, 1.0);
+					infoColor = viewColorWhiteSolid;
+					if (context->mode == RGB_Depth && view > 0) infoColor = uiColorDepth;
+					setSpriteUniforms(infoCenter, infoSize, infoColor,
+						1.0f, 1, infoUvOffset, infoUvSize,
+						glm::vec2(0.5), glm::vec3(aspectScale, 1.0));
+					drawSprite(commandBuffer, renderPass);
 				}
 			}
 
@@ -1551,6 +1658,7 @@ int Image::draw(Context* context) {
 					glm::vec3(glm::vec2(2.0) * iconRadius * aspectScale * context->displayScale, 1.0f));
 				iconDataVert.gridOffset = getIconCoordinates(IconType::Background);
 				iconDataFrag.color = icon.state == IconState::Over ? viewColorPink : viewColorBlack;
+				if (context->mode == RGB_Depth && view > 0) iconDataFrag.color = uiColorDepth;
 				iconDataFrag.visibility = (float)icon.visibility;
 				iconDataFrag.rotation = 0.0f;
 				iconDataFrag.animated = 0;
@@ -1563,6 +1671,7 @@ int Image::draw(Context* context) {
 				iconPosition.y = context->windowSize.y - iconPosition.y;
 				iconDataVert.gridOffset = getIconCoordinates(icon.image);
 				iconDataFrag.color = icon.color;
+				if (context->mode == RGB_Depth && view > 0) iconDataFrag.color = uiColorDepth;
 				iconDataFrag.visibility = (float)icon.visibility;
 
 				if (icon.type == IconType::Loading) {
@@ -1571,6 +1680,7 @@ int Image::draw(Context* context) {
 						-context->loadingRotation * pi, glm::vec3(0.0f, 0.0f, 1.0f));
 					iconDataFrag.rotation = context->loadingRotation;
 					iconDataFrag.animated = 1;
+					if (displayTip) iconDataFrag.visibility = 0.0;
 				}
 
 				drawIcon(commandBuffer, renderPass);
@@ -1587,6 +1697,11 @@ int Image::draw(Context* context) {
 			iconDataFrag.color = viewColorWhiteSolid;
 			iconDataFrag.visibility = context->mouseVisibility;
 			iconDataFrag.animated = 0;
+			iconDataFrag.force = 0;
+			if (context->mode == RGB_Depth && view > 0) {
+				iconDataFrag.color = uiColorDepth;
+				iconDataFrag.force = 1;
+			}
 
 			drawIcon(commandBuffer, renderPass);
 		}
