@@ -25,3 +25,6 @@
 [submodule "Package/Depth-Anything-V2"]
 	path = Package/Depth-Anything-V2
 	url = https://github.com/DepthAnything/Depth-Anything-V2.git
+[submodule "ThirdParty/fCWT"]
+	path = ThirdParty/fCWT
+	url = https://github.com/outmode/fCWT.git
