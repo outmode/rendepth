@@ -1,9 +1,7 @@
-
-numpy==2.2.3
-opencv_python==4.10.0.84
-Pillow==11.1.0
-pyzmq==26.2.1
-torch==2.6.0
-torchvision==0.21.0
+numpy==2.2.6
+opencv-python==4.11.0.86
+pillow==11.2.1
+pyzmq==26.4.0
 torchsr==1.0.4
-
+torch==2.7.0
+torchvision==0.22.0
