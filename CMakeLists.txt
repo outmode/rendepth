@@ -82,6 +82,13 @@ elseif(UNIX)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -static-libgcc -static-libstdc++ -fopenmp -mavx -w -O3")
 endif()
 
+find_package(OpenMP)
+if (OPENMP_FOUND)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
+endif()
+
 add_subdirectory(ThirdParty/SDL EXCLUDE_FROM_ALL)
 add_subdirectory(ThirdParty/SDL_ttf EXCLUDE_FROM_ALL)
 add_subdirectory(ThirdParty/SDL_image EXCLUDE_FROM_ALL)
@@ -105,17 +112,18 @@ elseif(APPLE)
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.frag.msl
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.frag.msl
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3.0.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.2.0.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.dylib
+                ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.2.4.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.1.0.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.dylib
+                ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.2.2.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libfCWT.2.0.dylib ${CMAKE_SOURCE_DIR}/Library/libfCWT.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libglm.dylib ${CMAKE_SOURCE_DIR}/Library/libomp.dylib)
+                ${CMAKE_SOURCE_DIR}/Library/libglm.dylib ${CMAKE_SOURCE_DIR}/Library/libomp.dylib
+                ${CMAKE_SOURCE_DIR}/Legal/LICENSE)
         set_source_files_properties(
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3.0.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.2.0.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.dylib
+                ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.2.4.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.1.0.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.dylib
+                ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.2.2.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libfCWT.2.0.dylib ${CMAKE_SOURCE_DIR}/Library/libfCWT.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libglm.dylib ${CMAKE_SOURCE_DIR}/Library/libomp.dylib
@@ -136,6 +144,10 @@ elseif(APPLE)
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.frag.msl
                 PROPERTIES
                 MACOSX_PACKAGE_LOCATION Shaders/Compiled)
+        set_source_files_properties(
+                ${CMAKE_SOURCE_DIR}/Legal/LICENSE
+                PROPERTIES
+                MACOSX_PACKAGE_LOCATION Legal)
     endif()
 elseif(UNIX)
     add_executable(Rendepth Source/Main.cpp)
