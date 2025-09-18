@@ -118,6 +118,7 @@ auto similarityThreshold = 0.67;
 auto swapLeftRight = false;
 auto mouseLeftWindow = false;
 auto mouseIsDown = false;
+auto showGoFullScreenOnce = true;
 auto deltaIndex = 0;
 const int deltaCount = 16;
 std::array<double, deltaCount> deltaTimes{};
@@ -1472,9 +1473,8 @@ static void pushFileInfo(const std::filesystem::path& filePath) {
 	if (isSupportedImage(fileName)) {
 		if (fileName.empty()) return;
 		if (filePath.filename().string().empty()) return;
-		std::filesystem::file_time_type modifiedTime = last_write_time(filePath);
-		std::string clockString = std::format("{:%Y-%m-%d}", modifiedTime);
-		std::uintmax_t fileSize = file_size(filePath);
+		auto modifiedTime = last_write_time(filePath);
+		auto fileSize = file_size(filePath);
 		auto sizeText = formatFileSize(fileSize);
 		FileInfo info;
 		info.link = fileName;
@@ -1789,6 +1789,15 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		else menuChoices[8].active = false;
 		if (isPlayingSlideshow) preloadImage(nextRandIndex);
 		else preloadImage();
+		if (display3D && !isFullscreen && showGoFullScreenOnce && (context.mode == SBS_Full ||
+				context.mode == SBS_Half || context.mode == RGB_Depth)) {
+			Core::drawText(&context, "Go Full-Screen to View in Stereo",
+				Image::helpFont, Image::helpTexture,
+				Image::helpTextSize, "Help Texture");
+			Image::displayTip = true;
+			displayTipTime = getTimeNow();
+			showGoFullScreenOnce = false;
+		}
 	} else if (doingPreload) {
 		endPreload(true);
 	}
@@ -1981,7 +1990,7 @@ glm::vec2 getCoordinates(glm::vec4 positionAlignment, glm::vec2 aspectScale = gl
 void checkMouseState() {
 	isIconCaptured = false;
 	auto aspectScale = glm::vec2(1.0);
-	if (preferredStereoMode == SBS_Full && (isMaximized || isFullscreen))
+	if (preferredStereoMode == SBS_Full && isFullscreen)
 		aspectScale = glm::vec2(2.0, 1.0);
 	for (auto& icon : appIcons) {
 		auto displayLoading = !(icon.type == IconType::Loading && (!isConverting || isPlayingSlideshow));
@@ -2033,7 +2042,6 @@ void checkMouseState() {
 							if ((icon.type == IconType::Back || icon.type == IconType::Forward) &&
 									(!fileList.empty() && fileList.size() > fileIndex)) {
 								currentInfoLabel = Core::getFileText(fileList[fileIndex], context.imageSize);
-								if (!isFullscreen) doShowInfo = false;
 							}
 							if (icon.mode == IconMode::Slider) currentInfoLabel += " : " +
 								std::to_string(int(getSliderPercent(icon) * 100)) + "%";
@@ -2110,7 +2118,7 @@ void hideUI(bool hideCustomMouse, bool hideRealMouse) {
 
 static bool shouldShowCustomCursor() {
 	if (isFullscreen) return true;
-	return (isFullscreen || isMaximized) &&
+	return isFullscreen &&
 		(preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half
 			|| preferredStereoMode == RGB_Depth);
 }
@@ -2505,7 +2513,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
 		if (currentSlider != nullptr) {
 			auto aspectScale = 1.0;
-			if (preferredStereoMode == SBS_Full && (isMaximized || isFullscreen))
+			if (preferredStereoMode == SBS_Full && isFullscreen)
 				aspectScale = 2.0;
 			aspectScale *= context.displayScale / Image::mouseScale;
 			currentSlider->slider.position += glm::vec2(event->motion.xrel / aspectScale,

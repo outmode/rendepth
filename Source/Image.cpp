@@ -31,7 +31,7 @@ glm::vec2 Image::getIconCoordinates(IconType iconType) {
 
 glm::vec2 Image::updateRatio(Context* context, glm::vec2 windowSize) {
 	auto visualSize = imageSize;
-	if (context->mode == SBS_Full && (context->maximized || context->fullscreen))
+	if (context->mode == SBS_Full && context->fullscreen)
 		visualSize.x *= 2.0;
 	if (context->imageType == Stereo_Free_View_LRL)
 		visualSize.y *= 3.0;
@@ -44,7 +44,7 @@ glm::vec2 Image::updateRatio(Context* context, glm::vec2 windowSize) {
 void Image::updateSize(Context* context) {
 	imageSize = glm::vec3(context->imageSize.x, context->imageSize.y, 0);
 	auto visualSize = imageSize;
-	if (context->mode == SBS_Full && (context->maximized || context->fullscreen))
+	if (context->mode == SBS_Full && context->fullscreen)
 		visualSize.x *= 2.0;
 	safeImageSize = Utils::getSafeSize(visualSize, context->virtualSize, (float)safePercent, true);
 }
@@ -247,7 +247,7 @@ void Image::saveMenuLayout(Context* context) {
 	glm::vec2 windowSize = { windowWidth, windowHeight };
 
 	auto aspectScale = glm::vec2(1.0);
-	if (context->mode == SBS_Full && (context->fullscreen || context->maximized)) {
+	if (context->mode == SBS_Full && context->fullscreen) {
 		aspectScale.x = 2.0;
 	}
 
@@ -1330,7 +1330,7 @@ int Image::draw(Context* context) {
 		glm::vec2 windowSize = { windowWidth, windowHeight };
 		auto aspectScale = glm::vec2(1.0, 1.0);
 
-		if (context->mode == SBS_Full && (context->fullscreen || context->maximized)) {
+		if (context->mode == SBS_Full && context->fullscreen) {
 			aspectScale.x = 2.0;
 		}
 
@@ -1343,8 +1343,7 @@ int Image::draw(Context* context) {
 		auto viewsX = 1;
 		auto viewsY = 1;
 		if ((context->mode == SBS_Full || context->mode == SBS_Half
-			|| context->mode == RGB_Depth) &&
-			(context->fullscreen || context->maximized)) {
+			|| context->mode == RGB_Depth) && context->fullscreen) {
 			viewsX = 2;
 		} else if (context->mode == Free_View_Grid) {
 			viewsX = 2;
@@ -1439,8 +1438,7 @@ int Image::draw(Context* context) {
 
 		viewsX = 1;
 		if ((context->mode == SBS_Full || context->mode == SBS_Half
-			|| context->mode == RGB_Depth) &&
-				(context->fullscreen || context->maximized)) {
+			|| context->mode == RGB_Depth) && context->fullscreen) {
 			viewsX = 2;
 		}
 
