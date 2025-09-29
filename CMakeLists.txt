@@ -96,6 +96,7 @@ add_subdirectory(ThirdParty/libzmq EXCLUDE_FROM_ALL)
 add_subdirectory(ThirdParty/glm EXCLUDE_FROM_ALL)
 add_subdirectory(ThirdParty/fCWT EXCLUDE_FROM_ALL)
 
+
 if(WIN32)
     add_compile_options(-Wl,-Bstatic)
     add_executable(Rendepth WIN32 Assets/Rendepth.rc)
@@ -187,7 +188,7 @@ target_link_directories(Rendepth PUBLIC "\${ORIGIN}/../Library"
         ThirdParty/fCWT/libs)
 
 target_link_libraries(Rendepth PUBLIC
-        SDL3::SDL3 SDL3_ttf::SDL3_ttf SDL3_image::SDL3_image
+        SDL3::SDL3 SDL3_image::SDL3_image SDL3_ttf::SDL3_ttf
         libzmq-static fCWT glm omp)
 
 if(WIN32)
