@@ -72,21 +72,14 @@ set(BUILD_TESTING OFF)
 set(BUILD_SHARED_LIBS ON)
 
 if(WIN32)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libstdc++ -fopenmp -mavx -w -O3")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -static-libstdc++ -fopenmp -mavx -w -O3")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libstdc++ -mavx -w -O2")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -static-libstdc++ -mavx -w -O2")
 elseif(APPLE)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libstdc++ -Xclang -fopenmp -w -O3")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -static-libstdc++ -Xclang -fopenmp -w -O3")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libstdc++ -Xclang -w -O2")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -static-libstdc++ -Xclang -w -O2")
 elseif(UNIX)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libgcc -static-libstdc++ -fopenmp -mavx -w -O3")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -static-libgcc -static-libstdc++ -fopenmp -mavx -w -O3")
-endif()
-
-find_package(OpenMP)
-if (OPENMP_FOUND)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libgcc -static-libstdc++ -mavx -w -O2")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -static-libgcc -static-libstdc++ -mavx -w -O2")
 endif()
 
 add_subdirectory(ThirdParty/SDL EXCLUDE_FROM_ALL)
@@ -94,13 +87,10 @@ add_subdirectory(ThirdParty/SDL_ttf EXCLUDE_FROM_ALL)
 add_subdirectory(ThirdParty/SDL_image EXCLUDE_FROM_ALL)
 add_subdirectory(ThirdParty/libzmq EXCLUDE_FROM_ALL)
 add_subdirectory(ThirdParty/glm EXCLUDE_FROM_ALL)
-add_subdirectory(ThirdParty/fCWT EXCLUDE_FROM_ALL)
-
 
 if(WIN32)
     add_compile_options(-Wl,-Bstatic)
-    add_executable(Rendepth WIN32 Assets/Rendepth.rc)
-    target_sources(Rendepth PUBLIC ThirdParty/fCWT/src/fcwt/fcwt.cpp)
+    add_executable(Rendepth WIN32 Assets/Rendepth.rc Source/Main.cpp)
 elseif(APPLE)
     if(NOT RENDEPTH_MAC_BUNDLE)
         add_executable(Rendepth Source/Main.cpp)
@@ -117,7 +107,6 @@ elseif(APPLE)
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.2.2.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libfCWT.2.0.dylib ${CMAKE_SOURCE_DIR}/Library/libfCWT.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libglm.dylib ${CMAKE_SOURCE_DIR}/Library/libomp.dylib
                 ${CMAKE_SOURCE_DIR}/Legal/LICENSE)
         set_source_files_properties(
@@ -126,7 +115,6 @@ elseif(APPLE)
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.2.2.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libfCWT.2.0.dylib ${CMAKE_SOURCE_DIR}/Library/libfCWT.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libglm.dylib ${CMAKE_SOURCE_DIR}/Library/libomp.dylib
                 PROPERTIES
                 MACOSX_PACKAGE_LOCATION Library)
@@ -181,36 +169,22 @@ target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp
 target_include_directories(Rendepth PUBLIC
         ThirdParty/glm ThirdParty/SDL/include ThirdParty/SDL_image/include
         ThirdParty/SDL_ttf/include ThirdParty/SDL_shadercross/include
-        ThirdParty/fCWT/libs ThirdParty/fCWT/src ThirdParty/rapidjson/include
-        ThirdParty/libzmq/include ThirdParty/cppzmq)
+        ThirdParty/rapidjson/include ThirdParty/libzmq/include ThirdParty/cppzmq)
 
-target_link_directories(Rendepth PUBLIC "\${ORIGIN}/../Library"
-        ThirdParty/fCWT/libs)
+target_link_directories(Rendepth PUBLIC "\${ORIGIN}/../Library")
 
 target_link_libraries(Rendepth PUBLIC
-        SDL3::SDL3 SDL3_image::SDL3_image SDL3_ttf::SDL3_ttf
-        libzmq-static fCWT glm omp)
+        SDL3::SDL3 SDL3_ttf::SDL3_ttf SDL3_image::SDL3_image
+        libzmq-static glm)
 
 if(WIN32)
-    target_link_libraries(Rendepth PUBLIC fftw3f gomp pthread)
-    add_custom_command(TARGET Rendepth POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_SOURCE_DIR}/ThirdParty/fCWT/libs/fftw3f.dll
-        $<TARGET_FILE_DIR:Rendepth>)
+    target_link_libraries(Rendepth PUBLIC pthread)
     if(RENDEPTH_DLL_DIR)
         add_custom_command(TARGET Rendepth POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 ${RENDEPTH_DLL_DIR}/libgcc_s_seh-1.dll
-                ${RENDEPTH_DLL_DIR}/libgomp-1.dll
                 ${RENDEPTH_DLL_DIR}/libwinpthread-1.dll
                 $<TARGET_FILE_DIR:Rendepth>)
-    endif()
-elseif(APPLE)
-    if(RENDEPTH_OMP_DYLIB)
-        add_custom_command(TARGET Rendepth POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${RENDEPTH_OMP_DYLIB}/libomp.dylib
-                ${CMAKE_SOURCE_DIR}/Library)
     endif()
 elseif(UNIX)
     target_link_libraries(Rendepth PUBLIC stdc++)

@@ -102,6 +102,8 @@ export_dir = ""
 stereo_tags = ["_anaglyph", "_rgbd", "_sbs_half_width", "_sbs",
     "_free_view", "_qs", "_half_2x1", "_2x1"]
 
+cubevi_tags = ["_cv"]
+
 def append_export_path(dir):
     last_dir = os.path.basename(os.path.normpath(dir))
     if (last_dir != export_name):
@@ -160,6 +162,7 @@ from PIL import Image, ImageFile, ImageFilter
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 from torchsr.models import ninasr_b1
 from torchvision.transforms.functional import to_pil_image, to_tensor
+from moviepy import ImageClip
 
 directml_available = False
 if os.name == 'nt':
@@ -168,6 +171,7 @@ if os.name == 'nt':
         directml_available = True
     except ImportError:
         directml_available = False
+
 
 DepthAnyModule = importlib.import_module("Depth-Anything-V2.depth_anything_v2.dpt") 
 DepthAnythingV2 = DepthAnyModule.DepthAnythingV2
@@ -270,6 +274,12 @@ def file_is_tagged(file_name):
             return True
     return False
 
+def file_is_cubevi(file_name):
+    for tag in cubevi_tags:
+        if file_name.find(tag) >= 0:
+            return True
+    return False
+
 def generate_depth(in_file):
     if not in_file:
         print("Exiting. No File to Load.")
@@ -298,6 +308,15 @@ def generate_depth(in_file):
             return "ERROR"
    
     print("Attempting to Load:", in_file)
+
+    if file_is_cubevi(file_wo_ext):
+        export_file = file_wo_ext + ".mp4"
+        out_file = os.path.normpath(os.path.join(export_dir, export_file))
+        print("Try to save MP4:", out_file)
+        image_clip = ImageClip(in_file).with_duration(1)
+        image_clip.write_videofile(out_file, codec="libx264", fps=24, preset="ultrafast")
+        image_clip.close()
+        return out_file
 
     try:
         image_color = Image.open(in_file).convert('RGB')

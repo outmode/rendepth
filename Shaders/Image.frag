@@ -69,7 +69,8 @@ layout (set = 3, binding = 0) uniform ImageDataFrag {
 #define Side_By_Side_Half 5
 #define Stereo_Free_View_Grid 6
 #define Stereo_Free_View_LRL 7
-#define Grid_Array 8
+#define Light_Field_LKG 8
+#define Light_Field_CV 9
 
 const float stereoScale = 50000.0;
 const float zNear = 0.1;
@@ -270,6 +271,15 @@ vec3 getAnaglyphRight(vec3 color) {
 	return vec3(0.0, color.g, color.b);
 }
 
+int getQuiltRow(int row, int column, int view) {
+	if (type == Light_Field_LKG) {
+		return row - 1 - view / column;
+	} else if (type == Light_Field_CV) {
+		return view / column;
+	}
+	return 0;
+}
+
 void main() {
 	vec2 monoUV = vec2(fragUV.x * 0.5, fragUV.y);
 	vec2 depthUV = vec2(monoUV.x + 0.5, monoUV.y);
@@ -289,7 +299,7 @@ void main() {
 	} else if (type == Stereo_Free_View_LRL) {
 		monoUV = vec2(fragUV.x * 0.333, fragUV.y);
 		depthUV = vec2(monoUV.x + 0.333, monoUV.y);
-	} else if (type == Grid_Array) {
+	} else if (type == Light_Field_LKG || type == Light_Field_CV) {
 		gridLeftUV = vec2(fragUV.x / gridSize.x, fragUV.y / gridSize.y);
 		gridRightUV = gridLeftUV;
 		vec2 gridCenterUV = gridLeftUV;
@@ -301,12 +311,12 @@ void main() {
 		int gridSlide = int((gridAngle - 0.5) * float(gridCenter - gridStereo));
 		vec2 gridScale = vec2(1.0 / gridSize.x, 1.0 / gridSize.y);
 		int gridLeft = gridCenter - gridStereo + gridSlide;
-		vec2 gridOffset = vec2(gridLeft % gridCol, gridRow - 1 - gridLeft / gridCol);
+		vec2 gridOffset = vec2(gridLeft % gridCol, getQuiltRow(gridRow, gridCol, gridLeft));
 		gridLeftUV += gridScale * gridOffset;
 		int gridRight = gridCenter + gridStereo + gridSlide;
-		gridOffset = vec2(gridRight % gridCol, gridRow - 1 - gridRight / gridCol);
+		gridOffset = vec2(gridRight % gridCol, getQuiltRow(gridRow, gridCol, gridRight));
 		gridRightUV += gridScale * gridOffset;
-		gridOffset = vec2(gridCenter % gridCol, gridRow - 1 - gridCenter / gridCol);
+		gridOffset = vec2(gridCenter % gridCol, getQuiltRow(gridRow, gridCol, gridCenter));
 		gridCenterUV += gridScale * gridOffset;
 		monoUV = gridCenterUV;
 	}
@@ -358,7 +368,7 @@ void main() {
 			vec3 leftColor = getColor(imageTexture, monoUV).rgb;
 			vec3 rightColor = getColor(imageTexture, depthUV).rgb;
 			imageColor.rgb = combineStereoViews(leftColor, rightColor);
-		} else if (type == Grid_Array) {
+		} else if (type == Light_Field_LKG || type == Light_Field_CV) {
 			vec3 leftColor = getColor(imageTexture, gridLeftUV).rgb;
 			vec3 rightColor = getColor(imageTexture, gridRightUV).rgb;
 			imageColor.rgb = combineStereoViews(leftColor, rightColor);

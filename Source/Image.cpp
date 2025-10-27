@@ -56,26 +56,6 @@ glm::vec3 Image::getColor(SDL_Surface* surface, int x, int y) {
 	return { 0, 0, 0 };
 }
 
-double Image::getSimilarity(SDL_Surface* surface, int width, int height) {
-	std::vector<float> luminanceLeft{};
-	std::vector<float> luminanceRight{};
-
-	int midX = width / 2;
-	for (auto y = 0; y < height; y++) {
-		for (auto x = 0; x < midX; x++) {
-			auto colorLeft = getColor(surface, x, y);
-			auto colorRight = getColor(surface, x + midX, y);
-			auto lumLeft = Utils::getLuminance(colorLeft);
-			auto lumRight = Utils::getLuminance(colorRight);
-			luminanceLeft.push_back(lumLeft);
-			luminanceRight.push_back(lumRight);
-		}
-	}
-
-	auto complexSim = Utils::complexSimilarity(luminanceLeft, luminanceRight);
-	return complexSim;
-}
-
 glm::vec4 Image::getBackgroundColor(SDL_Surface* surface, int size, int width, int height) {
 	std::vector<glm::vec4> backgroundColors{};
 	Uint8 red, green, blue, alpha;
@@ -147,24 +127,18 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData) {
 	context->imageType = imageInfo.type;
 	context->imageSize = glm::vec2((float)imageData->w, (float)imageData->h);
 
-	auto ssim = imageInfo.similarity;
-	if (ssim < 0.0) {
-		auto ssimSize = blitSSIMTexture(imageData, imageData->w, imageData->h);
-		ssim = getSimilarity(ssimSurface, ssimSize.x, ssimSize.y);
-	}
-	if (ssim > similarityThreshold && untagged && imageInfo.type == Color_Only) {
-		auto sbsType = Utils::isFullWidth(context->imageSize) ? Side_By_Side_Full : Side_By_Side_Half;
-		imageInfo.type = sbsType;
-		context->imageType = sbsType;
-		context->mode = Mono;
-		imageDataFrag.mode = context->mode;
-		imageDataFrag.type = context->imageType;
-	}
-
 	if (context->imageType == Color_Plus_Depth || context->imageType == Side_By_Side_Full ||
-		context->imageType == Side_By_Side_Swap) context->imageSize.x /= 2;
-	else if (context->imageType == Grid_Array) {
+		context->imageType == Side_By_Side_Swap) {
+		context->imageSize.x /= 2;
+	} else if (context->imageType == Light_Field_LKG) {
 		auto gridSize = Core::getGridInfo(imageInfo.base);
+		context->gridSize = gridSize;
+		context->imageSize.x /= gridSize.x;
+		context->imageSize.y /= gridSize.y;
+	} else if (context->imageType == Light_Field_CV) {
+		glm::vec2 imageRes = { imageData->w, imageData->h };
+		imageRes /= glm::vec2(8.0, 5.0);
+		auto gridSize = glm::vec3(8.0f, 5.0f, imageRes.x / imageRes.y);
 		context->gridSize = gridSize;
 		context->imageSize.x /= gridSize.x;
 		context->imageSize.y /= gridSize.y;
@@ -340,23 +314,19 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 			return -1;
 		}
 
-		auto imageType = Core::getImageType(imageInfo.path);
-		auto untagged = imageType == Unknown_Format;
-
-		auto ssimSize = blitSSIMTexture(imageData, imageData->w, imageData->h);
-		auto ssim = getSimilarity(ssimSurface, ssimSize.x, ssimSize.y);
-		if (ssim > similarityThreshold && untagged && imageInfo.type == Color_Only) {
-			glm::vec2 imageRes = { imageData->w, imageData->h };
-			auto sbsType = Utils::isFullWidth(imageRes) ? Side_By_Side_Full : Side_By_Side_Half;
-			imageInfo.type = sbsType;
-			context->imageType = sbsType;
-		}
-
 		firstImageSize = glm::vec2((float)imageData->w, (float)imageData->h);
 		if (imageInfo.type == Color_Plus_Depth || imageInfo.type == Side_By_Side_Full ||
-			imageInfo.type == Side_By_Side_Swap) firstImageSize.x /= 2.0;
-		else if (imageInfo.type == Grid_Array) {
+			imageInfo.type == Side_By_Side_Swap) {
+			firstImageSize.x /= 2.0;
+		} else if (imageInfo.type == Light_Field_LKG) {
 			auto gridSize = Core::getGridInfo(imageInfo.base);
+			context->gridSize = gridSize;
+			firstImageSize.x /= gridSize.x;
+			firstImageSize.y /= gridSize.y;
+		} else if (imageInfo.type == Light_Field_CV) {
+			glm::vec2 imageRes = { imageData->w, imageData->h };
+			imageRes /= glm::vec2(8.0, 5.0);
+			auto gridSize = glm::vec3(8.0f, 5.0f, imageRes.x / imageRes.y);
 			context->gridSize = gridSize;
 			firstImageSize.x /= gridSize.x;
 			firstImageSize.y /= gridSize.y;
@@ -986,20 +956,6 @@ void Image::blitBlurTexture(Context* context, SDL_GPUTexture *inputTexture, Uint
 	SDL_ReleaseGPUFence(context->device, fence);
 }
 
-glm::ivec2 Image::blitSSIMTexture(SDL_Surface* inputSurface, int imageWidth, int imageHeight) {
-	static auto maxSize = 256.0;
-	auto maxDim = std::max(imageWidth, imageHeight);
-	auto scaleFactor = maxSize / maxDim;
-	scaleFactor = std::min(scaleFactor, 1.0);
-	auto ssimWidth = (int)((float)imageWidth * scaleFactor);
-	auto ssimHeight = (int)((float)imageHeight * scaleFactor);
-	SDL_DestroySurface(ssimSurface);
-	ssimSurface = SDL_CreateSurface(ssimWidth, ssimHeight, SDL_PIXELFORMAT_ABGR8888);
-	SDL_BlitSurfaceScaled(inputSurface, nullptr, ssimSurface,
-		nullptr, SDL_SCALEMODE_LINEAR);
-	return { ssimWidth, ssimHeight };
-}
-
 static SDL_GPUViewport getViewport(int view, int views, glm::vec2 rect) {
 	SDL_GPUViewport result{ 0, 0, rect.x, rect.y, 0, 0 };
 	auto viewWidth = rect.x / (float)views;
@@ -1018,7 +974,7 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 	if (context->imageType == Color_Only || context->imageType == Color_Anaglyph ||
 		(context->imageType != Color_Plus_Depth &&
 		(stereoFormat == Color_Only || stereoFormat == Color_Plus_Depth ||
-			stereoFormat == Grid_Array))) return -1;
+			stereoFormat == Light_Field_LKG || stereoFormat == Light_Field_CV))) return -1;
 
 	auto renderFormat = Left;
 	auto singleImageSize = context->imageSize;
@@ -1030,6 +986,10 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 	auto gridBoost = 8.0;
 	auto strengthStep = 0.0;
 	auto offsetStep = 0.0;
+	auto startX = 0;
+	auto startY = 0;
+	auto stepX = 1;
+	auto stepY = 1;
 
 	if (stereoFormat == Color_Only) {
 		renderFormat = Mono;
@@ -1060,16 +1020,34 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 		singleImageSize = singleImageSize * glm::vec2(0.5, 0.5);
 		viewsX = 3;
 		viewsY = 1;
-	} else if (stereoFormat == Grid_Array) {
-		viewsX = (int)exportGridDim.x;
-		viewsY = (int)exportGridDim.y;
+	} else if (stereoFormat == Light_Field_LKG) {
+		viewsX = (int)exportQuiltDimLKG.x;
+		viewsY = (int)exportQuiltDimLKG.y;
+		startY = viewsY - 1;
+		stepY = -1;
 		renderFormat = Left;
-		auto maxRes = exportGridMaxRes;
+		auto maxRes = exportQuiltMaxResLKG;
 		auto maxSize = std::max(singleImageSize.x, singleImageSize.y);
 		singleImageSize *= maxRes / maxSize;
 		singleImageSize.x = roundf(singleImageSize.x);
 		singleImageSize.y = roundf(singleImageSize.y);
-		viewportSize = singleImageSize * exportGridDim;
+		viewportSize = singleImageSize * exportQuiltDimLKG;
+		stereoStrength *= gridBoost;
+		stereoOffset *= gridBoost;
+		strengthStep = -stereoStrength * 2.0f / (float(viewsX * viewsY - 1));
+		offsetStep = -stereoOffset * 2.0f / (float(viewsX * viewsY - 1));
+	} else if (stereoFormat == Light_Field_CV) {
+		viewsX = (int)exportQuiltDimCV.x;
+		viewsY = (int)exportQuiltDimCV.y;
+		renderFormat = Left;
+		auto maxRes = exportQuiltMaxResCV;
+		auto portraitScale = (9.0 / 16.0) / (singleImageSize.x / singleImageSize.y);
+		singleImageSize *= portraitScale;
+		auto maxSize = std::max(singleImageSize.x, singleImageSize.y);
+		singleImageSize *= maxRes / maxSize;
+		singleImageSize.x = roundf(singleImageSize.x);
+		singleImageSize.y = roundf(singleImageSize.y);
+		viewportSize = singleImageSize * exportQuiltDimCV;
 		stereoStrength *= gridBoost;
 		stereoOffset *= gridBoost;
 		strengthStep = -stereoStrength * 2.0f / (float(viewsX * viewsY - 1));
@@ -1116,8 +1094,8 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 
 	SDL_GPURenderPass* renderPass = SDL_BeginGPURenderPass(commandBuffer, &colorTargetInfo, 1, nullptr);
 
-	for (auto renderY = viewsY - 1; renderY >= 0; renderY--) {
-		for (auto renderX = 0; renderX < viewsX; renderX++) {
+	for (auto renderY = startY; renderY >= 0 && renderY < viewsY; renderY += stepY) {
+		for (auto renderX = startX; renderX < viewsX; renderX += stepX) {
 			auto drawViewport = getViewportGrid(glm::vec2(renderX, renderY), singleImageSize);
 			SDL_SetGPUViewport(renderPass, &drawViewport);
 
@@ -1151,7 +1129,7 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 
 			drawImage(commandBuffer, renderPass);
 
-			if (stereoFormat == Grid_Array) {
+			if (stereoFormat == Light_Field_LKG || stereoFormat == Light_Field_CV) {
 				stereoStrength += strengthStep;
 				stereoOffset += offsetStep;
 			}
@@ -1185,13 +1163,20 @@ SDL_Surface* Image::getExportTexture(Context* context, StereoFormat stereoFormat
 		stereoImageSize = context->imageSize;
 	} else if (stereoFormat == Stereo_Free_View_LRL) {
 		stereoImageSize = context->imageSize * glm::vec2(1.5, 0.5);
-	} else if (stereoFormat == Grid_Array) {
-		auto maxRes = exportGridMaxRes;
+	} else if (stereoFormat == Light_Field_LKG) {
+		auto maxRes = exportQuiltMaxResLKG;
 		auto maxSize = std::max(stereoImageSize.x, stereoImageSize.y);
 		stereoImageSize *= maxRes / maxSize;
 		stereoImageSize.x = roundf(stereoImageSize.x);
 		stereoImageSize.y = roundf(stereoImageSize.y);
-		stereoImageSize = stereoImageSize * exportGridDim;
+		stereoImageSize = stereoImageSize * exportQuiltDimLKG;
+	} else if (stereoFormat == Light_Field_CV) {
+		auto maxRes = exportQuiltMaxResCV;
+		auto maxSize = std::max(stereoImageSize.x, stereoImageSize.y);
+		stereoImageSize *= maxRes / maxSize;
+		stereoImageSize.x = roundf(stereoImageSize.x);
+		stereoImageSize.y = roundf(stereoImageSize.y);
+		stereoImageSize = stereoImageSize * exportQuiltDimCV;
 	}
 
 	SDL_GPUTransferBufferCreateInfo transferBufferInfo {

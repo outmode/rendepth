@@ -141,7 +141,6 @@ public:
 	inline static std::vector<std::string> optionsLabels{};
 	inline static const int maxImageSize = 16384;
 	inline static auto gridSize = 8;
-	inline static auto similarityThreshold = 0.67;
 
 	static int init(Context* context, FileInfo& imageInfo);
 	static int load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData);
@@ -154,14 +153,12 @@ public:
 	static int uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTexture** gpuTexture,
 			const std::string& textureName);
 	static void blitBlurTexture(Context* context, SDL_GPUTexture *inputTexture, Uint32 imageWidth, Uint32 imageHeight);
-	static glm::ivec2 blitSSIMTexture(SDL_Surface* inputSurface, int imageWidth, int imageHeight);
 	static int renderStereoImage(Context* context, StereoFormat stereoFormat);
 	static SDL_Surface* getExportTexture(Context* context, StereoFormat stereoFormat);
 	static glm::vec2 getIconCoordinates(IconType iconType);
 	static glm::vec2 updateRatio(Context* context, glm::vec2 windowSize);
 	static void updateSize(Context* context);
 	static glm::vec4 getBackgroundColor(SDL_Surface* surface, int size, int width, int height);
-	static double getSimilarity(SDL_Surface* surface, int width, int height);
 	static glm::vec3 getColor(SDL_Surface* surface, int x, int y);
 	static int initFonts(Context* context);
 	static void initMenuTexture();

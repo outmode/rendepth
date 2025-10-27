@@ -114,7 +114,6 @@ auto slideshowWaitTime = 8.0;
 auto lastSlideshowTime = 0.0;
 auto displayTipTime = 0.0;
 auto displayTipWait = 2.0;
-auto similarityThreshold = 0.67;
 auto swapLeftRight = false;
 auto mouseLeftWindow = false;
 auto mouseIsDown = false;
@@ -138,7 +137,7 @@ Style style;
 std::vector<FileInfo> fileList{};
 auto fileIndex = 0;
 auto preloadDir = 1;
-auto doingPreload = false;
+std::atomic doingPreload = false;
 static SDL_Thread* preloadThread = nullptr;
 static AsyncData asyncData{};
 
@@ -165,6 +164,13 @@ static std::uniform_int_distribution randEffect(0, 1);
 static std::uniform_int_distribution randImage(0);
 static int nextRandIndex = -1;
 static int currentRandIndex = -1;
+
+enum GenMode {
+	SINGLE_IMAGE = 0,
+	BATCH_FOLDER = 1,
+	REAL_TIME = 2,
+	VIDEO_FRAME = 3
+};
 
 static glm::vec2 refreshWindowSize();
 static void setMaximize(bool maximize = true);
@@ -219,8 +225,7 @@ void gotoPreviousImage() {
 	preloadDir = -1;
 	auto previousIndex = previousFileIndex();
 	if (display3D) {
-		if (fileList[previousIndex].type == Color_Only &&
-			fileList[previousIndex].similarity <= similarityThreshold) {
+		if (fileList[previousIndex].type == Color_Only) {
 			fileIndex = previousIndex;
 			SDL_DestroySurface(fileList[fileIndex].preload);
 			fileList[fileIndex].preload = nullptr;
@@ -243,8 +248,7 @@ void gotoNextImage() {
 	preloadDir = 1;
 	auto nextIndex = nextFileIndex();
 	if (display3D) {
-		if (fileList[nextIndex].type == Color_Only &&
-			fileList[nextIndex].similarity <= similarityThreshold) {
+		if (fileList[nextIndex].type == Color_Only) {
 			fileIndex = nextIndex;
 			SDL_DestroySurface(fileList[fileIndex].preload);
 			fileList[fileIndex].preload = nullptr;
@@ -299,8 +303,7 @@ void gotoRandomImage() {
 	nextRandIndex = getRandImageIndex();
 	preloadDir = 0;
 	if (display3D || preferredStereoMode == Depth_Zoom) {
-		if (fileList[randIndex].type == Color_Only &&
-			fileList[randIndex].similarity <= similarityThreshold) {
+		if (fileList[randIndex].type == Color_Only) {
 			fileIndex = randIndex;
 			SDL_DestroySurface(fileList[randIndex].preload);
 			fileList[randIndex].preload = nullptr;
@@ -334,7 +337,7 @@ static void toggleOptions();
 static void toggleStereo();
 static void toggleStereoSettings();
 static void parseFileList(const std::vector<std::string>& filesToLoad);
-static int callDepthGenOnce(const std::string& fileFolderPath, bool realTime, int imageId = -1);
+static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int imageId = -1);
 static int loadImage(void* ptr);
 static void conversionCompleted(const char* path, int imageId = -1);
 
@@ -714,7 +717,7 @@ Choice ChoiceStereo {
 Choice ChoiceExport {
 	"Export Format",
 	{ "Anaglyph", "Color + Depth", "SBS Full", "SBS Half",
-		"Free View", "Free View LRL","Light Field", "Color Only" },
+		"Free View", "Free View LRL", "Light Field LKG", "Light Field CV" },
 };
 
 Choice ChoiceModel {
@@ -744,7 +747,7 @@ Choice ChoiceSlideshow {
 
 Choice ChoiceTags {
 	"Add 3D Tag",
-	{ "Original", "SBS Full", "SBS Half", "Color Only" },
+	{ "Original", "Anaglyph", "SBS Full", "SBS Half" },
 };
 
 Choice ChoiceEyes {
@@ -792,9 +795,9 @@ static void changeStereo(int option) {
 
 static std::array exportFormats = {
 	Color_Anaglyph, Color_Plus_Depth, Side_By_Side_Full, Side_By_Side_Half,
-	Stereo_Free_View_Grid, Stereo_Free_View_LRL, Grid_Array, Color_Only };
+	Stereo_Free_View_Grid, Stereo_Free_View_LRL, Light_Field_LKG, Light_Field_CV };
 static std::array exportTags = { "anaglyph",  "rgbd", "sbs", "sbs_half_width",
-	"free_view", "free_view_lrl", "qs", "rgb" };
+	"free_view", "free_view_lrl", "qs", "cv" };
 static void changeExport(int option) {
 	exportFormat = exportFormats[option];
 	exportTag = exportTags[option];
@@ -826,7 +829,7 @@ static bool addStereoTag(const std::string& link, const std::string& tag) {
 	return success;
 }
 
-static std::array importTags = { "", "sbs", "sbs_half_width", "rgb" };
+static std::array importTags = { "", "anaglyph", "sbs", "sbs_half_width" };
 static void changeImport(int option, bool init) {
 	std::string tag = importTags[option];
 	if (!init && !fileList.empty())
@@ -1094,10 +1097,10 @@ static void saveFile() {
 	auto data = Image::getExportTexture(&context, exportFormat);
 	auto exportDir = std::filesystem::path(context.fileLink).parent_path();
 	if (exportDir.filename() != exportFolderName) exportDir = exportDir / exportFolderName;
-	const std::string exportType = "jpg";
+	std::string exportType = "jpg";
 
 	std::string gridInfo;
-	if (exportFormat == Grid_Array) {
+	if (exportFormat == Light_Field_LKG) {
 		std::string aspect = std::format("{:.3f}", context.imageSize.x / context.imageSize.y);
 		gridInfo = "9x8a" + aspect;
 	}
@@ -1108,6 +1111,11 @@ static void saveFile() {
 	auto outputPath = exportDir / outFilePath;
 	IMG_SaveJPG(data, outputPath.string().c_str(), 65);
 	SDL_DestroySurface(data);
+
+	if (exportFormat == Light_Field_CV) {
+		nextFileToConvert = outputPath.string();
+		nextIndexToConvert = -1;
+	}
 
 	auto nameMaxLen = 26;
 	auto displayName = outFileName;
@@ -1485,7 +1493,6 @@ static void pushFileInfo(const std::filesystem::path& filePath) {
 		info.date = std::format("{:%Y-%m-%d}", modifiedTime);
 		info.modified = modifiedTime;
 		info.preload = nullptr;
-		info.similarity = -1.0;
 		info.type = Core::getImageType(info.name);
 		if (info.type == Unknown_Format) info.type = Color_Only;
 		fileList.push_back(info);
@@ -1540,18 +1547,6 @@ static void parseFileList(const std::vector<std::string>& filesToLoad) {
 void preloadComplete(SDL_Surface* preloadData, FileInfo& preloadFile) {
 	SDL_DestroySurface(preloadFile.preload);
 	preloadFile.preload = preloadData;
-	auto imageType = Core::getImageType(preloadFile.path);
-	auto untagged = imageType == Unknown_Format;
-	if (untagged && preloadFile.similarity < 0.0) {
-		auto ssimSize = Image::blitSSIMTexture(preloadData,
-			preloadData->w, preloadData->h);
-		auto ssim = Image::getSimilarity(Image::ssimSurface, ssimSize.x, ssimSize.y);
-		preloadFile.similarity = ssim;
-		if (ssim > similarityThreshold) {
-			glm::vec2 imageRes = {preloadData->w, preloadData->h };
-			preloadFile.preloadType = Utils::isFullWidth(imageRes) ? Side_By_Side_Full : Side_By_Side_Half;
-		}
-	}
 }
 
 void preloadImage(int overrideId = -1) {
@@ -1562,6 +1557,7 @@ void preloadImage(int overrideId = -1) {
 	if (overrideId >= 0) preloadId = overrideId;
 	if (doingPreload) endPreload(true);
 	if (preloadId == fileIndex) return;
+	if (fileList[preloadId].preload != nullptr) return;
 	asyncData.path = fileList[preloadId].path;
 	asyncData.surface = nullptr;
 	asyncData.fileIndex = preloadId;
@@ -1769,6 +1765,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		doneLoadingImage = false;
 		refreshDisplay3D(fileList[fileIndex].type);
 		Image::updateSize(&context);
+		context.offset = glm::vec2(0.0f);
 		currentZoom = 1.0;
 		targetZoom = 1.0;
 		currentVisibility = 0.0;
@@ -1783,9 +1780,9 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		auto fileType = Core::getImageType(
 			std::filesystem::path(fileList[fileIndex].path).filename().string());
 		if (fileType == Unknown_Format) menuSelection[ChoiceTags.label] = 0;
-		else if (fileType == Side_By_Side_Full) menuSelection[ChoiceTags.label] = 1;
-		else if (fileType == Side_By_Side_Half) menuSelection[ChoiceTags.label] = 2;
-		else if (fileType == Color_Only) menuSelection[ChoiceTags.label] = 3;
+		else if (fileType == Color_Anaglyph) menuSelection[ChoiceTags.label] = 1;
+		else if (fileType == Side_By_Side_Full) menuSelection[ChoiceTags.label] = 2;
+		else if (fileType == Side_By_Side_Half) menuSelection[ChoiceTags.label] = 3;
 		else menuChoices[8].active = false;
 		if (isPlayingSlideshow) preloadImage(nextRandIndex);
 		else preloadImage();
@@ -1932,7 +1929,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 					Image::displayTip = true;
 					displayTipTime = getTimeNow();
 				} else {
-					auto result = callDepthGenOnce(fileListPath.string(), false, -1);
+					auto result = callDepthGenOnce(fileListPath.string(), BATCH_FOLDER, -1);
 					if (result == 0) {
 						auto nameMaxLen = 18;
 						if (displayName.length() > nameMaxLen) {
@@ -1996,11 +1993,12 @@ void checkMouseState() {
 		auto displayLoading = !(icon.type == IconType::Loading && (!isConverting || isPlayingSlideshow));
 		auto displaySettings = !(icon.type == IconType::Settings &&
 			(!display3D || currentStereoMode == Depth_Zoom || preferredStereoMode == RGB_Depth ||
-				(!fileList.empty() && fileList[fileIndex].type != Color_Plus_Depth && fileList[fileIndex].type != Grid_Array)));
+				(!fileList.empty() && fileList[fileIndex].type != Color_Plus_Depth && fileList[fileIndex].type != Light_Field_LKG &&
+					fileList[fileIndex].type != Light_Field_CV)));
 		auto displayStereo = !((icon.type == IconType::Glasses || icon.type == IconType::Focus ||
 			icon.type == IconType::Layers) && (!showingStereoSettings || !display3D));
 		auto displayParallax = !(icon.type == IconType::Focus &&
-			(!fileList.empty() && fileList[fileIndex].type == Grid_Array));
+			(!fileList.empty() && (fileList[fileIndex].type == Light_Field_LKG || fileList[fileIndex].type == Light_Field_CV)));
 		auto displayOpen = !((icon.type != IconType::File && icon.type != IconType::Close)
 			&& fileList.empty());
 		auto displayMenu = !(context.displayMenu && (icon.type == IconType::Forward || icon.type == IconType::Back ||
@@ -2143,7 +2141,8 @@ static void deleteTempFiles(const std::filesystem::path& folder) {
 	if (!exists(folder)) return;
 	for (const auto& entry : std::filesystem::directory_iterator(folder)) {
 		const auto& currentFile = entry.path();
-		if (currentFile.extension() == ".jpg") {
+		if (currentFile.extension() == ".jpg" ||
+			currentFile.extension() == ".mp4") {
 			std::filesystem::remove(currentFile);
 		}
 	}
@@ -2198,7 +2197,20 @@ static int depthPipeRun(void* ptr) {
 			zmq::message_t message;
 			auto result = signalSend.recv(message, zmq::recv_flags::none);
 			auto reply = message.to_string();
-			if (reply != "ERROR") {
+			std::filesystem::path resultPath = reply;
+			if (resultPath.extension() == ".mp4") {
+				nextFileToConvert.clear();
+				nextIndexToConvert = -1;
+				isConverting = false;
+				auto resultFileName = resultPath.filename();
+				auto exportDir = std::filesystem::path(context.fileLink).parent_path();
+				if (exportDir.filename() != exportFolderName) exportDir = exportDir / exportFolderName;
+				try {
+					std::filesystem::copy(resultPath, exportDir / resultFileName,
+						std::filesystem::copy_options::overwrite_existing);
+				} catch (const std::filesystem::filesystem_error& e) {
+				}
+			} else if (reply != "ERROR") {
 				conversionCompleted(reply.c_str(), nextIndexToConvert);
 			} else {
 				depthPipeError = true;
@@ -2214,7 +2226,7 @@ static void	setupDepthSignal() {
 	signalEndpoint = signalSend.get(zmq::sockopt::last_endpoint);
 }
 
-static int callDepthGenOnce(const std::string& fileFolderPath, bool realTime, int imageId) {
+static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int imageId) {
 	auto packagePath = homePath / packageFolder;
 	auto depthPath = packagePath / depthGenExe;
 
@@ -2233,13 +2245,13 @@ static int callDepthGenOnce(const std::string& fileFolderPath, bool realTime, in
 	Image::displayTip = true;
 	displayTipTime = getTimeNow();
 
-	std::string service = realTime ? "2" : "0";
+	std::string service = std::to_string(genMode);
 	depthCommand = "--model " + qualityMode + " --depth " + depthSize +
 		" --upscale " + upscaleResolution + " --maxsize " + std::to_string(Image::maxImageSize) +
 		" --mode " + service + " --base " + exePath.string() +
 		" --home " + homePath.string() + " --input \"";
 	depthCommand += fileFolderPath + "\"";
-	if (realTime) {
+	if (genMode == REAL_TIME) {
 		setupDepthSignal();
 		depthCommand += " --endpoint " + signalEndpoint;
 	}
@@ -2250,7 +2262,7 @@ static int callDepthGenOnce(const std::string& fileFolderPath, bool realTime, in
 	depthGenThread = SDL_CreateThread(depthGenRun, "depthGenRun", &depthCommand);
 	SDL_DetachThread(depthGenThread);
 
-	if (realTime) {
+	if (genMode == REAL_TIME) {
 		nextFileToConvert = fileFolderPath;
 		nextIndexToConvert = imageId;
 		depthPipeAlive = true;
@@ -2263,7 +2275,7 @@ static int callDepthGenOnce(const std::string& fileFolderPath, bool realTime, in
 static void callDepthGen(int imageIndex) {
 	isConverting = true;
 	if (!depthPipeAlive) {
-		callDepthGenOnce(fileList[imageIndex].link, true, imageIndex);
+		callDepthGenOnce(fileList[imageIndex].link, REAL_TIME, imageIndex);
 	} else {
 		nextFileToConvert = fileList[imageIndex].link;
 		nextIndexToConvert = imageIndex;

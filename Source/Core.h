@@ -57,7 +57,8 @@ enum StereoFormat {
 	Side_By_Side_Half,
 	Stereo_Free_View_Grid,
 	Stereo_Free_View_LRL,
-	Grid_Array,
+	Light_Field_LKG,
+	Light_Field_CV,
 	Unknown_Format
 };
 
@@ -94,14 +95,18 @@ static inline std::vector<std::pair<std::string, StereoFormat>> tagType = {
 	{ "_sbs", Side_By_Side_Full },
 	{ "_free_view_lrl", Stereo_Free_View_LRL },
 	{ "_free_view", Stereo_Free_View_Grid },
-	{ "_qs", Grid_Array },
+	{ "_qs", Light_Field_LKG },
+	{ "_quilt_cv", Light_Field_CV },
 	{ "_half_2x1", Side_By_Side_Half },
 	{ "_2x1", Side_By_Side_Full },
 	{ ".jps", Side_By_Side_Swap },
 	{ ".pns", Side_By_Side_Swap } };
 
-static inline glm::vec2 exportGridDim = glm::ivec2(9, 8);
-static inline float exportGridMaxRes = 864.0;
+static inline glm::vec2 exportQuiltDimLKG = glm::ivec2(9, 8);
+static inline float exportQuiltMaxResLKG = 864.0;
+
+static inline glm::vec2 exportQuiltDimCV = glm::ivec2(8, 5);
+static inline float exportQuiltMaxResCV = 960.0;
 
 struct SpriteDataVert {
 	glm::mat4 transform;
@@ -238,13 +243,13 @@ struct FileInfo {
 	StereoFormat type;
 	StereoFormat preloadType;
 	SDL_Surface* preload;
-	double similarity;
 };
 
 struct AsyncData {
 	std::string path;
 	SDL_Surface* surface;
 	int fileIndex;
+	bool done;
 };
 
 class Core {

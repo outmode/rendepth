@@ -36,18 +36,6 @@ public:
 	static double tween(double value, double target, double speed);
 	static glm::vec2 getCanvasPosition(const Context* context, const Canvas* canvas,
 		const Canvas* slider = nullptr, const glm::vec2& aspectScale = glm::vec2(1.0f));
-	static float getLuminance(glm::vec3 color);
-	static float getDistance(glm::vec3 a, glm::vec3 b);
-	static float getMean(const std::vector<float>& values);
-	static float getVariance(const std::vector<float>& values, float mean);
-	static float getCovariance(const std::vector<float>& valuesA, const std::vector<float>& valuesB,
-		float meanA, float meanB);
-	static float getSumAbs(const std::vector<float>& values);
-	static std::complex<float> getSumComplexAbs(const std::vector<std::complex<float>>& valuesA, std::vector<std::complex<float>>& valuesB);
-	static std::complex<float> getSumComplexAbsSq(const std::vector<std::complex<float>>& valuesA);
-	static std::complex<float> getSumComplexConj(const std::vector<std::complex<float>>& valuesA, const std::vector<std::complex<float>>& valuesB);
-	static std::complex<float> getSumComplexConjAbs(const std::vector<std::complex<float>>& valuesA, std::vector<std::complex<float>>& valuesB);
-	static float complexSimilarity(std::vector<float> valuesA, std::vector<float>& valuesB);
 };
 
 #endif

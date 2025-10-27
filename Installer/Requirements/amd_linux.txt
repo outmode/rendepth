@@ -2,6 +2,7 @@ numpy==2.2.6
 opencv-python==4.11.0.86
 pillow==11.2.1
 pyzmq==26.4.0
+moviepy==2.2.1
 torchsr==1.0.4
 --extra-index-url https://download.pytorch.org/whl/rocm6.3
 torch==2.7.0+rocm6.3
