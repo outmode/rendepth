@@ -96,7 +96,7 @@ static inline std::vector<std::pair<std::string, StereoFormat>> tagType = {
 	{ "_free_view_lrl", Stereo_Free_View_LRL },
 	{ "_free_view", Stereo_Free_View_Grid },
 	{ "_qs", Light_Field_LKG },
-	{ "_quilt_cv", Light_Field_CV },
+	{ "_cv", Light_Field_CV },
 	{ "_half_2x1", Side_By_Side_Half },
 	{ "_2x1", Side_By_Side_Full },
 	{ ".jps", Side_By_Side_Swap },
