@@ -8,7 +8,6 @@
 /Library/*
 
 # Shader Export
-/Shaders/Compiled/
 /Shaders/Temp/
 
 # App Settings
