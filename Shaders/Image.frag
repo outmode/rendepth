@@ -75,7 +75,7 @@ layout (set = 3, binding = 0) uniform ImageDataFrag {
 const float stereoScale = 50000.0;
 const float zNear = 0.1;
 const float zFar = 100.0;
-const float depthSamples[5] = { 0.16, 0.27, 0.41, 0.66, 1.0 };
+const float depthSamples[5] = { 0.125, 0.250, 0.375, 0.500, 0.625 };
 const int sampleCount = 5;
 const mat3 leftFilter = mat3(
 	vec3(0.4561, 0.500484, 0.176381),
@@ -88,6 +88,7 @@ const mat3 rightFilter = mat3(
 const vec3 gammaMap = vec3(1.6, 0.8, 1.0);
 const int blurRange = 2;
 const float blurOffsets[5] = float[5](0.0, 1.0, 3.0, 7.0, 16.0);
+const float uvGutter = 0.001;
 
 vec3 fromLinear(vec3 linearRGB) {
 	bvec3 cutoff = lessThan(linearRGB.rgb, vec3(0.0031308));
@@ -107,6 +108,11 @@ vec3 toLinear(vec3 sRGB) {
 
 vec4 getColor(sampler2D tex, vec2 uv) {
 	vec4 color = texture(tex, uv, 0.0).rgba;
+	return color;
+}
+
+vec4 getColorOffset(sampler2D tex, vec2 uv, vec2 offset) {
+	vec4 color = texture(tex, uv + offset, 0.0).rgba;
 	return color;
 }
 
@@ -184,14 +190,18 @@ vec3 combineStereoViews(vec3 leftColor, vec3 rightColor) {
 	return result;
 }
 
+vec2 clampEdge(vec2 inUV, vec2 minUV, vec2 maxUV) {
+	const float edgeStretch = 0.333;
+	if (inUV.x < minUV.x + uvGutter) inUV.x = (minUV.x - inUV.x) * edgeStretch;
+	if (inUV.x > maxUV.x - uvGutter) inUV.x = maxUV.x + (maxUV.x - inUV.x) * edgeStretch;
+	return clamp(inUV, minUV, maxUV);
+}
+
 vec3 generateStereoImage(vec2 inUV) {
-	float minDepthLeft = 1.0;
-	float minDepthRight = 1.0;
 	vec2 uv = vec2(0.0);
 
 	vec2 screenUV = inUV;
 
-	float uvGutter = 0.001;
 	vec2 minUV = vec2(uvGutter, 0.0);
 	vec2 maxUV = vec2(1.0 - uvGutter, 1.0);
 
@@ -207,22 +217,25 @@ vec3 generateStereoImage(vec2 inUV) {
 
 	float aspect = imageSize.x / imageSize.y;
 
-	float originalDepth = getDepth(imageTexture, clamp(depthUV, minUVDepth, maxUVDepth));
+	float centerDepth = getDepth(imageTexture, clampEdge(depthUV, minUVDepth, maxUVDepth));
+
+	float minDepthLeft = centerDepth;
+	float minDepthRight = centerDepth;
 
 	for (int i = 0; i < sampleCount; ++i) {
 		uv.x = (depthSamples[i] * stereoStrength / aspect) / stereoScale + stereoOffset;
-		minDepthLeft = min(minDepthLeft, getDepth(imageTexture, clamp(depthUV + uv, minUVDepth, maxUVDepth)));
-		minDepthRight = min(minDepthRight, getDepth(imageTexture, clamp(depthUV - uv, minUVDepth, maxUVDepth)));
+		minDepthLeft = min(minDepthLeft, getDepth(imageTexture, clampEdge(depthUV + uv, minUVDepth, maxUVDepth)));
+		minDepthRight = min(minDepthRight, getDepth(imageTexture, clampEdge(depthUV - uv, minUVDepth, maxUVDepth)));
 	}
-
-	minDepthLeft = min(minDepthLeft, originalDepth);
-	minDepthRight = min(minDepthRight, originalDepth);
 
 	float parallaxLeft = (stereoStrength / aspect * getParallax(minDepthLeft)) / stereoScale + stereoOffset;
 	float parallaxRight = (stereoStrength / aspect * getParallax(minDepthRight)) / stereoScale + stereoOffset;
 
-	vec3 colorLeft = getColor(imageTexture, clamp(colorUV + vec2(parallaxLeft, 0.0), minUVColor, maxUVColor)).rgb;
-	vec3 colorRight = getColor(imageTexture, clamp(colorUV  - vec2(parallaxRight, 0.0), minUVColor, maxUVColor)).rgb;
+	vec2 pixelSize = 1.0 / windowSize;
+	vec3 colorLeft = getColorOffset(imageTexture, clampEdge(colorUV + vec2(parallaxLeft, 0.0),
+		minUVColor, maxUVColor), vec2(pixelSize.x * 0.25, 0.0)).rgb;
+	vec3 colorRight = getColorOffset(imageTexture, clampEdge(colorUV - vec2(parallaxRight, 0.0),
+		minUVColor, maxUVColor), vec2(-pixelSize.x * 0.25, 0.0)).rgb;
 
 	return combineStereoViews(colorLeft, colorRight);
 }
@@ -232,14 +245,13 @@ vec2 effectZoom(vec2 uv, vec2 depthUV) {
 	float depth = getColor(imageTexture, depthUV).r;
 	vec2 dir = uv - 0.5;
 	dir.x *= 0.5;
-	int samples = 2;
+	int samples = 3;
 	vec2 offset = (dir * parallax) / samples;
 	vec2 result = depthUV;
-	while (--samples > 0) {
-		result -= depth * offset;
+	while (samples-- > 0) {
 		depth = min(depth, getColor(imageTexture, result).r);
+		result -= depth * offset;
 	}
-	result -= depth * offset;
 	return result * vec2(2.0, 1.0) - vec2(1.0, 0.0);
 }
 
@@ -248,14 +260,13 @@ vec2 effectDolly(vec2 uv, vec2 depthUV) {
 	float depth = 1.0 - getColor(imageTexture, depthUV).r;
 	vec2 dir = uv - 0.5;
 	dir.x *= 0.5;
-	int samples = 2;
+	int samples = 3;
 	vec2 offset = (dir * parallax) / samples;
 	vec2 result = depthUV;
-	while (--samples > 0) {
-		result += depth * offset;
+	while (samples-- > 0) {
 		depth = min(depth, 1.0 - getColor(imageTexture, result).r);
+		result += depth * offset;
 	}
-	result += depth * offset;
 	return result * vec2(2.0, 1.0) - vec2(1.0, 0.0);
 }
 
