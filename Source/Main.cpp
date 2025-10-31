@@ -128,6 +128,7 @@ StereoFormat exportFormat = Color_Anaglyph;
 std::string exportTag = "anaglyph";
 EyesFormat eyesFormat = Left_Right;
 SortOrder sortOrder = Alpha_Ascending;
+
 std::string exportFolderName = "3D Export";
 std::string infoSettingKey = "Display Info";
 std::string borderlessSettingKey = "Borderless Window";
@@ -746,8 +747,8 @@ Choice ChoiceSlideshow {
 };
 
 Choice ChoiceTags {
-	"Add 3D Tag",
-	{ "Original", "Anaglyph", "SBS Full", "SBS Half" },
+	"Default 3D Detection",
+	{ "Color Only", "Anaglyph", "SBS Full", "SBS Half" },
 };
 
 Choice ChoiceEyes {
@@ -829,11 +830,13 @@ static bool addStereoTag(const std::string& link, const std::string& tag) {
 	return success;
 }
 
-static std::array importTags = { "", "anaglyph", "sbs", "sbs_half_width" };
+static std::array importTags = { Color_Only, Color_Anaglyph, Side_By_Side_Full, Side_By_Side_Half };
 static void changeImport(int option, bool init) {
-	std::string tag = importTags[option];
-	if (!init && !fileList.empty())
-		addStereoTag(fileList[fileIndex].link, tag);
+	Core::defaultImportFormat = importTags[option];
+	if (!init && !fileList.empty()) {
+		parseFileList({ fileList[fileIndex].link });
+		loadImage(nullptr);
+	}
 }
 
 static std::array eyesFormats = {
@@ -1494,7 +1497,7 @@ static void pushFileInfo(const std::filesystem::path& filePath) {
 		info.modified = modifiedTime;
 		info.preload = nullptr;
 		info.type = Core::getImageType(info.name);
-		if (info.type == Unknown_Format) info.type = Color_Only;
+		if (info.type == Unknown_Format) info.type = Core::defaultImportFormat;
 		fileList.push_back(info);
 	}
 }
@@ -1777,13 +1780,10 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		lastSlideshowTime = timeNow;
 		menuChoices[8].active = true;
 		menuSelection[ChoiceTags.label] = 0;
-		auto fileType = Core::getImageType(
-			std::filesystem::path(fileList[fileIndex].path).filename().string());
-		if (fileType == Unknown_Format) menuSelection[ChoiceTags.label] = 0;
-		else if (fileType == Color_Anaglyph) menuSelection[ChoiceTags.label] = 1;
-		else if (fileType == Side_By_Side_Full) menuSelection[ChoiceTags.label] = 2;
-		else if (fileType == Side_By_Side_Half) menuSelection[ChoiceTags.label] = 3;
-		else menuChoices[8].active = false;
+		if (Core::defaultImportFormat == Color_Only) menuSelection[ChoiceTags.label] = 0;
+		else if (Core::defaultImportFormat == Color_Anaglyph) menuSelection[ChoiceTags.label] = 1;
+		else if (Core::defaultImportFormat == Side_By_Side_Full) menuSelection[ChoiceTags.label] = 2;
+		else if (Core::defaultImportFormat == Side_By_Side_Half) menuSelection[ChoiceTags.label] = 3;
 		if (isPlayingSlideshow) preloadImage(nextRandIndex);
 		else preloadImage();
 		if (display3D && !isFullscreen && showGoFullScreenOnce && (context.mode == SBS_Full ||

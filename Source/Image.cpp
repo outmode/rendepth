@@ -122,8 +122,7 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData) {
 	context->fileLink = imageInfo.link;
 	context->fileName = imageInfo.base;
 	imageInfo.type = Core::getImageType(imageInfo.path);
-	auto untagged = imageInfo.type == Unknown_Format;
-	if (untagged) imageInfo.type = Color_Only;
+	if (imageInfo.type == Unknown_Format) imageInfo.type = Core::defaultImportFormat;
 	context->imageType = imageInfo.type;
 	context->imageSize = glm::vec2((float)imageData->w, (float)imageData->h);
 

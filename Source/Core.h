@@ -271,6 +271,7 @@ public:
 	static std::filesystem::path getHomeDirectory();
 	inline static SDL_GPUShaderFormat gpuShaderFormat = SDL_GPU_SHADERFORMAT_INVALID;
 	inline static std::string lastDrawnText;
+	inline static StereoFormat defaultImportFormat = Color_Only;
 };
 
 #endif
