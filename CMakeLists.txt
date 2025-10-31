@@ -142,24 +142,25 @@ elseif(UNIX)
     add_executable(Rendepth Source/Main.cpp)
 endif()
 
-if(WIN32)
-    add_custom_target(Shaders
-            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/Shaders
-            COMMAND compile_windows.bat
-            VERBATIM)
-elseif(APPLE)
-    add_custom_target(Shaders
-            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/Shaders
-            COMMAND ${CMAKE_SOURCE_DIR}/Shaders/compile_macos.sh
-            VERBATIM)
-elseif(UNIX)
-    add_custom_target(Shaders
-            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/Shaders
-            COMMAND ${CMAKE_SOURCE_DIR}/Shaders/compile_linux.sh
-            VERBATIM)
+if(RENDEPTH_COMPILE_SHADERS)
+    if(WIN32)
+        add_custom_target(Shaders
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/Shaders
+                COMMAND compile_windows.bat
+                VERBATIM)
+    elseif(APPLE)
+        add_custom_target(Shaders
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/Shaders
+                COMMAND ${CMAKE_SOURCE_DIR}/Shaders/compile_macos.sh
+                VERBATIM)
+    elseif(UNIX)
+        add_custom_target(Shaders
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/Shaders
+                COMMAND ${CMAKE_SOURCE_DIR}/Shaders/compile_linux.sh
+                VERBATIM)
+    endif()
+    add_dependencies(Rendepth Shaders)
 endif()
-
-add_dependencies(Rendepth Shaders)
 
 target_compile_definitions(Rendepth PUBLIC SDL_MAIN_USE_CALLBACKS)
 
