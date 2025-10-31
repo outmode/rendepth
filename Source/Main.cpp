@@ -1229,6 +1229,8 @@ void loadOptions() {
 	if (document.HasMember(borderlessSetting)) {
 		Image::useBorderlessWindow = document[borderlessSetting].GetBool();
 	}
+
+	Core::defaultImportFormat = Color_Only;
 }
 
 static void updateStereoIcon() {
