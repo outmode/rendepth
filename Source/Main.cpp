@@ -102,6 +102,7 @@ std::atomic<bool> depthPipeAlive (false);
 std::atomic<bool> doneLoadingImage (false);
 std::atomic<bool> depthPipeError (false);
 std::atomic<bool> doingFileOp (false);
+std::atomic<bool> doingVideoOp (false);
 std::vector<std::function<void()>> callbackQueue{};
 std::string qualityMode = "0";
 bool display3D = false;
@@ -854,10 +855,12 @@ static auto depthRegenerated = false;
 static void resetDepthGeneration() {
 	depthPipeAlive = false;
 	depthGenAlive = false;
-	sendDepthQuit();
+	depthRegenerated = true;
 	endPreload(false);
 	deleteTempFiles(tempFolder);
-	depthRegenerated = true;
+	nextFileToConvert.clear();
+	nextIndexToConvert = -1;
+	sendDepthQuit();
 }
 
 static void closeDepthGeneration() {
@@ -1118,6 +1121,7 @@ static void saveFile() {
 	if (exportFormat == Light_Field_CV) {
 		nextFileToConvert = outputPath.string();
 		nextIndexToConvert = -1;
+		doingVideoOp = true;
 	}
 
 	auto nameMaxLen = 26;
@@ -1971,7 +1975,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		}
 	}
 
-	if (quitAppNextFrame) return SDL_APP_SUCCESS;
+	if (quitAppNextFrame && !doingVideoOp) return SDL_APP_SUCCESS;
 	return SDL_APP_CONTINUE;
 }
 
@@ -2185,8 +2189,12 @@ static int depthGenRun(void* ptr) {
 
 static void sendDepthQuit() {
 	if (signalSend.handle()) {
-		const std::string_view quitMessage = std::string_view("quit");
-		signalSend.send(zmq::buffer(quitMessage), zmq::send_flags::none);
+		constexpr auto quitMessage = std::string_view("quit");
+		try {
+			signalSend.send(zmq::buffer(quitMessage), zmq::send_flags::none);
+		} catch (const zmq::error_t& error) {
+			return;
+		}
 		signalSend.close();
 	}
 }
@@ -2204,6 +2212,7 @@ static int depthPipeRun(void* ptr) {
 				nextFileToConvert.clear();
 				nextIndexToConvert = -1;
 				isConverting = false;
+				doingVideoOp = false;
 				auto resultFileName = resultPath.filename();
 				auto exportDir = std::filesystem::path(context.fileLink).parent_path();
 				if (exportDir.filename() != exportFolderName) exportDir = exportDir / exportFolderName;
