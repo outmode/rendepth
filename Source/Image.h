@@ -140,6 +140,7 @@ public:
 	inline static std::unordered_map<std::string, OptionsTexture> optionTextures;
 	inline static std::vector<std::string> optionsLabels{};
 	inline static const int maxImageSize = 16384;
+	inline static const int maxConversionSize = 7680;
 	inline static auto gridSize = 8;
 
 	static int init(Context* context, FileInfo& imageInfo);

@@ -1040,8 +1040,6 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 		viewsY = (int)exportQuiltDimCV.y;
 		renderFormat = Left;
 		auto maxRes = exportQuiltMaxResCV;
-		auto portraitScale = (9.0 / 16.0) / (singleImageSize.x / singleImageSize.y);
-		singleImageSize *= portraitScale;
 		auto maxSize = std::max(singleImageSize.x, singleImageSize.y);
 		singleImageSize *= maxRes / maxSize;
 		singleImageSize.x = roundf(singleImageSize.x);
