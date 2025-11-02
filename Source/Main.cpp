@@ -1835,6 +1835,9 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		wheelSpeed = 0;
 	}
 
+	if (context.mode == Free_View_Grid || context.mode == Free_View_LRL)
+		targetZoom = 1.0;
+
 	currentZoom = Utils::tween(currentZoom, targetZoom, zoomSpeed * deltaAverage);
 
 	auto oneHalf = glm::vec2(0.5);
@@ -2258,7 +2261,7 @@ static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int 
 
 	std::string service = std::to_string(genMode);
 	depthCommand = "--model " + qualityMode + " --depth " + depthSize +
-		" --upscale " + upscaleResolution + " --maxsize " + std::to_string(Image::maxImageSize) +
+		" --upscale " + upscaleResolution + " --maxsize " + std::to_string(Image::maxConversionSize) +
 		" --mode " + service + " --base " + exePath.string() +
 		" --home " + homePath.string() + " --input \"";
 	depthCommand += fileFolderPath + "\"";
