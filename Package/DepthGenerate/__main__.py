@@ -68,10 +68,10 @@ except ValueError:
 try:
     max_size = int(options["maxsize"])
 except ValueError:
-    print ("Invalid Max Image Size. Default to 4096.")
+    print ("Invalid Max Texture Size. Default to 4096.")
     max_size = 4096
 if max_size < 4096 or max_size > 16384:
-    print ("Valid Max Image Size 4096 to 16384. Default to 4096.")
+    print ("Valid Max Texture Size 4096 to 16384. Default to 4096.")
     max_size = 4096
 
 try:
@@ -201,12 +201,15 @@ depth_models_url = {
 encoder = encoders[depth_model]
 label = labels[depth_model]
 
-max_upscale_sizes = [1920, 3840, 7680, 15360]
-max_upscale_id = len(max_upscale_sizes) - 1
-max_upscale = max_upscale_sizes[max_upscale_id]
-while (max_upscale_id > 0 and max_upscale * 2 > max_size):
-    max_upscale_id = max_upscale_id - 1
-    max_upscale = max_upscale_sizes[max_upscale_id]
+max_texture_sizes = [1920, 3840, 7680, 16384]
+max_texture_id = len(max_texture_sizes) - 1
+max_texture_size = max_texture_sizes[max_texture_id]
+while (max_texture_id > 0 and max_texture_size * 2 > max_size):
+    max_texture_id = max_texture_id - 1
+    max_texture_size = max_texture_sizes[max_texture_id]
+
+export_upscale = 3840
+screen_aspect = 1.777
 
 print("DepthGenerate Started with", label, "Model - Depth:", depth_size, "- Upscale:", upscale_size,
     "- Max Size:", max_size, "- Service:", app_mode)
@@ -244,7 +247,14 @@ with torch.no_grad():
 print("Depth Model is Fully Loaded.")
 
 def sr_upscale(image, scale):
-    image_t_c = to_tensor(image)
+    image_height, image_width = image.shape[:2]
+    image_aspect = image_width / image_height
+    process_size = max(image_width, image_height)
+
+    image_resize = cv2.resize(image, (process_size, process_size), fx=None, fy=None,
+        interpolation=cv2.INTER_LANCZOS4)
+
+    image_t_c = to_tensor(image_resize)
     image_t = image_t_c.to(DEVICE).unsqueeze(0)
 
     if (scale == 2 or scale == 3 or scale == 4):
@@ -256,6 +266,19 @@ def sr_upscale(image, scale):
     image_pil = to_pil_image(image_sr_t.squeeze(0).clamp(0, 1))
     new_image = numpy.array(image_pil)[:, :, ::-1].copy()
     new_image = cv2.cvtColor(new_image, cv2.COLOR_BGR2RGB)
+
+    new_image_height, new_image_width = new_image.shape[:2]
+    new_image_aspect = new_image_width / new_image_height
+
+    width_scale = 1.0
+    height_scale = 1.0
+    if new_image_aspect > image_aspect:
+        height_scale = 1.0 / image_aspect
+    else:
+        width_scale = image_aspect
+
+    new_image = cv2.resize(new_image, (int(image_width * width_scale), int(image_height * height_scale)), fx=None, fy=None,
+        interpolation=cv2.INTER_LANCZOS4)
 
     return new_image
 
@@ -326,44 +349,43 @@ def generate_depth(in_file):
         return "ERROR"
 
     image_height, image_width = image_color.shape[:2]
+    image_aspect = image_width / image_height
 
-    scale_factor = upscale_size / max(image_width, image_height)
-    sr_scale_factor = scale_factor * 0.585
+    width_restore = 1.0
+    height_restore = 1.0
+
+    if (image_aspect > screen_aspect):
+        height_restore = 1.0 / image_aspect
+        scale_factor = upscale_size / image_width
+        process_size = export_upscale
+    else:
+        width_restore = image_aspect
+        scale_factor = (upscale_size / screen_aspect) / image_height
+        process_size = int(export_upscale / screen_aspect)
+
+    if process_size > max_texture_size:
+        process_size = max_texture_size
+
+    sr_scale_factor = round(scale_factor)
     sr_scale_factor = min(int(sr_scale_factor), 4)
 
     if (sr_scale_factor > 1):
         image_color = sr_upscale(image_color, sr_scale_factor)
 
-    image_height, image_width = image_color.shape[:2]
-    scale_factor = upscale_size / max(image_width, image_height)
-
-    image_resize = cv2.resize(image_color, None, fx=scale_factor, fy=scale_factor, 
+    image_resize = cv2.resize(image_color, (process_size, process_size), fx=None, fy=None,
         interpolation=cv2.INTER_LANCZOS4)
+    image_height, image_width = image_resize.shape[:2]
 
     with torch.no_grad():
         depth = model.infer_image(image_resize, depth_size)
-
     depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
     depth = depth.astype(numpy.uint8)
     depth = numpy.repeat(depth[..., numpy.newaxis], 3, axis=-1)
 
-    if (scale_factor < 1.0):
-        scale_factor = max_upscale / max(image_width, image_height)
-        if scale_factor > 1.0:
-            image_resize = image_color
-            depth_resize = cv2.resize(depth, (image_width, image_height), 
-                interpolation = cv2.INTER_LANCZOS4)
-        else :
-            image_width = int(image_width * scale_factor)
-            image_height = int(image_height * scale_factor)
-
-            image_resize = cv2.resize(image_color, (image_width, image_height), 
-                interpolation = cv2.INTER_LANCZOS4)
-            depth_resize = cv2.resize(depth, (image_width, image_height), 
-                interpolation = cv2.INTER_LANCZOS4)
-    else:
-        depth_resize = depth
-
+    image_resize = cv2.resize(image_color, (int(image_width * width_restore),
+        int(image_height * height_restore)), interpolation = cv2.INTER_LANCZOS4)
+    depth_resize = cv2.resize(depth, (int(image_width * width_restore),
+        int(image_height * height_restore)), interpolation = cv2.INTER_LANCZOS4)
 
     image_output = cv2.hconcat([image_resize, depth_resize])
     success = cv2.imwrite(out_file, image_output, [cv2.IMWRITE_JPEG_QUALITY, 90])
