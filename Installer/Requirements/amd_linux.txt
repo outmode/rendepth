@@ -1,10 +1,9 @@
-numpy
-opencv-python
-pillow
-pyzmq
-moviepy
-torchsr
 --extra-index-url https://download.pytorch.org/whl/rocm6.4
 torch
---extra-index-url https://download.pytorch.org/whl/rocm6.4
+torchsr
 torchvision
+opencv-python
+numpy
+pyzmq
+pillow
+moviepy

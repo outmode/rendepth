@@ -1,10 +1,9 @@
-numpy==2.2.6
-opencv-python==4.11.0.86
-pillow==11.2.1
-pyzmq==26.4.0
-moviepy==2.2.1
-torchsr==1.0.4
---extra-index-url https://download.pytorch.org/whl/cu128
-torch==2.7.0+cu128
---extra-index-url https://download.pytorch.org/whl/cu128
-torchvision==0.22.0+cu128
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch
+torchsr
+torchvision
+opencv-python
+numpy
+pyzmq
+pillow
+moviepy
