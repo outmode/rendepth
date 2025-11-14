@@ -19,6 +19,7 @@
 # SOFTWARE.
 
 import os
+import gc
 import sys
 import zmq
 
@@ -100,10 +101,9 @@ export_name = "3D Export"
 export_dir = ""
 
 stereo_tags = ["_anaglyph", "_rgbd", "_sbs_half_width", "_sbs",
-    "_free_view", "_qs", "_half_2x1", "_2x1"]
+               "_free_view", "_qs", "_half_2x1", "_2x1"]
 
 cubevi_tags = ["_cv"]
-
 def append_export_path(dir):
     last_dir = os.path.basename(os.path.normpath(dir))
     if (last_dir != export_name):
@@ -160,20 +160,11 @@ import pathlib
 import importlib
 from PIL import Image, ImageFile, ImageFilter
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-from torchsr.models import ninasr_b1
+from torchsr.models import ninasr_b0
 from torchvision.transforms.functional import to_pil_image, to_tensor
 from moviepy import ImageClip
 
-directml_available = False
-if os.name == 'nt':
-    try:
-        import torch_directml
-        directml_available = True
-    except ImportError:
-        directml_available = False
-
-
-DepthAnyModule = importlib.import_module("Depth-Anything-V2.depth_anything_v2.dpt") 
+DepthAnyModule = importlib.import_module("Depth-Anything-V2.depth_anything_v2.dpt")
 DepthAnythingV2 = DepthAnyModule.DepthAnythingV2
 
 encoders = [ "vits", "vitb", "vitl" ]
@@ -201,36 +192,27 @@ depth_models_url = {
 encoder = encoders[depth_model]
 label = labels[depth_model]
 
-max_texture_sizes = [1920, 3840, 7680, 16384]
-max_texture_id = len(max_texture_sizes) - 1
-max_texture_size = max_texture_sizes[max_texture_id]
-while (max_texture_id > 0 and max_texture_size * 2 > max_size):
-    max_texture_id = max_texture_id - 1
-    max_texture_size = max_texture_sizes[max_texture_id]
-
 export_upscale = 3840
 screen_aspect = 1.777
 
 print("DepthGenerate Started with", label, "Model - Depth:", depth_size, "- Upscale:", upscale_size,
-    "- Max Size:", max_size, "- Service:", app_mode)
+      "- Max Size:", max_size, "- Service:", app_mode)
 
 DEVICE = 'cuda' if torch.cuda.is_available() else "xpu" if torch.xpu.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
-print("Starting DepthGenerate using " + ("DirectML" if directml_available and DEVICE == "cpu" else device_labels[DEVICE]) + " Mode.")
-if directml_available and DEVICE == "cpu":
-    DEVICE = torch_directml.device()
+print("Starting DepthGenerate using " + device_labels[DEVICE] + " Mode.")
 
 model = DepthAnythingV2(**model_configs[encoder])
 depth_model_path = os.path.normpath(os.path.join(models_dir, depth_models[encoder]))
 os.makedirs(models_dir, exist_ok=True)
 
-if not os.path.isfile(depth_model_path):
-    model.load_state_dict(torch.hub.load_state_dict_from_url(depth_models_url[encoder], model_dir=models_dir,
-                                     weights_only=True))
-else:
+if os.path.isfile(depth_model_path):
     model.load_state_dict(torch.load(depth_model_path, weights_only=True))
+else:
+    model.load_state_dict(torch.hub.load_state_dict_from_url(depth_models_url[encoder], model_dir=models_dir,
+                                                             weights_only=True))
 
 model = model.to(DEVICE).eval()
-nina_models = [ninasr_b1, ninasr_b1, ninasr_b1]
+nina_models = [ninasr_b0, ninasr_b0, ninasr_b0]
 
 def get_sr_model(s):
     sr_m = nina_models[depth_model](scale=s, pretrained=True)
@@ -241,10 +223,9 @@ sr_model = { 2: None, 3: None, 4: None }
 for i in range(2, 5):
     sr_model[i] = get_sr_model(i)
 
-with torch.no_grad():
-    torch.cuda.empty_cache()
-
 print("Depth Model is Fully Loaded.")
+
+torch.cuda.empty_cache()
 
 def sr_upscale(image, scale):
     image_height, image_width = image.shape[:2]
@@ -252,7 +233,7 @@ def sr_upscale(image, scale):
     process_size = max(image_width, image_height)
 
     image_resize = cv2.resize(image, (process_size, process_size), fx=None, fy=None,
-        interpolation=cv2.INTER_LANCZOS4)
+                              interpolation=cv2.INTER_LANCZOS4)
 
     image_t_c = to_tensor(image_resize)
     image_t = image_t_c.to(DEVICE).unsqueeze(0)
@@ -278,7 +259,11 @@ def sr_upscale(image, scale):
         width_scale = image_aspect
 
     new_image = cv2.resize(new_image, (int(image_width * width_scale), int(image_height * height_scale)), fx=None, fy=None,
-        interpolation=cv2.INTER_LANCZOS4)
+                           interpolation=cv2.INTER_LANCZOS4)
+
+    del image_resize, image_sr_t, image_t, image_t_c
+    gc.collect()
+    torch.cuda.empty_cache()
 
     return new_image
 
@@ -329,7 +314,7 @@ def generate_depth(in_file):
         if app_mode == 0:
             print("Exiting. File Already 3D Tagged: " + in_file)
             return "ERROR"
-   
+
     print("Attempting to Load:", in_file)
 
     if file_is_cubevi(file_wo_ext):
@@ -339,6 +324,7 @@ def generate_depth(in_file):
         image_clip = ImageClip(in_file).with_duration(1)
         image_clip.write_videofile(out_file, codec="libx264", fps=24, preset="ultrafast")
         image_clip.close()
+        del image_clip
         return out_file
 
     try:
@@ -363,17 +349,17 @@ def generate_depth(in_file):
         scale_factor = (upscale_size / screen_aspect) / image_height
         process_size = int(export_upscale / screen_aspect)
 
-    if process_size > max_texture_size:
-        process_size = max_texture_size
+    if process_size > max_size / 2:
+        process_size = max_size / 2
 
-    sr_scale_factor = round(scale_factor)
+    sr_scale_factor = int(scale_factor)
     sr_scale_factor = min(int(sr_scale_factor), 4)
 
     if (sr_scale_factor > 1):
         image_color = sr_upscale(image_color, sr_scale_factor)
 
     image_resize = cv2.resize(image_color, (process_size, process_size), fx=None, fy=None,
-        interpolation=cv2.INTER_LANCZOS4)
+                              interpolation=cv2.INTER_LANCZOS4)
     image_height, image_width = image_resize.shape[:2]
 
     with torch.no_grad():
@@ -383,9 +369,9 @@ def generate_depth(in_file):
     depth = numpy.repeat(depth[..., numpy.newaxis], 3, axis=-1)
 
     image_resize = cv2.resize(image_color, (int(image_width * width_restore),
-        int(image_height * height_restore)), interpolation = cv2.INTER_LANCZOS4)
+                                            int(image_height * height_restore)), interpolation = cv2.INTER_LANCZOS4)
     depth_resize = cv2.resize(depth, (int(image_width * width_restore),
-        int(image_height * height_restore)), interpolation = cv2.INTER_LANCZOS4)
+                                      int(image_height * height_restore)), interpolation = cv2.INTER_LANCZOS4)
 
     image_output = cv2.hconcat([image_resize, depth_resize])
     success = cv2.imwrite(out_file, image_output, [cv2.IMWRITE_JPEG_QUALITY, 90])
@@ -395,6 +381,10 @@ def generate_depth(in_file):
     else:
         print("Error Saving Depth to " + out_file)
         return "ERROR"
+
+    del image_color, image_resize, depth, depth_resize, image_output
+    gc.collect()
+    torch.cuda.empty_cache()
 
     return out_file
 
@@ -427,7 +417,7 @@ def wait_for_command():
             signal_control.disconnect(send_io)
             signal_context.destroy()
             sys.exit()
-            
+
         result = generate_depth(message)
         signal_control.send_string(result)
 
