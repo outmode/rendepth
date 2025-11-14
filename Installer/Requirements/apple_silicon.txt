@@ -1,6 +1,6 @@
 torch
-torchsr
 torchvision
+torchsr
 opencv-python
 numpy
 pyzmq
