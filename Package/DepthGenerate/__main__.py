@@ -343,14 +343,14 @@ def generate_depth(in_file):
     if (image_aspect > screen_aspect):
         height_restore = 1.0 / image_aspect
         scale_factor = upscale_size / image_width
-        process_size = export_upscale
+        process_size = int(export_upscale)
     else:
         width_restore = image_aspect
         scale_factor = (upscale_size / screen_aspect) / image_height
         process_size = int(export_upscale / screen_aspect)
 
     if process_size > max_size / 2:
-        process_size = max_size / 2
+        process_size = int(max_size / 2)
 
     sr_scale_factor = int(scale_factor)
     sr_scale_factor = min(int(sr_scale_factor), 4)
