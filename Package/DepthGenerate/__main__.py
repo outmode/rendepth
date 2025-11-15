@@ -87,11 +87,11 @@ home_dir = options["home"]
 input_name = options["input"]
 
 if not input_name:
-    print("Invalid Input. Usage '--input Image.jpg'.")
+    print("Invalid Input. Usage '--input Image.jpg'")
     sys.exit()
 if os.name == "nt":
-    base_dir = os.path.join(base_dir, '')
-    home_dir = os.path.join(home_dir, '')
+    base_dir = os.path.join(base_dir, "")
+    home_dir = os.path.join(home_dir, "")
 
 temp_dir = os.path.join(home_dir, "Temp")
 pack_dir = os.path.join(home_dir, "Package")
@@ -164,6 +164,14 @@ from torchsr.models import ninasr_b0
 from torchvision.transforms.functional import to_pil_image, to_tensor
 from moviepy import ImageClip
 
+directml_available = False
+if os.name == "nt":
+    try:
+        import torch_directml
+        directml_available = True
+    except ImportError:
+        directml_available = False
+
 DepthAnyModule = importlib.import_module("Depth-Anything-V2.depth_anything_v2.dpt")
 DepthAnythingV2 = DepthAnyModule.DepthAnythingV2
 
@@ -172,21 +180,21 @@ labels = [ "Small", "Base", "Large" ]
 device_labels = { "cuda" : "GPU Accelerated", "xpu" : "GPU Accelerated", "mps" : "GPU Accelerated", "cpu": "CPU Fallback"}
 
 model_configs = {
-    'vits': { 'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
-    'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
-    'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
+    "vits": { "encoder": "vits", "features": 64, "out_channels": [48, 96, 192, 384]},
+    "vitb": {"encoder": "vitb", "features": 128, "out_channels": [96, 192, 384, 768]},
+    "vitl": {"encoder": "vitl", "features": 256, "out_channels": [256, 512, 1024, 1024]},
 }
 
 depth_models = {
-    'vits': 'depth_anything_v2_vits.pth',
-    'vitb': 'depth_anything_v2_vitb.pth',
-    'vitl': 'depth_anything_v2_vitl.pth',
+    "vits": "depth_anything_v2_vits.pth",
+    "vitb": "depth_anything_v2_vitb.pth",
+    "vitl": "depth_anything_v2_vitl.pth",
 }
 
 depth_models_url = {
-    'vits': 'https://huggingface.co/depth-anything/Depth-Anything-V2-Small/resolve/main/depth_anything_v2_vits.pth?download=true',
-    'vitb': 'https://huggingface.co/depth-anything/Depth-Anything-V2-Base/resolve/main/depth_anything_v2_vitb.pth?download=true',
-    'vitl': 'https://huggingface.co/depth-anything/Depth-Anything-V2-Large/resolve/main/depth_anything_v2_vitl.pth?download=true',
+    "vits": "https://huggingface.co/depth-anything/Depth-Anything-V2-Small/resolve/main/depth_anything_v2_vits.pth?download=true",
+    "vitb": "https://huggingface.co/depth-anything/Depth-Anything-V2-Base/resolve/main/depth_anything_v2_vitb.pth?download=true",
+    "vitl": "https://huggingface.co/depth-anything/Depth-Anything-V2-Large/resolve/main/depth_anything_v2_vitl.pth?download=true",
 }
 
 encoder = encoders[depth_model]
@@ -198,8 +206,10 @@ screen_aspect = 1.777
 print("DepthGenerate Started with", label, "Model - Depth:", depth_size, "- Upscale:", upscale_size,
       "- Max Size:", max_size, "- Service:", app_mode)
 
-DEVICE = 'cuda' if torch.cuda.is_available() else "xpu" if torch.xpu.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
-print("Starting DepthGenerate using " + device_labels[DEVICE] + " Mode.")
+DEVICE = "cuda" if torch.cuda.is_available() else "xpu" if torch.xpu.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+print("Starting DepthGenerate using " + ("DirectML" if directml_available and DEVICE == "cpu" else device_labels[DEVICE]) + " Mode.")
+if directml_available and DEVICE == "cpu":
+    DEVICE = torch_directml.device()
 
 model = DepthAnythingV2(**model_configs[encoder])
 depth_model_path = os.path.normpath(os.path.join(models_dir, depth_models[encoder]))
@@ -328,7 +338,7 @@ def generate_depth(in_file):
         return out_file
 
     try:
-        image_color = Image.open(in_file).convert('RGB')
+        image_color = Image.open(in_file).convert("RGB")
         image_color = numpy.array(image_color)[:, :, ::-1].copy()
     except:
         print("Error Loading Image File: " + in_file)

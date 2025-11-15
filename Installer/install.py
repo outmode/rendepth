@@ -72,7 +72,7 @@ def install_requirements(env, txt):
 		pip_exe = os.path.join(env, bin_dir, pip_exe)
 		pip_exe = os.path.abspath(pip_exe)
 		try:
-			subprocess.run([pip_exe, "install", "-r", req_file, "--upgrade", "--no-cache-dir"], cwd=env)
+			subprocess.run([pip_exe, "install", "-r", req_file], cwd=env)
 		except Exception:
 			print("\nError Installing Requirements:", env)
 			sys.exit(1)
@@ -123,7 +123,8 @@ cli_menu = {
 			"choices": [ "Windows", "macOS", "Linux"] },
 		{ "question": "Please Choose Your Dedicated GPU",
 			"prompt": "Graphics Card",
-			"choices": [ "Nvidia GeForce", "AMD Radeon", "Intel Arc", "Apple Silicon", "CPU Only"] }
+			"choices": [ "Nvidia GeForce", "AMD Radeon", "Intel Arc", "Apple Silicon",
+						 "DirectML (Generic GPU)", "No Acceleration (CPU Only)"] }
 	]
 }
 
@@ -131,9 +132,11 @@ requirements_list = [
 	[ 	"nvidia_geforce.txt",
 		"amd_windows.txt",
 		"intel_arc.txt",
- 		"cpu_only.txt",
+ 		"direct_ml.txt",
+		"direct_ml.txt",
 		"cpu_only.txt" ],
 	[ 	"apple_silicon.txt",
+		"apple_silicon.txt",
 		"apple_silicon.txt",
 		"apple_silicon.txt",
 		"apple_silicon.txt",
@@ -141,6 +144,7 @@ requirements_list = [
 	[ 	"nvidia_geforce.txt",
 		"amd_linux.txt",
 		"intel_arc.txt",
+		"cpu_only.txt",
 		"cpu_only.txt",
 		"cpu_only.txt" ]
 ]

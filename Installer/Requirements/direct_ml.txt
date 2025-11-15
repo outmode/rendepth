@@ -1,0 +1,9 @@
+torch-directml
+torch
+torchvision
+torchsr
+opencv-python
+numpy
+pyzmq
+pillow
+moviepy
