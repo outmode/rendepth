@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Outmode
+// Copyright (c) 2026 Outmode
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -30,13 +30,15 @@
 #include <string>
 #include <map>
 #include <filesystem>
+#include <atomic>
 
 enum ViewMode {
 	Native,
 	Mono,
 	Left,
 	Right,
-	Anaglyph,
+	Anaglyph_Accurate,
+	Anaglyph_Vivid,
 	RGB_Depth,
 	SBS_Full,
 	SBS_Half,
@@ -45,7 +47,8 @@ enum ViewMode {
 	Horizontal,
 	Vertical,
 	Checkerboard,
-	Depth_Zoom
+	Depth_Zoom,
+	Light_Field
 };
 
 enum StereoFormat {
@@ -58,7 +61,6 @@ enum StereoFormat {
 	Stereo_Free_View_Grid,
 	Stereo_Free_View_LRL,
 	Light_Field_LKG,
-	Light_Field_CV,
 	Unknown_Format
 };
 
@@ -96,7 +98,6 @@ static inline std::vector<std::pair<std::string, StereoFormat>> tagType = {
 	{ "_free_view_lrl", Stereo_Free_View_LRL },
 	{ "_free_view", Stereo_Free_View_Grid },
 	{ "_qs", Light_Field_LKG },
-	{ "_cv", Light_Field_CV },
 	{ "_half_2x1", Side_By_Side_Half },
 	{ "_2x1", Side_By_Side_Full },
 	{ ".jps", Side_By_Side_Swap },
@@ -104,9 +105,6 @@ static inline std::vector<std::pair<std::string, StereoFormat>> tagType = {
 
 static inline glm::vec2 exportQuiltDimLKG = glm::ivec2(9, 8);
 static inline float exportQuiltMaxResLKG = 864.0;
-
-static inline glm::vec2 exportQuiltDimCV = glm::ivec2(8, 5);
-static inline float exportQuiltMaxResCV = 960.0;
 
 struct SpriteDataVert {
 	glm::mat4 transform;
@@ -183,6 +181,7 @@ struct Context {
 	std::string fileName;
 	std::string fileLink;
 	SDL_Window* window;
+	SDL_Window* nativeOutputWindow;
 	SDL_GPUDevice* device;
 	bool gotoPrev;
 	bool gotoNext;
@@ -232,6 +231,24 @@ struct Context {
 	glm::vec2 imageBounds;
 };
 
+struct NativeDisplayConfig {
+	std::string displayName;
+	glm::vec2 quiltGrid{2.0f, 1.0f};
+	int viewCount = 2;
+	float pitch = 50.0f;
+	float slope = -5.0f;
+	float center = 0.5f;
+	float dpi = 300.0f;
+	glm::ivec2 screenSize{0, 0};
+	float viewCone = 40.0f;
+	float subpixel = 0.0f;
+	bool invertView = false;
+	bool flipImageX = false;
+	bool flipImageY = false;
+	bool flipSubpixel = false;
+	bool calibrated = false;
+};
+
 struct FileInfo {
 	std::string link;
 	std::string path;
@@ -249,7 +266,7 @@ struct AsyncData {
 	std::string path;
 	SDL_Surface* surface;
 	int fileIndex;
-	bool done;
+	std::atomic<bool> done{false};
 };
 
 class Core {

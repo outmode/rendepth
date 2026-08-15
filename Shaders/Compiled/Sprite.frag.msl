@@ -1,0 +1,68 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct SpriteDataFrag
+{
+    float4 color;
+    float visibility;
+    int useTexture;
+    float2 slice;
+};
+
+struct main0_out
+{
+    float4 outColor [[color(0)]];
+};
+
+struct main0_in
+{
+    float2 fragUV [[user(locn0)]];
+};
+
+fragment main0_out main0(main0_in in [[stage_in]], constant SpriteDataFrag& _18 [[buffer(0)]], texture2d<float> spriteTexture [[texture(0)]], sampler spriteTextureSmplr [[sampler(0)]])
+{
+    main0_out out = {};
+    float alpha = 1.0;
+    float4 spriteColor = float4(1.0);
+    if (_18.useTexture > 0)
+    {
+        float2 sliceUV = in.fragUV;
+        if (in.fragUV.x < _18.slice.x)
+        {
+            sliceUV.x = (sliceUV.x / _18.slice.x) * 0.5;
+        }
+        else
+        {
+            if (in.fragUV.x > _18.slice.y)
+            {
+                sliceUV.x = (((sliceUV.x - _18.slice.y) / _18.slice.x) * 0.5) + 0.5;
+            }
+            else
+            {
+                sliceUV.x = 0.5;
+            }
+        }
+        spriteColor *= spriteTexture.sample(spriteTextureSmplr, sliceUV);
+    }
+    if (spriteColor.w > 0.0)
+    {
+        float _92 = spriteColor.w;
+        float4 _94 = spriteColor;
+        float3 _97 = _94.xyz / float3(_92);
+        spriteColor.x = _97.x;
+        spriteColor.y = _97.y;
+        spriteColor.z = _97.z;
+    }
+    alpha = fast::clamp((_18.color.w * _18.visibility) * alpha, 0.0, 1.0);
+    float4 _118 = spriteColor;
+    float3 _120 = _118.xyz * _18.color.xyz;
+    spriteColor.x = _120.x;
+    spriteColor.y = _120.y;
+    spriteColor.z = _120.z;
+    spriteColor.w *= alpha;
+    out.outColor = spriteColor;
+    return out;
+}
+

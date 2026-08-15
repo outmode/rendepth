@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Outmode
+// Copyright (c) 2026 Outmode
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -49,6 +49,7 @@ public:
 	inline static SDL_GPUTexture* menuTexture = nullptr;
 	inline static SDL_GPUTexture* sliderTexture = nullptr;
 	inline static SDL_GPUTexture* exportTexture = nullptr;
+	inline static SDL_GPUGraphicsPipeline* interlacerPipeline = nullptr;
 	inline static SDL_GPUSampler* imageSampler = nullptr;
 	inline static SDL_Surface* menuTextSurface = nullptr;
 	inline static SDL_Surface* ssimSurface = nullptr;
@@ -92,7 +93,30 @@ public:
 		int effectRandom;
 		int swapLeftRight;
 		int force;
-		int padding;
+		int quiltRowsBottomUp;
+	};
+
+	struct InterlacerDataFrag {
+		glm::vec2 outputSize;
+		glm::vec2 quiltSize;
+		glm::vec2 tileSize;
+		glm::vec2 phaseScale;
+		float center;
+		float subpixelPhase;
+		int viewCount;
+		int gridColumns;
+		int gridRows;
+		int output2D;
+		int sourceFlat;
+		int invertView;
+		int flipImageX;
+		int flipImageY;
+		int reserved2;
+		int sourceRgbd;
+		float stereoStrength;
+		float stereoDepth;
+		float stereoOffset;
+		int reserved3;
 	};
 
 	struct IconDataVert {
@@ -112,6 +136,7 @@ public:
 
 	inline static ImageDataVert imageDataVert{};
 	inline static ImageDataFrag imageDataFrag{};
+	inline static InterlacerDataFrag interlacerDataFrag{};
 	inline static IconDataVert iconDataVert{};
 	inline static IconDataFrag iconDataFrag{};
 	inline static SpriteDataVert spriteDataVert{};
@@ -144,17 +169,26 @@ public:
 	inline static auto gridSize = 8;
 
 	static int init(Context* context, FileInfo& imageInfo);
+	static int reloadShader(Context* context);
 	static int load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData);
 	static int draw(Context* context);
+	static int initNativeOutput(Context* context);
+	static bool nativeOutputAvailable();
+	static void setNativeOutputActive(Context* context, bool active);
+	static int drawNativeOutput(Context* context);
+	static int reloadInterlacerShader(Context* context);
 	static void quit(Context* context);
 	static void bindPipeline(SDL_GPURenderPass* renderPass, SDL_GPUGraphicsPipeline* pipeline);
 	static void drawImage(SDL_GPUCommandBuffer* commandBuffer, SDL_GPURenderPass* renderPass);
 	static void drawIcon(SDL_GPUCommandBuffer* commandBuffer, SDL_GPURenderPass* renderPass);
 	static void drawSprite(SDL_GPUCommandBuffer* commandBuffer, SDL_GPURenderPass* renderPass);
 	static int uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTexture** gpuTexture,
-			const std::string& textureName);
+		const std::string& textureName);
+	static SDL_Surface* upscaleSurfaceGPU(Context* context, const SDL_Surface* source,
+		int outputWidth, int outputHeight);
 	static void blitBlurTexture(Context* context, SDL_GPUTexture *inputTexture, Uint32 imageWidth, Uint32 imageHeight);
-	static int renderStereoImage(Context* context, StereoFormat stereoFormat);
+	static int renderStereoImage(Context* context, StereoFormat stereoFormat,
+		SDL_GPUTexture* sourceTexture = nullptr);
 	static SDL_Surface* getExportTexture(Context* context, StereoFormat stereoFormat);
 	static glm::vec2 getIconCoordinates(IconType iconType);
 	static glm::vec2 updateRatio(Context* context, glm::vec2 windowSize);
@@ -176,6 +210,11 @@ public:
 	inline static SDL_DisplayID currentDisplay = 0;
 	inline static float mouseScale = 1.0;
 	inline static bool useBorderlessWindow = true;
+	inline static bool nativeOutputEnabled = false;
+	inline static bool nativeOutputSourceReady = false;
+	inline static glm::ivec2 nativeOutputLastSize{0, 0};
+	inline static SDL_DisplayID nativeDisplay = 0;
+	inline static NativeDisplayConfig nativeDisplayConfig{};
 	inline static Style style;
 };
 

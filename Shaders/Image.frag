@@ -1,6 +1,6 @@
 #version 450
 
-// Copyright (c) 2025 Outmode
+// Copyright (c) 2026 Outmode
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -50,16 +50,18 @@ layout (set = 3, binding = 0) uniform ImageDataFrag {
 #define Mono 1
 #define Left 2
 #define Right 3
-#define Anaglyph 4
-#define RGB_Depth 5
-#define SBS_Full 6
-#define SBS_Half 7
-#define Free_View_Grid 8
-#define Free_View_LRL 9
-#define Horizontal 10
-#define Vertical 11
-#define Checkerboard 12
-#define Depth_Zoom 13
+#define Anaglyph_Accurate 4
+#define Anaglyph_Vivid 5
+#define RGB_Depth 6
+#define SBS_Full 7
+#define SBS_Half 8
+#define Free_View_Grid 9
+#define Free_View_LRL 10
+#define Horizontal 11
+#define Vertical 12
+#define Checkerboard 13
+#define Depth_Zoom 14
+#define Light_Field 15
 
 #define Color_Only 0
 #define Color_Anaglyph 1
@@ -70,22 +72,29 @@ layout (set = 3, binding = 0) uniform ImageDataFrag {
 #define Stereo_Free_View_Grid 6
 #define Stereo_Free_View_LRL 7
 #define Light_Field_LKG 8
-#define Light_Field_CV 9
 
-const float stereoScale = 50000.0;
+const float stereoScale = 25000.0;
 const float zNear = 0.1;
 const float zFar = 100.0;
 const float depthSamples[5] = { 0.125, 0.250, 0.375, 0.500, 0.625 };
 const int sampleCount = 5;
-const mat3 leftFilter = mat3(
-	vec3(0.4561, 0.500484, 0.176381),
-	vec3(-0.400822, -0.0378246, -0.0157589),
-	vec3(-0.0152161, -0.0205971, -0.00546856));
-const mat3 rightFilter = mat3(
-	vec3(-0.0434706, -0.0879388, -0.00155529),
-	vec3(0.378476, 0.73364, -0.0184503),
-	vec3(-0.0721527, -0.112961, 1.2264));
-const vec3 gammaMap = vec3(1.6, 0.8, 1.0);
+const mat3 accurateLeftFilter = mat3(
+	vec3(0.439, 0.447, 0.148),
+	vec3(0.0, 0.0, 0.0),
+	vec3(0.0, 0.0, 0.0));
+const mat3 accurateRightFilter = mat3(
+	vec3(0.0, 0.0, 0.0),
+	vec3(0.095, 0.934, -0.005),
+	vec3(-0.018, -0.028, 1.057));
+const mat3 vividLeftFilter = mat3(
+    vec3(0.4561, 0.500484, 0.176381),
+    vec3(-0.400822, -0.0378246, -0.0157589),
+    vec3(-0.0152161, -0.0205971, -0.00546856));
+const mat3 vividRightFilter = mat3(
+    vec3(-0.0434706, -0.0879388, -0.00155529),
+    vec3(0.378476, 0.73364, -0.0184503),
+    vec3(-0.0721527, -0.112961, 1.2264));
+const vec3 gammaMap = vec3(1.10, 1.05, 1.05);
 const int blurRange = 2;
 const float blurOffsets[5] = float[5](0.0, 1.0, 3.0, 7.0, 16.0);
 const float uvGutter = 0.001;
@@ -113,12 +122,12 @@ vec3 toLinear(vec3 sRGB) {
 }
 
 vec4 getColor(sampler2D tex, vec2 uv) {
-	vec4 color = texture(tex, uv).rgba;
+	vec4 color = texture(tex, clamp(uv, vec2(0.0), vec2(1.0))).rgba;
 	return color;
 }
 
 float getDepth(sampler2D tex, vec2 uv) {
-	float depthSample = 1.0 - texture(tex, uv).r;
+	float depthSample = 1.0 - texture(tex, clamp(uv, vec2(0.0), vec2(1.0))).r;
 	float ndc = depthSample * 2.0 - 1.0;
 	float linearDepth = (2.0 * zNear * zFar) / (zFar + zNear - ndc * (zFar - zNear));
 	linearDepth /= zFar - zNear;
@@ -168,7 +177,9 @@ vec3 combineStereoViews(vec3 leftColor, vec3 rightColor) {
 		leftColor = rightColor;
 		rightColor = tempColor;
 	}
-	if (mode == Anaglyph) {
+	if (mode == Anaglyph_Accurate || mode == Anaglyph_Vivid) {
+		mat3 leftFilter = mode == Anaglyph_Vivid ? vividLeftFilter : accurateLeftFilter;
+		mat3 rightFilter = mode == Anaglyph_Vivid ? vividRightFilter : accurateRightFilter;
 		result = clamp(leftColor * leftFilter, vec3(0.0), vec3(1.0)) + clamp(rightColor * rightFilter, vec3(0.0), vec3(1.0));
 		result = correctColor(result);
 	} else if (mode == Left) {
@@ -219,8 +230,10 @@ vec3 generateStereoImage(vec2 inUV) {
 	float parallaxLeft = (stereoStrength / aspect * getParallax(minDepthLeft)) / stereoScale + stereoOffset;
 	float parallaxRight = (stereoStrength / aspect * getParallax(minDepthRight)) / stereoScale + stereoOffset;
 
-	vec3 colorLeft = getColor(imageTexture, clampEdge(colorUV + vec2(parallaxLeft, 0.0), minUVColor, maxUVColor)).rgb;
-	vec3 colorRight = getColor(imageTexture, clampEdge(colorUV - vec2(parallaxRight, 0.0), minUVColor, maxUVColor)).rgb;
+	vec3 colorLeft = getColor(imageTexture,
+		clampEdge(colorUV + vec2(parallaxLeft, 0.0), minUVColor, maxUVColor)).rgb;
+	vec3 colorRight = getColor(imageTexture,
+		clampEdge(colorUV - vec2(parallaxRight, 0.0), minUVColor, maxUVColor)).rgb;
 
 	return combineStereoViews(colorLeft, colorRight);
 }
@@ -275,8 +288,6 @@ vec3 getAnaglyphRight(vec3 color) {
 int getQuiltRow(int row, int column, int view) {
 	if (type == Light_Field_LKG) {
 		return row - 1 - view / column;
-	} else if (type == Light_Field_CV) {
-		return view / column;
 	}
 	return 0;
 }
@@ -300,7 +311,7 @@ void main() {
 	} else if (type == Stereo_Free_View_LRL) {
 		monoUV = vec2(fragUV.x * 0.333, fragUV.y);
 		depthUV = vec2(monoUV.x + 0.333, monoUV.y);
-	} else if (type == Light_Field_LKG || type == Light_Field_CV) {
+	} else if (type == Light_Field_LKG) {
 		gridLeftUV = vec2(fragUV.x / gridSize.x, fragUV.y / gridSize.y);
 		gridRightUV = gridLeftUV;
 		vec2 gridCenterUV = gridLeftUV;
@@ -324,7 +335,9 @@ void main() {
 	if (blur == Enabled) {
 		imageColor.rgb = blurImage(monoUV);
 		imageColor.rgb = mix(clearColor, imageColor.rgb, 0.9);
-		if (mode == Anaglyph) {
+		if (mode == Anaglyph_Accurate || mode == Anaglyph_Vivid) {
+			mat3 leftFilter = mode == Anaglyph_Vivid ? vividLeftFilter : accurateLeftFilter;
+			mat3 rightFilter = mode == Anaglyph_Vivid ? vividRightFilter : accurateRightFilter;
 			imageColor.rgb = clamp(imageColor.rgb * leftFilter, vec3(0.0), vec3(1.0)) +
 				clamp(imageColor.rgb * rightFilter, vec3(0.0), vec3(1.0));
 		} else if (mode == Mono && type == Color_Anaglyph) {
@@ -335,6 +348,18 @@ void main() {
 		imageColor.a = 1.0;
 	} else if (mode == Native) {
 		imageColor = getColor(imageTexture, fragUV);
+	} else if (mode == Light_Field) {
+		if (type == Color_Plus_Depth) {
+			imageColor = getColor(imageTexture, vec2(fragUV.x * 0.5, fragUV.y));
+		} else if (type == Light_Field_LKG && gridSize.x > 0.0 && gridSize.y > 0.0) {
+			int columns = int(gridSize.x);
+			int rows = int(gridSize.y);
+			int centerView = (columns * rows) / 2;
+			vec2 tile = vec2(centerView % columns, rows - 1 - centerView / columns);
+			imageColor = getColor(imageTexture, (tile + fragUV) / gridSize.xy);
+		} else {
+			imageColor = getColor(imageTexture, fragUV);
+		}
 	} else if (mode == Mono) {
 		imageColor = getColor(imageTexture, monoUV);
 		if (type == Color_Anaglyph) {
@@ -358,7 +383,7 @@ void main() {
 			imageColor.rgb = generateStereoImage(fragUV);
 		} else if (type == Color_Anaglyph) {
 			imageColor.rgb = getColor(imageTexture, fragUV).rgb;
-			if (mode != Anaglyph) {
+			if (mode != Anaglyph_Accurate && mode != Anaglyph_Vivid) {
 				vec3 leftColor = getAnaglyphLeft(imageColor.rgb);
 				vec3 rightColor = getAnaglyphRight(imageColor.rgb);
 				imageColor.rgb = combineStereoViews(leftColor, rightColor);
@@ -369,7 +394,7 @@ void main() {
 			vec3 leftColor = getColor(imageTexture, monoUV).rgb;
 			vec3 rightColor = getColor(imageTexture, depthUV).rgb;
 			imageColor.rgb = combineStereoViews(leftColor, rightColor);
-		} else if (type == Light_Field_LKG || type == Light_Field_CV) {
+		} else if (type == Light_Field_LKG) {
 			vec3 leftColor = getColor(imageTexture, gridLeftUV).rgb;
 			vec3 rightColor = getColor(imageTexture, gridRightUV).rgb;
 			imageColor.rgb = combineStereoViews(leftColor, rightColor);

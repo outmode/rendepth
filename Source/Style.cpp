@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Outmode
+// Copyright (c) 2026 Outmode
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -19,8 +19,6 @@
 // SOFTWARE.
 
 #include "Style.h"
-#include <iostream>
-#include <glm/ext/matrix_transform.hpp>
 
 Style::Scale Style::getCurrentScale() {
 	return currentScale;

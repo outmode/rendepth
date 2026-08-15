@@ -1,0 +1,74 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct IconDataFrag
+{
+    float4 color;
+    float visibility;
+    float rotation;
+    int animated;
+    int force;
+};
+
+struct main0_out
+{
+    float4 outColor [[color(0)]];
+};
+
+struct main0_in
+{
+    float2 fragUV [[user(locn0)]];
+    float2 iconUV [[user(locn1)]];
+};
+
+fragment main0_out main0(main0_in in [[stage_in]], constant IconDataFrag& _14 [[buffer(0)]], texture2d<float> iconTexture [[texture(0)]], sampler iconTextureSmplr [[sampler(0)]])
+{
+    main0_out out = {};
+    float alpha = 1.0;
+    if (_14.animated == 1)
+    {
+        float angle = (precise::atan2(in.iconUV.x, in.iconUV.y) + 3.1415927410125732421875) / 6.283185482025146484375;
+        bool _46 = angle > _14.rotation;
+        bool _55;
+        if (!_46)
+        {
+            _55 = angle < (_14.rotation - 1.0);
+        }
+        else
+        {
+            _55 = _46;
+        }
+        if (_55)
+        {
+            alpha = 0.0;
+        }
+    }
+    float4 iconColor = iconTexture.sample(iconTextureSmplr, in.fragUV);
+    if (iconColor.w > 0.0)
+    {
+        float _76 = iconColor.w;
+        float4 _78 = iconColor;
+        float3 _81 = _78.xyz / float3(_76);
+        iconColor.x = _81.x;
+        iconColor.y = _81.y;
+        iconColor.z = _81.z;
+    }
+    alpha = fast::clamp((_14.color.w * _14.visibility) * alpha, 0.0, 1.0);
+    float4 _102 = iconColor;
+    float3 _104 = _102.xyz * _14.color.xyz;
+    iconColor.x = _104.x;
+    iconColor.y = _104.y;
+    iconColor.z = _104.z;
+    iconColor.w *= alpha;
+    out.outColor = iconColor;
+    if (_14.force == 1)
+    {
+        out.outColor.x = _14.color.xyz.x;
+        out.outColor.y = _14.color.xyz.y;
+        out.outColor.z = _14.color.xyz.z;
+    }
+    return out;
+}
+

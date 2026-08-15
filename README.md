@@ -34,12 +34,9 @@ Build Instructions
 - Compile project: `cmake --build .`
 - App will be built in `Binary` folder.
 - Folders `Assets` `Binary` `Library` `Shaders` must remain together.
-- Rendepth requires C/C++ compiler with OpenMP 4.5 support.
+
 - Linux/macOS can use g++/clang, Windows may require MinGW.
 - `RENDEPTH_DLL_DIR` points to MinGW shared library folder on Windows.
-- `RENDEPTH_OMP_DYLIB` points to the `libomp` shared library on macOS.
 - `RENDEPTH_MAC_BUNDLE` set `ON` to create macOS bundle after building.
 
 ### Made by Outmode.
-
-

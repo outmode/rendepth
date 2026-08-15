@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Outmode
+// Copyright (c) 2026 Outmode
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,13 +20,221 @@
 
 #include "Image.h"
 #include "Utils.h"
-#include <iostream>
+#include "rapidjson/document.h"
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdlib>
+#include <fstream>
+
+namespace {
+	bool readCalibrationNumber(const rapidjson::Value& object, const char* name, float& result) {
+		if (!object.IsObject() || !object.HasMember(name)) return false;
+		const auto& entry = object[name];
+		if (entry.IsNumber()) {
+			result = entry.GetFloat();
+			return true;
+		}
+		if (entry.IsObject() && entry.HasMember("value") && entry["value"].IsNumber()) {
+			result = entry["value"].GetFloat();
+			return true;
+		}
+		return false;
+	}
+
+	bool readCalibrationBool(const rapidjson::Value& object, const char* name, bool& result) {
+		float value = 0.0f;
+		if (!readCalibrationNumber(object, name, value)) return false;
+		result = value != 0.0f;
+		return true;
+	}
+
+	bool loadLookingGlassCalibration(const std::filesystem::path& path,
+		NativeDisplayConfig& config) {
+		std::error_code error;
+		const auto size = std::filesystem::file_size(path, error);
+		if (error || size == 0 || size > 64 * 1024) return false;
+		std::ifstream file(path);
+		std::string text((std::istreambuf_iterator<char>(file)), {});
+		if (!file && text.empty()) return false;
+
+		rapidjson::Document document;
+		document.Parse(text.data(), text.size());
+		if (document.HasParseError() || !document.IsObject()) return false;
+
+		NativeDisplayConfig loaded = config;
+		float pitch = 0.0f, slope = 0.0f, center = 0.0f, dpi = 0.0f;
+		float screenWidth = 0.0f, screenHeight = 0.0f, viewCone = 0.0f;
+		float fringe = 0.0f;
+		const bool complete =
+			readCalibrationNumber(document, "pitch", pitch) && pitch > 0.0f &&
+			readCalibrationNumber(document, "slope", slope) && std::abs(slope) > 0.001f &&
+			readCalibrationNumber(document, "center", center) &&
+			readCalibrationNumber(document, "DPI", dpi) && dpi > 0.0f &&
+			readCalibrationNumber(document, "screenW", screenWidth) && screenWidth > 0.0f &&
+			readCalibrationNumber(document, "screenH", screenHeight) && screenHeight > 0.0f;
+		if (!complete) {
+			SDL_Log("Incomplete Looking Glass calibration in %s", path.string().c_str());
+			return false;
+		}
+		loaded.pitch = pitch;
+		loaded.slope = slope;
+		loaded.center = center;
+		loaded.dpi = dpi;
+		loaded.screenSize = {(int)std::lround(screenWidth), (int)std::lround(screenHeight)};
+		if (readCalibrationNumber(document, "viewCone", viewCone)) loaded.viewCone = viewCone;
+		readCalibrationNumber(document, "fringe", fringe);
+		bool vendorInvertView = false;
+		if (readCalibrationBool(document, "invView", vendorInvertView))
+			loaded.invertView = !vendorInvertView;
+		readCalibrationBool(document, "flipImageX", loaded.flipImageX);
+		readCalibrationBool(document, "flipImageY", loaded.flipImageY);
+		readCalibrationBool(document, "flipSubp", loaded.flipSubpixel);
+		loaded.calibrated = true;
+		if (loaded.screenSize == glm::ivec2(1440, 2560)) {
+			loaded.quiltGrid = {11.0f, 6.0f};
+			loaded.viewCount = 66;
+		}
+		config = loaded;
+
+		if (document.HasMember("serial") && document["serial"].IsString())
+			SDL_Log("Looking Glass calibration serial: %s", document["serial"].GetString());
+		SDL_Log("Loaded Looking Glass calibration from %s "
+			"(pitch=%.4f slope=%.4f center=%.4f DPI=%.1f panel=%dx%d fringe=%.4f view=%s)",
+			path.string().c_str(), config.pitch, config.slope, config.center,
+			config.dpi, config.screenSize.x, config.screenSize.y, fringe,
+			config.invertView ? "inverted" : "forward");
+		return true;
+	}
+
+	std::filesystem::path findLookingGlassCalibration() {
+		if (const char* requested = std::getenv("RENDEPTH_NATIVE_CALIBRATION"))
+			return requested;
+
+		std::error_code error;
+		for (const auto& mediaRoot : {std::filesystem::path("/run/media"), std::filesystem::path("/media")}) {
+			if (!std::filesystem::is_directory(mediaRoot, error)) continue;
+			for (const auto& userRoot : std::filesystem::directory_iterator(mediaRoot, error)) {
+				if (error || !userRoot.is_directory(error)) continue;
+				for (const auto& volume : std::filesystem::directory_iterator(userRoot.path(), error)) {
+					if (error || !volume.is_directory(error)) continue;
+					auto candidate = volume.path() / "LKG_calibration" / "visual.json";
+					if (std::filesystem::is_regular_file(candidate, error)) return candidate;
+				}
+			}
+		}
+		return {};
+	}
+
+	void applyNativeDisplayOverrides(NativeDisplayConfig& config) {
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_PITCH"))
+			config.pitch = std::strtof(value, nullptr);
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_TILT"))
+			config.slope = std::strtof(value, nullptr);
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_CENTER"))
+			config.center = std::strtof(value, nullptr);
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_SUBPIXEL"))
+			config.subpixel = std::strtof(value, nullptr);
+	}
+
+	void reloadNativeDisplayConfig(NativeDisplayConfig& config) {
+		const auto displayName = config.displayName;
+		NativeDisplayConfig reloaded{};
+		if (const auto path = findLookingGlassCalibration(); !path.empty())
+			loadLookingGlassCalibration(path, reloaded);
+		applyNativeDisplayOverrides(reloaded);
+		reloaded.displayName = displayName;
+		config = reloaded;
+	}
+}
 
 glm::vec2 Image::getIconCoordinates(IconType iconType) {
 	auto iconIndex = static_cast<int>(iconType);
 	auto iconX = iconIndex % gridSize;
 	auto iconY = iconIndex / gridSize;
 	return glm::vec2(iconX, iconY) / (float)gridSize;
+}
+
+int Image::initNativeOutput(Context* context) {
+	if (context == nullptr || context->device == nullptr) return -1;
+	const char* enabled = std::getenv("RENDEPTH_NATIVE_OUTPUT");
+	if (enabled != nullptr && std::string(enabled) == "0") return 0;
+	const char* requestedName = std::getenv("RENDEPTH_NATIVE_DISPLAY");
+	reloadNativeDisplayConfig(nativeDisplayConfig);
+
+	int displayCount = 0;
+	SDL_DisplayID* displays = SDL_GetDisplays(&displayCount);
+	for (int i = 0; displays != nullptr && i < displayCount; ++i) {
+		const char* name = SDL_GetDisplayName(displays[i]);
+		std::string displayName = name != nullptr ? name : "";
+		const bool requested = requestedName != nullptr &&
+			displayName.find(requestedName) != std::string::npos;
+		const std::string lowerName = [&displayName] {
+			std::string value = displayName;
+			std::transform(value.begin(), value.end(), value.begin(),
+				[](unsigned char c) { return (char)std::tolower(c); });
+			return value;
+		}();
+		const bool knownQuiltDisplay = lowerName.find("lkg") != std::string::npos ||
+			lowerName.find("looking glass") != std::string::npos ||
+			lowerName.find("cubevi") != std::string::npos ||
+			lowerName.find("c1") != std::string::npos;
+		if (!requested && requestedName == nullptr && !knownQuiltDisplay) continue;
+		if (!requested && requestedName != nullptr) continue;
+
+		SDL_Rect bounds{};
+		if (!SDL_GetDisplayBounds(displays[i], &bounds)) continue;
+		nativeDisplay = displays[i];
+		nativeDisplayConfig.displayName = displayName;
+		context->nativeOutputWindow = SDL_CreateWindow("Rendepth Native Output",
+			bounds.w, bounds.h, SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+		if (context->nativeOutputWindow == nullptr) {
+			SDL_Log("Could not create native output window for %s: %s",
+				displayName.c_str(), SDL_GetError());
+			break;
+		}
+		SDL_SetWindowPosition(context->nativeOutputWindow,
+			SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay),
+			SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay));
+		SDL_SetWindowFullscreenMode(context->nativeOutputWindow, nullptr);
+		if (!SDL_SetWindowFullscreen(context->nativeOutputWindow, true)) {
+			SDL_Log("Native output fullscreen failed for %s: %s",
+				displayName.c_str(), SDL_GetError());
+		}
+		if (!SDL_ClaimWindowForGPUDevice(context->device, context->nativeOutputWindow)) {
+			SDL_Log("Could not claim native output window for %s: %s",
+				displayName.c_str(), SDL_GetError());
+			SDL_DestroyWindow(context->nativeOutputWindow);
+			context->nativeOutputWindow = nullptr;
+			break;
+		}
+			nativeOutputEnabled = true;
+			nativeOutputLastSize = {0, 0};
+		SDL_Log("Native quilt output enabled on %s (%dx%d)",
+			displayName.c_str(), bounds.w, bounds.h);
+		break;
+	}
+	if (displays != nullptr) SDL_free(displays);
+	return 0;
+}
+
+bool Image::nativeOutputAvailable() {
+	return nativeOutputEnabled;
+}
+
+void Image::setNativeOutputActive(Context* context, bool active) {
+	if (context == nullptr || context->device == nullptr) return;
+	if (active) {
+		if (!nativeOutputEnabled) initNativeOutput(context);
+		return;
+	}
+	if (context->nativeOutputWindow != nullptr) {
+		SDL_ReleaseWindowFromGPUDevice(context->device, context->nativeOutputWindow);
+		SDL_DestroyWindow(context->nativeOutputWindow);
+		context->nativeOutputWindow = nullptr;
+	}
+	nativeOutputEnabled = false;
+	nativeOutputSourceReady = false;
 }
 
 glm::vec2 Image::updateRatio(Context* context, glm::vec2 windowSize) {
@@ -134,13 +342,6 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData) {
 		context->gridSize = gridSize;
 		context->imageSize.x /= gridSize.x;
 		context->imageSize.y /= gridSize.y;
-	} else if (context->imageType == Light_Field_CV) {
-		glm::vec2 imageRes = { imageData->w, imageData->h };
-		imageRes /= glm::vec2(8.0, 5.0);
-		auto gridSize = glm::vec3(8.0f, 5.0f, imageRes.x / imageRes.y);
-		context->gridSize = gridSize;
-		context->imageSize.x /= gridSize.x;
-		context->imageSize.y /= gridSize.y;
 	}
 	context->infoText = Core::getFileText(imageInfo, context->imageSize);
 	updateSize(context);
@@ -157,6 +358,8 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData) {
 
 void Image::initMenuTexture() {
 	if (menuTextSurface) SDL_DestroySurface(menuTextSurface);
+	optionsLabels.clear();
+	optionTextures.clear();
 	menuTextSurface = SDL_CreateSurface((int)menuTextureSize.x, (int)menuTextureSize.y,
 		SDL_PIXELFORMAT_ABGR8888);
 	menuTextureOffset = { 2, 2 };
@@ -169,6 +372,7 @@ void Image::createMenuAssets(Context* context) {
 			addToMenuText(context, option);
 		}
 	}
+	uploadTexture(context, menuTextSurface, &menuTexture, "Menu Texture");
 }
 
 void Image::addToMenuText(Context* context, const std::string& text) {
@@ -208,7 +412,6 @@ void Image::addToMenuText(Context* context, const std::string& text) {
 	optionTextures[text] = option;
 	menuTextureOffset += glm::vec2(menuTextSize.x + padding, 0.0);
 
-	uploadTexture(context, menuTextSurface, &menuTexture, "Menu Texture");
 	SDL_DestroySurface(menuData);
 	SDL_DestroySurface(rgbaMenuData);
 }
@@ -294,6 +497,7 @@ void Image::saveMenuLayout(Context* context) {
 
 
 int Image::init(Context* context, FileInfo& imageInfo) {
+	context->nativeOutputWindow = nullptr;
 	auto currentDisplay = SDL_GetPrimaryDisplay();
 	auto displayMode = SDL_GetCurrentDisplayMode(currentDisplay);
 	auto displaySize = glm::vec3((float)displayMode->w, (float)displayMode->h, 0.0f);
@@ -319,13 +523,6 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 			firstImageSize.x /= 2.0;
 		} else if (imageInfo.type == Light_Field_LKG) {
 			auto gridSize = Core::getGridInfo(imageInfo.base);
-			context->gridSize = gridSize;
-			firstImageSize.x /= gridSize.x;
-			firstImageSize.y /= gridSize.y;
-		} else if (imageInfo.type == Light_Field_CV) {
-			glm::vec2 imageRes = { imageData->w, imageData->h };
-			imageRes /= glm::vec2(8.0, 5.0);
-			auto gridSize = glm::vec3(8.0f, 5.0f, imageRes.x / imageRes.y);
 			context->gridSize = gridSize;
 			firstImageSize.x /= gridSize.x;
 			firstImageSize.y /= gridSize.y;
@@ -359,6 +556,9 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 
 	SDL_SetWindowPosition(context->window, SDL_WINDOWPOS_CENTERED,
 		SDL_WINDOWPOS_CENTERED);
+	context->displayScale = SDL_GetWindowDisplayScale(context->window);
+	context->pixelDensity = SDL_GetWindowPixelDensity(context->window);
+	Style::calculateScale(virtualSize / context->displayScale);
 	SDL_SetWindowMinimumSize(context->window, 512, 768);
 	SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
 	SDL_SetHint(SDL_HINT_VIDEO_WAYLAND_SCALE_TO_DISPLAY, "0");
@@ -458,6 +658,8 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 		SDL_Log("GPU Cannot Claim Window");
 		return -1;
 	}
+	initNativeOutput(context);
+	if (context->mode != Light_Field) setNativeOutputActive(context, false);
 
 	SDL_GPUShader* imageVertexShader = Core::loadShader(context->device,
 		"Image.vert", 0, 1, 0, 0);
@@ -470,6 +672,12 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 		"Image.frag", 2, 1, 0, 0);
 	if (imageFragmentShader == nullptr) {
 		SDL_Log("Failed To Create Image Fragment Shader.");
+		return -1;
+	}
+	SDL_GPUShader* interlacerFragmentShader = Core::loadShader(context->device,
+		"Interlacer.frag", 1, 1, 0, 0);
+	if (interlacerFragmentShader == nullptr) {
+		SDL_Log("Failed To Create Interlacer Fragment Shader.");
 		return -1;
 	}
 
@@ -555,6 +763,31 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 		return -1;
 	}
 
+	SDL_GPUColorTargetDescription interlacerTargetDescription[1] = {{
+		.format = SDL_GetGPUSwapchainTextureFormat(context->device,
+			context->nativeOutputWindow != nullptr ? context->nativeOutputWindow : context->window)
+	}};
+	SDL_GPUGraphicsPipelineCreateInfo interlacerPipelineInfo = {
+		.vertex_shader = imageVertexShader,
+		.fragment_shader = interlacerFragmentShader,
+		.vertex_input_state = (SDL_GPUVertexInputState){
+			.vertex_buffer_descriptions = vertexBufferDescription,
+			.num_vertex_buffers = 1,
+			.vertex_attributes = vertexBufferAttribute,
+			.num_vertex_attributes = 2
+		},
+		.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+		.target_info = {
+			.color_target_descriptions = interlacerTargetDescription,
+			.num_color_targets = 1
+		}
+	};
+	interlacerPipeline = SDL_CreateGPUGraphicsPipeline(context->device, &interlacerPipelineInfo);
+	if (interlacerPipeline == nullptr) {
+		SDL_Log("Failed To Create Interlacer Pipeline.");
+		return -1;
+	}
+
 	SDL_GPUColorTargetDescription iconTargetDescription[1] = {{
 		.format = SDL_GetGPUSwapchainTextureFormat(context->device, context->window),
 		.blend_state = (SDL_GPUColorTargetBlendState) {
@@ -627,6 +860,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 
 	SDL_ReleaseGPUShader(context->device, imageVertexShader);
 	SDL_ReleaseGPUShader(context->device, imageFragmentShader);
+	SDL_ReleaseGPUShader(context->device, interlacerFragmentShader);
 
 	SDL_ReleaseGPUShader(context->device, iconVertexShader);
 	SDL_ReleaseGPUShader(context->device, iconFragmentShader);
@@ -735,21 +969,6 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 
 	load(context, imageInfo, imageData);
 
-	context->displayScale = SDL_GetWindowDisplayScale(context->window);
-	auto pixelDensity = SDL_GetWindowPixelDensity(context->window);
-	context->pixelDensity = pixelDensity;
-#if defined(__APPLE__)
-	mouseScale = pixelDensity;
-#elif defined(__linux__) || defined(__unix__)
-	mouseScale = pixelDensity;
-#else
-	mouseScale = 1.0;
-#endif
-
-	Style::calculateScale(virtualSize / context->displayScale);
-	initFonts(context);
-	initMenuTexture();
-	createMenuAssets(context);
 	saveMenuLayout(context);
 
 	if (imageInfo.path.empty()) {
@@ -763,6 +982,141 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	Core::drawText(context, "Rendepth 2D-to-3D Conversion", infoFont, infoTexture,
 					infoTextSize, "Info Texture");
 
+	return 0;
+}
+
+int Image::reloadShader(Context* context) {
+	if (context == nullptr || context->device == nullptr) return -1;
+
+	SDL_WaitForGPUIdle(context->device);
+	SDL_GPUShader* vertexShader = Core::loadShader(context->device,
+		"Image.vert", 0, 1, 0, 0);
+	SDL_GPUShader* fragmentShader = Core::loadShader(context->device,
+		"Image.frag", 2, 1, 0, 0);
+	if (vertexShader == nullptr || fragmentShader == nullptr) {
+		if (vertexShader != nullptr) SDL_ReleaseGPUShader(context->device, vertexShader);
+		if (fragmentShader != nullptr) SDL_ReleaseGPUShader(context->device, fragmentShader);
+		SDL_Log("Shader reload failed: could not load Image shaders.");
+		return -1;
+	}
+
+	SDL_GPUVertexBufferDescription vertexBufferDescription[1] = {{
+		.slot = 0,
+		.pitch = sizeof(Vertex),
+		.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX,
+		.instance_step_rate = 0
+	}};
+	SDL_GPUVertexAttribute vertexBufferAttribute[2] = {{
+		.location = 0,
+		.buffer_slot = 0,
+		.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+		.offset = 0
+	}, {
+		.location = 1,
+		.buffer_slot = 0,
+		.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
+		.offset = sizeof(float) * 3
+	}};
+	SDL_GPUColorTargetDescription colorTargetDescription[1] = {{
+		.format = SDL_GetGPUSwapchainTextureFormat(context->device, context->window),
+		.blend_state = {
+			.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
+			.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+			.color_blend_op = SDL_GPU_BLENDOP_ADD,
+			.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
+			.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+			.alpha_blend_op = SDL_GPU_BLENDOP_ADD,
+			.enable_blend = true
+		}
+	}};
+	SDL_GPUGraphicsPipelineCreateInfo pipelineInfo = {
+		.vertex_shader = vertexShader,
+		.fragment_shader = fragmentShader,
+		.vertex_input_state = {
+			.vertex_buffer_descriptions = vertexBufferDescription,
+			.num_vertex_buffers = 1,
+			.vertex_attributes = vertexBufferAttribute,
+			.num_vertex_attributes = 2
+		},
+		.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+		.target_info = {
+			.color_target_descriptions = colorTargetDescription,
+			.num_color_targets = 1
+		}
+	};
+
+	SDL_GPUGraphicsPipeline* replacement = SDL_CreateGPUGraphicsPipeline(
+		context->device, &pipelineInfo);
+	SDL_ReleaseGPUShader(context->device, vertexShader);
+	SDL_ReleaseGPUShader(context->device, fragmentShader);
+	if (replacement == nullptr) {
+		SDL_Log("Shader reload failed: could not create Image pipeline.");
+		return -1;
+	}
+
+	SDL_ReleaseGPUGraphicsPipeline(context->device, imagePipeline);
+	imagePipeline = replacement;
+	SDL_Log("Image shader reloaded.");
+	return reloadInterlacerShader(context);
+}
+
+int Image::reloadInterlacerShader(Context* context) {
+	if (context == nullptr || context->device == nullptr || interlacerPipeline == nullptr)
+		return -1;
+	SDL_WaitForGPUIdle(context->device);
+	SDL_GPUShader* vertexShader = Core::loadShader(context->device,
+		"Image.vert", 0, 1, 0, 0);
+	SDL_GPUShader* fragmentShader = Core::loadShader(context->device,
+		"Interlacer.frag", 1, 1, 0, 0);
+	if (vertexShader == nullptr || fragmentShader == nullptr) {
+		if (vertexShader != nullptr) SDL_ReleaseGPUShader(context->device, vertexShader);
+		if (fragmentShader != nullptr) SDL_ReleaseGPUShader(context->device, fragmentShader);
+		SDL_Log("Interlacer shader reload failed: could not load shaders.");
+		return -1;
+	}
+
+	SDL_GPUVertexBufferDescription vertexBufferDescription[1] = {{
+		.slot = 0, .pitch = sizeof(Vertex),
+		.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX, .instance_step_rate = 0
+	}};
+	SDL_GPUVertexAttribute vertexBufferAttribute[2] = {{
+		.location = 0, .buffer_slot = 0,
+		.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, .offset = 0
+	}, {
+		.location = 1, .buffer_slot = 0,
+		.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = sizeof(float) * 3
+	}};
+	SDL_Window* outputWindow = context->nativeOutputWindow != nullptr ?
+		context->nativeOutputWindow : context->window;
+	SDL_GPUColorTargetDescription targetDescription[1] = {{
+		.format = SDL_GetGPUSwapchainTextureFormat(context->device, outputWindow)
+	}};
+	SDL_GPUGraphicsPipelineCreateInfo pipelineInfo = {
+		.vertex_shader = vertexShader,
+		.fragment_shader = fragmentShader,
+		.vertex_input_state = {
+			.vertex_buffer_descriptions = vertexBufferDescription,
+			.num_vertex_buffers = 1,
+			.vertex_attributes = vertexBufferAttribute,
+			.num_vertex_attributes = 2
+		},
+		.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+		.target_info = {
+			.color_target_descriptions = targetDescription,
+			.num_color_targets = 1
+		}
+	};
+	SDL_GPUGraphicsPipeline* replacement = SDL_CreateGPUGraphicsPipeline(
+		context->device, &pipelineInfo);
+	SDL_ReleaseGPUShader(context->device, vertexShader);
+	SDL_ReleaseGPUShader(context->device, fragmentShader);
+	if (replacement == nullptr) {
+		SDL_Log("Interlacer shader reload failed: could not create pipeline.");
+		return -1;
+	}
+	SDL_ReleaseGPUGraphicsPipeline(context->device, interlacerPipeline);
+	interlacerPipeline = replacement;
+	SDL_Log("Interlacer shader reloaded.");
 	return 0;
 }
 
@@ -872,6 +1226,101 @@ int Image::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTextur
 	return 0;
 }
 
+SDL_Surface* Image::upscaleSurfaceGPU(Context* context, const SDL_Surface* source,
+		int outputWidth, int outputHeight) {
+	if (context == nullptr || context->device == nullptr || source == nullptr ||
+		outputWidth <= 0 || outputHeight <= 0 || source->format != SDL_PIXELFORMAT_RGBA32)
+		return nullptr;
+
+	SDL_GPUTextureCreateInfo sourceInfo{
+		.type = SDL_GPU_TEXTURETYPE_2D,
+		.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+		.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER,
+		.width = static_cast<Uint32>(source->w),
+		.height = static_cast<Uint32>(source->h),
+		.layer_count_or_depth = 1,
+		.num_levels = 1};
+	SDL_GPUTexture* sourceTexture = SDL_CreateGPUTexture(context->device, &sourceInfo);
+
+	sourceInfo.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+	sourceInfo.width = static_cast<Uint32>(outputWidth);
+	sourceInfo.height = static_cast<Uint32>(outputHeight);
+	SDL_GPUTexture* outputTexture = SDL_CreateGPUTexture(context->device, &sourceInfo);
+
+	SDL_GPUTransferBufferCreateInfo uploadInfo{
+		.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+		.size = static_cast<Uint32>(source->w * source->h * 4)};
+	SDL_GPUTransferBuffer* upload = SDL_CreateGPUTransferBuffer(context->device, &uploadInfo);
+	SDL_GPUTransferBufferCreateInfo downloadInfo{
+		.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+		.size = static_cast<Uint32>(outputWidth * outputHeight * 4)};
+	SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(context->device, &downloadInfo);
+
+	SDL_Surface* result = nullptr;
+	if (sourceTexture != nullptr && outputTexture != nullptr && upload != nullptr && download != nullptr) {
+		auto* mapped = static_cast<Uint8*>(SDL_MapGPUTransferBuffer(context->device, upload, false));
+		if (mapped != nullptr) {
+			for (int y = 0; y < source->h; ++y)
+				SDL_memcpy(mapped + static_cast<size_t>(y) * source->w * 4,
+					static_cast<const Uint8*>(source->pixels) + static_cast<size_t>(y) * source->pitch,
+					static_cast<size_t>(source->w) * 4);
+			SDL_UnmapGPUTransferBuffer(context->device, upload);
+
+			SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(context->device);
+			if (commands != nullptr) {
+				SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commands);
+				SDL_GPUTextureTransferInfo uploadTransfer{.transfer_buffer = upload};
+				SDL_GPUTextureRegion sourceRegion{.texture = sourceTexture,
+					.w = static_cast<Uint32>(source->w), .h = static_cast<Uint32>(source->h), .d = 1};
+				SDL_UploadToGPUTexture(copy, &uploadTransfer, &sourceRegion, false);
+				SDL_EndGPUCopyPass(copy);
+
+				SDL_GPUBlitInfo blit{};
+				blit.source = {.texture = sourceTexture, .w = static_cast<Uint32>(source->w),
+					.h = static_cast<Uint32>(source->h)};
+				blit.destination = {.texture = outputTexture,
+					.w = static_cast<Uint32>(outputWidth), .h = static_cast<Uint32>(outputHeight)};
+				blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+				blit.filter = SDL_GPU_FILTER_LINEAR;
+				SDL_BlitGPUTexture(commands, &blit);
+
+				copy = SDL_BeginGPUCopyPass(commands);
+				SDL_GPUTextureTransferInfo downloadTransfer{.transfer_buffer = download};
+				SDL_GPUTextureRegion outputRegion{.texture = outputTexture,
+					.w = static_cast<Uint32>(outputWidth), .h = static_cast<Uint32>(outputHeight), .d = 1};
+				SDL_DownloadFromGPUTexture(copy, &outputRegion, &downloadTransfer);
+				SDL_EndGPUCopyPass(copy);
+
+				SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commands);
+				const bool completed = fence != nullptr &&
+					SDL_WaitForGPUFences(context->device, true, &fence, 1);
+				if (fence != nullptr) SDL_ReleaseGPUFence(context->device, fence);
+				if (completed) {
+					mapped = static_cast<Uint8*>(SDL_MapGPUTransferBuffer(
+						context->device, download, false));
+					if (mapped != nullptr) {
+						result = SDL_CreateSurface(outputWidth, outputHeight, SDL_PIXELFORMAT_RGBA32);
+						if (result != nullptr) {
+							for (int y = 0; y < outputHeight; ++y)
+								SDL_memcpy(static_cast<Uint8*>(result->pixels) +
+									static_cast<size_t>(y) * result->pitch,
+									mapped + static_cast<size_t>(y) * outputWidth * 4,
+									static_cast<size_t>(outputWidth) * 4);
+						}
+						SDL_UnmapGPUTransferBuffer(context->device, download);
+					}
+				}
+			}
+		}
+	}
+
+	if (upload != nullptr) SDL_ReleaseGPUTransferBuffer(context->device, upload);
+	if (download != nullptr) SDL_ReleaseGPUTransferBuffer(context->device, download);
+	if (sourceTexture != nullptr) SDL_ReleaseGPUTexture(context->device, sourceTexture);
+	if (outputTexture != nullptr) SDL_ReleaseGPUTexture(context->device, outputTexture);
+	return result;
+}
+
 void Image::blitBlurTexture(Context* context, SDL_GPUTexture *inputTexture, Uint32 imageWidth, Uint32 imageHeight) {
 	static Uint32 blitSize = 32;
 	static Uint32 blurSize = 4;
@@ -968,17 +1417,19 @@ static SDL_GPUViewport getViewportGrid(glm::vec2 view, glm::vec2 rect) {
 	return result;
 }
 
-int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
+int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
+		SDL_GPUTexture* sourceTexture) {
 	if (displayHelp) return -1;
 	if (context->imageType == Color_Only || context->imageType == Color_Anaglyph ||
 		(context->imageType != Color_Plus_Depth &&
 		(stereoFormat == Color_Only || stereoFormat == Color_Plus_Depth ||
-			stereoFormat == Light_Field_LKG || stereoFormat == Light_Field_CV))) return -1;
+			stereoFormat == Light_Field_LKG))) return -1;
 
 	auto renderFormat = Left;
 	auto singleImageSize = context->imageSize;
 	auto viewportSize = singleImageSize;
 	auto viewsX = 1, viewsY = 1;
+	auto quiltViewCount = 1;
 	auto stereoStrength = context->stereoStrength;
 	auto stereoDepth = context->stereoDepth;
 	auto stereoOffset = context->stereoOffset;
@@ -993,7 +1444,7 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 	if (stereoFormat == Color_Only) {
 		renderFormat = Mono;
 	} else if (stereoFormat == Color_Anaglyph) {
-		renderFormat = Anaglyph;
+		renderFormat = Anaglyph_Accurate;
 	} else if (stereoFormat == Side_By_Side_Full) {
 		renderFormat = Left;
 		viewportSize = singleImageSize * glm::vec2(2.0, 1.0);
@@ -1020,8 +1471,11 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 		viewsX = 3;
 		viewsY = 1;
 	} else if (stereoFormat == Light_Field_LKG) {
-		viewsX = (int)exportQuiltDimLKG.x;
-		viewsY = (int)exportQuiltDimLKG.y;
+		const auto quiltGrid = nativeOutputEnabled ? nativeDisplayConfig.quiltGrid : exportQuiltDimLKG;
+		quiltViewCount = nativeOutputEnabled ? nativeDisplayConfig.viewCount :
+			(int)(exportQuiltDimLKG.x * exportQuiltDimLKG.y);
+		viewsX = (int)quiltGrid.x;
+		viewsY = (int)quiltGrid.y;
 		startY = viewsY - 1;
 		stepY = -1;
 		renderFormat = Left;
@@ -1030,29 +1484,15 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 		singleImageSize *= maxRes / maxSize;
 		singleImageSize.x = roundf(singleImageSize.x);
 		singleImageSize.y = roundf(singleImageSize.y);
-		viewportSize = singleImageSize * exportQuiltDimLKG;
-		stereoStrength *= gridBoost;
-		stereoOffset *= gridBoost;
-		strengthStep = -stereoStrength * 2.0f / (float(viewsX * viewsY - 1));
-		offsetStep = -stereoOffset * 2.0f / (float(viewsX * viewsY - 1));
-	} else if (stereoFormat == Light_Field_CV) {
-		viewsX = (int)exportQuiltDimCV.x;
-		viewsY = (int)exportQuiltDimCV.y;
-		renderFormat = Left;
-		auto maxRes = exportQuiltMaxResCV;
-		auto maxSize = std::max(singleImageSize.x, singleImageSize.y);
-		singleImageSize *= maxRes / maxSize;
-		singleImageSize.x = roundf(singleImageSize.x);
-		singleImageSize.y = roundf(singleImageSize.y);
-		viewportSize = singleImageSize * exportQuiltDimCV;
+		viewportSize = singleImageSize * quiltGrid;
 		stereoStrength *= gridBoost;
 		stereoOffset *= gridBoost;
 		strengthStep = -stereoStrength * 2.0f / (float(viewsX * viewsY - 1));
 		offsetStep = -stereoOffset * 2.0f / (float(viewsX * viewsY - 1));
 	}
 
-	int imageHalfWidth = (int)singleImageSize.x / 2;
-	int imageHalfHeight = (int)singleImageSize.y / 2;
+	const float imageHalfWidth = singleImageSize.x * 0.5f;
+	const float imageHalfHeight = singleImageSize.y * 0.5f;
 
 	SDL_GPUTextureCreateInfo textureCreateInfo {
 		.type = SDL_GPU_TEXTURETYPE_2D,
@@ -1093,6 +1533,8 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 
 	for (auto renderY = startY; renderY >= 0 && renderY < viewsY; renderY += stepY) {
 		for (auto renderX = startX; renderX < viewsX; renderX += stepX) {
+			const int quiltView = (viewsY - 1 - renderY) * viewsX + renderX;
+			if (quiltView >= quiltViewCount) continue;
 			auto drawViewport = getViewportGrid(glm::vec2(renderX, renderY), singleImageSize);
 			SDL_SetGPUViewport(renderPass, &drawViewport);
 
@@ -1101,7 +1543,7 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 			SDL_BindGPUGraphicsPipeline(renderPass, imagePipeline);
 			SDL_BindGPUVertexBuffers(renderPass, 0, &vertexBinding, 1);
 			SDL_BindGPUIndexBuffer(renderPass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
-			SDL_GPUTextureSamplerBinding sampleBindings[2] = {{ .texture = imageTexture, .sampler = imageSampler },
+			SDL_GPUTextureSamplerBinding sampleBindings[2] = {{ .texture = sourceTexture != nullptr ? sourceTexture : imageTexture, .sampler = imageSampler },
 				{ .texture = blurTexture, .sampler = imageSampler }};
 			SDL_BindGPUFragmentSamplers(renderPass, 0, &sampleBindings[0], 2);
 
@@ -1115,6 +1557,8 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 			imageDataFrag.stereoOffset = (float)stereoOffset;
 			imageDataFrag.windowSize = context->imageSize;
 			imageDataFrag.imageSize = context->imageSize;
+			imageDataFrag.type = context->imageType;
+			imageDataFrag.gridSize = context->gridSize;
 			auto singleImageAspect = singleImageSize.x / singleImageSize.y;
 			imageDataVert.displayImageAspect = glm::vec3(singleImageAspect, singleImageAspect, 1.0);
 			imageDataVert.fillScreen = 0;
@@ -1126,7 +1570,7 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat) {
 
 			drawImage(commandBuffer, renderPass);
 
-			if (stereoFormat == Light_Field_LKG || stereoFormat == Light_Field_CV) {
+			if (stereoFormat == Light_Field_LKG) {
 				stereoStrength += strengthStep;
 				stereoOffset += offsetStep;
 			}
@@ -1167,13 +1611,6 @@ SDL_Surface* Image::getExportTexture(Context* context, StereoFormat stereoFormat
 		stereoImageSize.x = roundf(stereoImageSize.x);
 		stereoImageSize.y = roundf(stereoImageSize.y);
 		stereoImageSize = stereoImageSize * exportQuiltDimLKG;
-	} else if (stereoFormat == Light_Field_CV) {
-		auto maxRes = exportQuiltMaxResCV;
-		auto maxSize = std::max(stereoImageSize.x, stereoImageSize.y);
-		stereoImageSize *= maxRes / maxSize;
-		stereoImageSize.x = roundf(stereoImageSize.x);
-		stereoImageSize.y = roundf(stereoImageSize.y);
-		stereoImageSize = stereoImageSize * exportQuiltDimCV;
 	}
 
 	SDL_GPUTransferBufferCreateInfo transferBufferInfo {
@@ -1275,6 +1712,10 @@ void Image::setSpriteUniforms(glm::vec3 position, glm::vec3 size, glm::vec4 colo
 }
 
 int Image::draw(Context* context) {
+	if (nativeOutputEnabled) {
+		nativeOutputSourceReady = imageTexture != nullptr;
+		if (nativeOutputSourceReady) drawNativeOutput(context);
+	}
 	SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(context->device);
 	if (commandBuffer == nullptr) {
 		SDL_Log("Acquire GPU Command Buffer Failed.");
@@ -1435,7 +1876,7 @@ int Image::draw(Context* context) {
 			auto viewColorBlackSolid = style.getColor(Style::Color::Black, Style::Alpha::Solid);
 			auto viewColorBlackLight = style.getColor(Style::Color::Black, Style::Alpha::Weak);
 			auto viewColorBlueSolid = style.getColor(Style::Color::Black, Style::Alpha::Solid);
-			if (context->mode == Anaglyph) {
+			if (context->mode == Anaglyph_Accurate || context->mode == Anaglyph_Vivid) {
 				viewColorPink = style.toAnaglyph(viewColorPink);
 				viewColorPinkSolid = style.toAnaglyph(viewColorPinkSolid);
 			}
@@ -1696,7 +2137,110 @@ int Image::draw(Context* context) {
 	return 0;
 }
 
+int Image::drawNativeOutput(Context* context) {
+	if (!nativeOutputEnabled || !nativeOutputSourceReady || context == nullptr ||
+		context->nativeOutputWindow == nullptr ||
+		interlacerPipeline == nullptr) return 0;
+	SDL_GPUTexture* quiltTexture = imageTexture;
+	if (quiltTexture == nullptr) return 0;
+
+	int width = 0, height = 0;
+	SDL_GetWindowSizeInPixels(context->nativeOutputWindow, &width, &height);
+	if (width <= 0 || height <= 0) return 0;
+	const bool outputSizeChanged = nativeOutputLastSize != glm::ivec2(width, height);
+	if (outputSizeChanged) {
+		nativeOutputLastSize = {width, height};
+		SDL_Log("Native output swapchain: %dx%d physical pixels", width, height);
+		if (nativeDisplayConfig.calibrated &&
+			(width != nativeDisplayConfig.screenSize.x || height != nativeDisplayConfig.screenSize.y)) {
+			SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+				"Native output is %dx%d but calibration requires %dx%d. "
+				"Compositor scaling will prevent correct lenticular output.",
+				width, height, nativeDisplayConfig.screenSize.x,
+				nativeDisplayConfig.screenSize.y);
+		}
+	}
+	if (context->imageType == Light_Field_LKG && context->gridSize.x > 0.0f &&
+		context->gridSize.y > 0.0f) {
+		nativeDisplayConfig.quiltGrid = {context->gridSize.x, context->gridSize.y};
+		nativeDisplayConfig.viewCount = (int)std::lround(
+			context->gridSize.x * context->gridSize.y);
+	}
+	interlacerDataFrag.outputSize = {(float)width, (float)height};
+	interlacerDataFrag.quiltSize = nativeDisplayConfig.quiltGrid;
+	interlacerDataFrag.tileSize = 1.0f / nativeDisplayConfig.quiltGrid;
+	const bool hasSlope = std::abs(nativeDisplayConfig.slope) > 0.001f;
+	float phaseX = nativeDisplayConfig.pitch / std::max(nativeDisplayConfig.dpi, 1.0f);
+	if (hasSlope)
+		phaseX *= std::cos(std::atan(1.0f / nativeDisplayConfig.slope));
+	const float phaseY = hasSlope ? phaseX / nativeDisplayConfig.slope : 0.0f;
+	interlacerDataFrag.phaseScale = {phaseX, phaseY};
+	interlacerDataFrag.center = nativeDisplayConfig.center;
+	interlacerDataFrag.subpixelPhase = phaseX / 3.0f + nativeDisplayConfig.subpixel;
+	if (nativeDisplayConfig.flipSubpixel)
+		interlacerDataFrag.subpixelPhase = -interlacerDataFrag.subpixelPhase;
+	interlacerDataFrag.viewCount = std::min(nativeDisplayConfig.viewCount,
+		(int)(nativeDisplayConfig.quiltGrid.x * nativeDisplayConfig.quiltGrid.y));
+	interlacerDataFrag.gridColumns = (int)nativeDisplayConfig.quiltGrid.x;
+	interlacerDataFrag.gridRows = (int)nativeDisplayConfig.quiltGrid.y;
+	interlacerDataFrag.output2D = context->mode != Light_Field || !context->display3D ? 1 : 0;
+	interlacerDataFrag.sourceFlat = context->imageType != Color_Plus_Depth &&
+		context->imageType != Light_Field_LKG ? 1 : 0;
+	interlacerDataFrag.invertView = nativeDisplayConfig.invertView ? 1 : 0;
+	interlacerDataFrag.flipImageX = nativeDisplayConfig.flipImageX ? 1 : 0;
+	interlacerDataFrag.flipImageY = nativeDisplayConfig.flipImageY ? 1 : 0;
+	interlacerDataFrag.reserved2 = 0;
+	interlacerDataFrag.sourceRgbd = context->imageType == Color_Plus_Depth ? 1 : 0;
+	interlacerDataFrag.stereoStrength = (float)context->stereoStrength;
+	interlacerDataFrag.stereoDepth = (float)context->stereoDepth;
+	interlacerDataFrag.stereoOffset = (float)context->stereoOffset;
+	interlacerDataFrag.reserved3 = 0;
+	if (outputSizeChanged) {
+		SDL_Log("Native phase: X=%.8f Y=%.8f center=%.8f subpixel=%.8f "
+			"origin=%d view=%s",
+			phaseX, phaseY, interlacerDataFrag.center,
+			interlacerDataFrag.subpixelPhase, 1,
+			interlacerDataFrag.invertView != 0 ? "inverted" : "forward");
+	}
+
+	SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(context->device);
+	if (commandBuffer == nullptr) return -1;
+	SDL_GPUTexture* outputTexture = nullptr;
+	if (!SDL_AcquireGPUSwapchainTexture(commandBuffer, context->nativeOutputWindow,
+		&outputTexture, nullptr, nullptr) || outputTexture == nullptr) return -1;
+	SDL_GPUColorTargetInfo targetInfo{};
+	targetInfo.texture = outputTexture;
+	targetInfo.load_op = SDL_GPU_LOADOP_CLEAR;
+	targetInfo.store_op = SDL_GPU_STOREOP_STORE;
+	targetInfo.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
+	SDL_GPURenderPass* renderPass = SDL_BeginGPURenderPass(commandBuffer, &targetInfo, 1, nullptr);
+	if (renderPass == nullptr) return -1;
+
+	SDL_GPUViewport viewport{0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f};
+	SDL_SetGPUViewport(renderPass, &viewport);
+	bindPipeline(renderPass, interlacerPipeline);
+	imageDataVert.displayImageAspect = {1.0f, 1.0f, 1.0f};
+	imageDataVert.fillScreen = 1;
+	imageDataVert.projection = glm::mat4(1.0f);
+	imageDataVert.transform = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f));
+	SDL_PushGPUVertexUniformData(commandBuffer, 0, &imageDataVert, sizeof(imageDataVert));
+	SDL_GPUTextureSamplerBinding binding{.texture = quiltTexture, .sampler = imageSampler};
+	SDL_BindGPUFragmentSamplers(renderPass, 0, &binding, 1);
+	SDL_PushGPUFragmentUniformData(commandBuffer, 0, &interlacerDataFrag,
+		sizeof(interlacerDataFrag));
+	SDL_DrawGPUIndexedPrimitives(renderPass, 6, 1, 0, 0, 0);
+	SDL_EndGPURenderPass(renderPass);
+	SDL_SubmitGPUCommandBuffer(commandBuffer);
+	return 0;
+}
+
 void Image::quit(Context* context){
+	if (context->nativeOutputWindow != nullptr) {
+		SDL_ReleaseWindowFromGPUDevice(context->device, context->nativeOutputWindow);
+		SDL_DestroyWindow(context->nativeOutputWindow);
+		context->nativeOutputWindow = nullptr;
+	}
+	SDL_ReleaseGPUGraphicsPipeline(context->device, interlacerPipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, imagePipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, iconPipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, spritePipeline);

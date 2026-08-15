@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Outmode
+// Copyright (c) 2026 Outmode
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -19,10 +19,30 @@
 // SOFTWARE.
 
 #include "Core.h"
-#include "Image.h"
 #include "SDL3_image/SDL_image.h"
-#include <thread>
-#include <iostream>
+#include <regex>
+
+namespace {
+	bool parseQuiltTag(const std::string& file, glm::vec3* grid) {
+		static const std::regex quiltPattern(
+			R"((?:_|\(|\s)qs([0-9]+)x([0-9]+)a([0-9]+(?:\.[0-9]+)?))",
+			std::regex::icase);
+		std::smatch match;
+		if (!std::regex_search(file, match, quiltPattern)) return false;
+		if (grid != nullptr) {
+			try {
+				*grid = {
+					std::stof(match[1].str()),
+					std::stof(match[2].str()),
+					std::stof(match[3].str())
+				};
+			} catch (const std::exception&) {
+				return false;
+			}
+		}
+		return true;
+	}
+}
 
 void Core::quit(Context* context) {
 	SDL_ReleaseWindowFromGPUDevice(context->device, context->window);
@@ -184,9 +204,10 @@ SDL_Surface* Core::loadImageDirect(const std::string& imageFilename) {
 
 int Core::loadImageThread(void* ptr) {
 	auto data = static_cast<AsyncData*>(ptr);
-	SDL_DestroySurface((*data).surface);
-	(*data).surface = Core::loadImageDirect((*data).path);
-	return (*data).fileIndex;
+	SDL_DestroySurface(data->surface);
+	data->surface = Core::loadImageDirect(data->path);
+	data->done.store(true, std::memory_order_release);
+	return data->fileIndex;
 }
 
 SDL_Thread* Core::loadImageAsync(AsyncData& asyncData) {
@@ -211,6 +232,7 @@ std::string Core::getFileText(const FileInfo& imageInfo, glm::vec2 imageSize) {
 }
 
 StereoFormat Core::getImageType(const std::string& file) {
+	if (parseQuiltTag(file, nullptr)) return Light_Field_LKG;
 	StereoFormat result = Unknown_Format;
 	for (const auto& tag : tagType) {
 		if (file.find(tag.first) != std::string::npos) {
@@ -223,19 +245,7 @@ StereoFormat Core::getImageType(const std::string& file) {
 
 glm::vec3 Core::getGridInfo(const std::string& file) {
 	auto result = glm::vec3(1, 1, 1);
-	std::size_t gridTag = file.find("_qs");
-	if (gridTag != std::string::npos) {
-		std::size_t fileLen = file.length();
-		size_t gridStart = gridTag + 3;
-		std::string gridInfo = file.substr(gridStart, fileLen);
-		std::size_t gridLen = gridInfo.length();
-		std::size_t gridX = gridInfo.find('x');
-		std::size_t gridA = gridInfo.find('a');
-		auto gridCol = gridInfo.substr(0, gridX);
-		auto gridRow = gridInfo.substr(gridX + 1, gridA - gridX - 1);
-		auto gridAspect = gridInfo.substr(gridA + 1, gridLen - gridA);
-		result = { stof(gridCol), stof(gridRow), stof(gridAspect) };
-	}
+	parseQuiltTag(file, &result);
 	return result;
 }
 

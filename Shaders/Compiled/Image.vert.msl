@@ -1,0 +1,50 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct ImageDataVertex
+{
+    float4x4 transform;
+    float4x4 projection;
+    packed_float3 displayImageAspect;
+    int fillScreen;
+};
+
+struct main0_out
+{
+    float2 fragUV [[user(locn0)]];
+    float4 gl_Position [[position]];
+};
+
+struct main0_in
+{
+    float3 inPosition [[attribute(0)]];
+    float2 inUV [[attribute(1)]];
+};
+
+vertex main0_out main0(main0_in in [[stage_in]], constant ImageDataVertex& _25 [[buffer(0)]])
+{
+    main0_out out = {};
+    out.fragUV = in.inUV;
+    float3 aspectRatio = float3(1.0);
+    float displayAspect = _25.displayImageAspect[0u];
+    float imageAspect = _25.displayImageAspect[1u];
+    if (displayAspect > imageAspect)
+    {
+        aspectRatio.x = imageAspect / displayAspect;
+    }
+    else
+    {
+        aspectRatio.y = displayAspect / imageAspect;
+    }
+    if (_25.fillScreen == 1)
+    {
+        float minDim = fast::min(aspectRatio.x, aspectRatio.y);
+        aspectRatio /= float3(minDim);
+    }
+    float3 adjustedPosition = in.inPosition * aspectRatio;
+    out.gl_Position = (_25.projection * _25.transform) * float4(adjustedPosition, 1.0);
+    return out;
+}
+

@@ -1,0 +1,35 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct IconDataVertex
+{
+    float4x4 transform;
+    float4x4 projection;
+    float2 gridSize;
+    float2 gridOffset;
+};
+
+struct main0_out
+{
+    float2 fragUV [[user(locn0)]];
+    float2 iconUV [[user(locn1)]];
+    float4 gl_Position [[position]];
+};
+
+struct main0_in
+{
+    float3 inPosition [[attribute(0)]];
+    float2 inUV [[attribute(1)]];
+};
+
+vertex main0_out main0(main0_in in [[stage_in]], constant IconDataVertex& _26 [[buffer(0)]])
+{
+    main0_out out = {};
+    out.iconUV = (in.inUV - float2(0.5)) * float2(-1.0, 1.0);
+    out.fragUV = (in.inUV / _26.gridSize) + _26.gridOffset;
+    out.gl_Position = (_26.projection * _26.transform) * float4(in.inPosition, 1.0);
+    return out;
+}
+

@@ -22,6 +22,3 @@
 [submodule "ThirdParty/rapidjson"]
 	path = ThirdParty/rapidjson
 	url = https://github.com/Tencent/rapidjson.git
-[submodule "Package/Depth-Anything-V2"]
-	path = Package/Depth-Anything-V2
-	url = https://github.com/outmode/Depth-Anything-V2.git

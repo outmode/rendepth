@@ -1,0 +1,33 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct SpriteDataVertex
+{
+    float4x4 transform;
+    float4x4 projection;
+    float2 uvOffset;
+    float2 uvSize;
+};
+
+struct main0_out
+{
+    float2 fragUV [[user(locn0)]];
+    float4 gl_Position [[position]];
+};
+
+struct main0_in
+{
+    float3 inPosition [[attribute(0)]];
+    float2 inUV [[attribute(1)]];
+};
+
+vertex main0_out main0(main0_in in [[stage_in]], constant SpriteDataVertex& _17 [[buffer(0)]])
+{
+    main0_out out = {};
+    out.fragUV = (in.inUV * _17.uvSize) + _17.uvOffset;
+    out.gl_Position = (_17.projection * _17.transform) * float4(in.inPosition, 1.0);
+    return out;
+}
+
