@@ -67,19 +67,42 @@ SDL_GPUShader* Core::loadShader(SDL_GPUDevice* device, const std::string& shader
 	std::string entryPoint;
 	std::string shaderExt;
 
-	if (backendFormats & SDL_GPU_SHADERFORMAT_DXIL) {
-		gpuShaderFormat = SDL_GPU_SHADERFORMAT_DXIL;
-		entryPoint = "main";
-		shaderExt = "dxil";
-	} else if (backendFormats & SDL_GPU_SHADERFORMAT_SPIRV) {
-		gpuShaderFormat = SDL_GPU_SHADERFORMAT_SPIRV;
-		entryPoint = "main";
-		shaderExt = "spv";
-	} else if (backendFormats & SDL_GPU_SHADERFORMAT_MSL) {
-		gpuShaderFormat = SDL_GPU_SHADERFORMAT_MSL;
-		entryPoint = "main0";
-		shaderExt = "msl";
-	} else {
+	#ifdef _WIN32
+		if (backendFormats & SDL_GPU_SHADERFORMAT_DXIL) {
+			gpuShaderFormat = SDL_GPU_SHADERFORMAT_DXIL;
+			entryPoint = "main";
+			shaderExt = "dxil";
+		} else if (backendFormats & SDL_GPU_SHADERFORMAT_SPIRV) {
+			gpuShaderFormat = SDL_GPU_SHADERFORMAT_SPIRV;
+			entryPoint = "main";
+			shaderExt = "spv";
+		}
+	#elif defined(__APPLE__)
+		if (backendFormats & SDL_GPU_SHADERFORMAT_MSL) {
+			gpuShaderFormat = SDL_GPU_SHADERFORMAT_MSL;
+			entryPoint = "main0";
+			shaderExt = "msl";
+		} else if (backendFormats & SDL_GPU_SHADERFORMAT_SPIRV) {
+			gpuShaderFormat = SDL_GPU_SHADERFORMAT_SPIRV;
+			entryPoint = "main";
+			shaderExt = "spv";
+		}
+	#else
+		if (backendFormats & SDL_GPU_SHADERFORMAT_SPIRV) {
+			gpuShaderFormat = SDL_GPU_SHADERFORMAT_SPIRV;
+			entryPoint = "main";
+			shaderExt = "spv";
+		} else if (backendFormats & SDL_GPU_SHADERFORMAT_MSL) {
+			gpuShaderFormat = SDL_GPU_SHADERFORMAT_MSL;
+			entryPoint = "main0";
+			shaderExt = "msl";
+		} else if (backendFormats & SDL_GPU_SHADERFORMAT_DXIL) {
+			gpuShaderFormat = SDL_GPU_SHADERFORMAT_DXIL;
+			entryPoint = "main";
+			shaderExt = "dxil";
+		}
+	#endif
+	if (gpuShaderFormat == SDL_GPU_SHADERFORMAT_INVALID) {
 		SDL_Log("Invalid Graphics Shader.");
 		return nullptr;
 	}

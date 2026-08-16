@@ -98,6 +98,7 @@ public:
 
 	struct InterlacerDataFrag {
 		glm::vec2 outputSize;
+		glm::vec2 imageSize;
 		glm::vec2 quiltSize;
 		glm::vec2 tileSize;
 		glm::vec2 phaseScale;
@@ -112,6 +113,7 @@ public:
 		int flipImageX;
 		int flipImageY;
 		int reserved2;
+		int swapLeftRight;
 		int sourceRgbd;
 		float stereoStrength;
 		float stereoDepth;

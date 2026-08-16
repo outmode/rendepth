@@ -197,6 +197,49 @@ static double getTimeNow() {
 	return (double)SDL_GetTicks() / 1000.0;
 }
 
+static bool compileShadersForReload() {
+	const std::filesystem::path executableDirectory = SDL_GetBasePath();
+	std::filesystem::path shaderDirectory;
+	for (auto directory = executableDirectory; !directory.empty(); directory = directory.parent_path()) {
+		const auto candidate = directory / "Shaders";
+		if (std::filesystem::exists(candidate / "compile_linux.sh") ||
+			std::filesystem::exists(candidate / "compile_macos.sh") ||
+			std::filesystem::exists(candidate / "compile_windows.bat")) {
+			shaderDirectory = candidate;
+			break;
+		}
+		const auto parent = directory.parent_path();
+		if (parent == directory) break;
+	}
+	if (shaderDirectory.empty()) {
+		SDL_Log("Shader reload failed: no shader script directory found.");
+		return false;
+	}
+
+	std::string scriptName;
+	#ifdef _WIN32
+		scriptName = "compile_windows.bat";
+	#elif defined(__APPLE__)
+		scriptName = "compile_macos.sh";
+	#else
+		scriptName = "compile_linux.sh";
+	#endif
+	#ifdef _WIN32
+		const std::string command = "cd /d \"" + shaderDirectory.string() +
+			"\" && \"" + scriptName + "\"";
+	#else
+		const std::string command = "cd \"" + shaderDirectory.string() +
+			"\" && ./" + scriptName;
+	#endif
+	SDL_Log("Compiling shaders from GLSL: %s", command.c_str());
+	const int result = std::system(command.c_str());
+	if (result != 0) {
+		SDL_Log("Shader compilation failed with status %d.", result);
+		return false;
+	}
+	return true;
+}
+
 static std::string formatFileSize(std::uintmax_t size) {
 	const char* units[] = {"B", "KB", "MB", "GB", "TB"};
 	int unitIndex = 0;
@@ -1034,18 +1077,18 @@ static std::unordered_map<std::string, std::function<void(int)>> menuCallback = 
 	{ ChoiceEyes.label, [](int option) { changeEyes(option); } }
 };
 
-double sliderStart = 0.5;
-double currentStereoStrength = sliderStart * 0.8 + 0.1;
-double currentStereoDepth = sliderStart * 0.5 + 0.25;
-double currentStereoOffset = (1.0 - sliderStart) / 50.0;
-double currentGridAngle = sliderStart;
+static double sliderStart = 0.5;
+static double currentStereoStrength = sliderStart * 0.8 + 0.1;
+static double currentStereoDepth = sliderStart * 0.5 + 0.25;
+static double currentStereoOffset = (1.0 - sliderStart) / 50.0;
+static double currentGridAngle = sliderStart;
 
 static double getSliderPercent(const Icon& icon) {
 	return icon.slider.position.x / icon.slider.size.x + 0.5;
 }
 
 static void setSliderPercent(Icon& icon, double percent) {
-	icon.slider.position.x = icon.slider.size.x * (float)(percent - 0.5);
+	icon.slider.position.x = icon.slider.size.x * static_cast<float>(percent - 0.5);
 }
 
 static void updateStrengthSlider() {
@@ -1456,6 +1499,7 @@ static void refreshDisplay3D(StereoFormat type) {
 			type == Light_Field_LKG;
 		Image::setNativeOutputActive(&context, true);
 		if (!display3D || !supportedSource) {
+			if (!supportedSource) setDisplay3D(false);
 			setStereoMode(type == Color_Only ? Native : Mono);
 			return;
 		}
@@ -2874,6 +2918,10 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			} else if (!doingFileOp) {
 				return SDL_APP_SUCCESS;
 				}
+			}
+
+			if (event->key.key == SDLK_F5 && !event->key.repeat) {
+				if (compileShadersForReload()) Image::reloadShader(&context);
 			}
 
 			if (event->key.key == SDLK_1) {

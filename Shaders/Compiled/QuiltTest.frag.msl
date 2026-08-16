@@ -1,0 +1,296 @@
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+// Implementation of signed integer mod accurate to SPIR-V specification
+template<typename Tx, typename Ty>
+inline Tx spvSMod(Tx x, Ty y)
+{
+    Tx remainder = x - y * (x / y);
+    return select(Tx(remainder + y), remainder, remainder == 0 || (x >= 0) == (y >= 0));
+}
+
+struct QuiltTestData
+{
+    float2 outputSize;
+    float2 phaseScale;
+    float center;
+    float subpixelPhase;
+    int viewCount;
+    int pattern;
+    int phaseOrigin;
+    int invertView;
+    int expectedWidth;
+    int expectedHeight;
+};
+
+struct main0_out
+{
+    float4 outColor [[color(0)]];
+};
+
+struct main0_in
+{
+    float2 fragUV [[user(locn0)]];
+};
+
+static inline __attribute__((always_inline))
+float3 pixelIntegrityPattern(thread const int2& pixel, constant QuiltTestData& _52)
+{
+    bool _296 = _52.outputSize.x != float(_52.expectedWidth);
+    bool _307;
+    if (!_296)
+    {
+        _307 = _52.outputSize.y != float(_52.expectedHeight);
+    }
+    else
+    {
+        _307 = _296;
+    }
+    if (_307)
+    {
+        bool _316 = spvSMod(pixel.x, 32) == 0;
+        bool _324;
+        if (!_316)
+        {
+            _324 = spvSMod(pixel.y, 32) == 0;
+        }
+        else
+        {
+            _324 = _316;
+        }
+        bool grid = _324;
+        return select(float3(0.64999997615814208984375, 0.0, 0.0), float3(1.0), bool3(grid));
+    }
+    bool _336 = pixel.x < 4;
+    bool _343;
+    if (!_336)
+    {
+        _343 = pixel.y < 4;
+    }
+    else
+    {
+        _343 = _336;
+    }
+    bool _353;
+    if (!_343)
+    {
+        _353 = pixel.x >= (_52.expectedWidth - 4);
+    }
+    else
+    {
+        _353 = _343;
+    }
+    bool _363;
+    if (!_353)
+    {
+        _363 = pixel.y >= (_52.expectedHeight - 4);
+    }
+    else
+    {
+        _363 = _353;
+    }
+    bool border = _363;
+    if (border)
+    {
+        return float3(1.0);
+    }
+    bool checker = spvSMod((pixel.x / 32) + (pixel.y / 32), 2) == 0;
+    return select(float3(0.87999999523162841796875), float3(0.119999997317790985107421875), bool3(checker));
+}
+
+static inline __attribute__((always_inline))
+float2 phasePixel(thread float4& gl_FragCoord, constant QuiltTestData& _52)
+{
+    float2 pixel = gl_FragCoord.xy;
+    if ((_52.phaseOrigin & 1) != 0)
+    {
+        pixel.y = _52.outputSize.y - pixel.y;
+    }
+    if ((_52.phaseOrigin & 2) != 0)
+    {
+        pixel.x = _52.outputSize.x - pixel.x;
+    }
+    return pixel;
+}
+
+static inline __attribute__((always_inline))
+float phaseAt(thread const float& subpixelOffset, thread float4& gl_FragCoord, constant QuiltTestData& _52)
+{
+    return (dot(phasePixel(gl_FragCoord, _52), _52.phaseScale) - _52.center) + subpixelOffset;
+}
+
+static inline __attribute__((always_inline))
+int viewAt(thread const float& phase, thread const int& count, constant QuiltTestData& _52)
+{
+    int view = clamp(int(floor(fract(phase) * float(count))), 0, count - 1);
+    int _117;
+    if (_52.invertView != 0)
+    {
+        _117 = (count - 1) - view;
+    }
+    else
+    {
+        _117 = view;
+    }
+    return _117;
+}
+
+static inline __attribute__((always_inline))
+float3 lowViewBits(thread const int& view)
+{
+    return float3(float((view >> 0) & 1), float((view >> 1) & 1), float((view >> 2) & 1));
+}
+
+static inline __attribute__((always_inline))
+float3 highViewBits(thread const int& view)
+{
+    return float3(float((view >> 3) & 1), float((view >> 4) & 1), float((view >> 5) & 1));
+}
+
+static inline __attribute__((always_inline))
+float proceduralScene(thread const float2& uv, thread const int& view, thread const float& parallaxScale, constant QuiltTestData& _52)
+{
+    float viewPosition = (float(view) / float(max((_52.viewCount - 1), 1))) - 0.5;
+    float frame = 0.0;
+    frame = fast::max(frame, 1.0 - smoothstep(0.0040000001899898052215576171875, 0.007000000216066837310791015625, abs(uv.x - 0.07999999821186065673828125)));
+    frame = fast::max(frame, 1.0 - smoothstep(0.0040000001899898052215576171875, 0.007000000216066837310791015625, abs(uv.x - 0.920000016689300537109375)));
+    frame = fast::max(frame, 1.0 - smoothstep(0.0040000001899898052215576171875, 0.007000000216066837310791015625, abs(uv.y - 0.100000001490116119384765625)));
+    frame = fast::max(frame, 1.0 - smoothstep(0.0040000001899898052215576171875, 0.007000000216066837310791015625, abs(uv.y - 0.89999997615814208984375)));
+    float rearX = 0.5 - ((viewPosition * 0.054999999701976776123046875) * parallaxScale);
+    float rearBar = 1.0 - smoothstep(0.054999999701976776123046875, 0.0599999986588954925537109375, abs(uv.x - rearX));
+    rearBar *= (1.0 - smoothstep(0.310000002384185791015625, 0.319999992847442626953125, abs(uv.y - 0.5)));
+    float frontX = 0.5 + ((viewPosition * 0.20000000298023223876953125) * parallaxScale);
+    float2 circleDelta = (uv - float2(frontX, 0.5)) / float2(1.0, 0.7200000286102294921875);
+    float frontCircle = 1.0 - smoothstep(0.14499999582767486572265625, 0.15199999511241912841796875, length(circleDelta));
+    float centerDot = 1.0 - smoothstep(0.01200000010430812835693359375, 0.0170000009238719940185546875, length((uv - float2(frontX, 0.5)) / float2(1.0, 0.7200000286102294921875)));
+    return fast::clamp((((frame * 0.20000000298023223876953125) + (rearBar * 0.4799999892711639404296875)) + (frontCircle * 0.87999999523162841796875)) + (centerDot * 0.119999997317790985107421875), 0.0, 1.0);
+}
+
+fragment main0_out main0(main0_in in [[stage_in]], constant QuiltTestData& _52 [[buffer(0)]], float4 gl_FragCoord [[position]])
+{
+    main0_out out = {};
+    int2 pixel = int2(gl_FragCoord.xy);
+    if (_52.pattern == 0)
+    {
+        int2 param = pixel;
+        out.outColor = float4(pixelIntegrityPattern(param, _52), 1.0);
+        return out;
+    }
+    if (_52.pattern == 1)
+    {
+        int channel = spvSMod(pixel.x, 3);
+        out.outColor = float4(float(channel == 0), float(channel == 1), float(channel == 2), 1.0);
+        return out;
+    }
+    if (_52.pattern == 2)
+    {
+        float param_1 = 0.0;
+        float param_2 = phaseAt(param_1, gl_FragCoord, _52);
+        int param_3 = 2;
+        int eye = viewAt(param_2, param_3, _52);
+        out.outColor = select(float4(0.0, 1.0, 0.0, 1.0), float4(1.0, 0.0, 0.0, 1.0), bool4(eye == 0));
+        return out;
+    }
+    if (_52.pattern == 3)
+    {
+        float param_4 = 0.0;
+        float param_5 = phaseAt(param_4, gl_FragCoord, _52);
+        int param_6 = _52.viewCount;
+        int param_7 = viewAt(param_5, param_6, _52);
+        out.outColor = float4(lowViewBits(param_7), 1.0);
+        return out;
+    }
+    if (_52.pattern == 4)
+    {
+        float param_8 = 0.0;
+        float param_9 = phaseAt(param_8, gl_FragCoord, _52);
+        int param_10 = _52.viewCount;
+        int param_11 = viewAt(param_9, param_10, _52);
+        out.outColor = float4(highViewBits(param_11), 1.0);
+        return out;
+    }
+    if (_52.pattern == 5)
+    {
+        float param_12 = -_52.subpixelPhase;
+        float param_13 = phaseAt(param_12, gl_FragCoord, _52);
+        int param_14 = _52.viewCount;
+        int param_15 = viewAt(param_13, param_14, _52);
+        float3 redView = lowViewBits(param_15);
+        float param_16 = 0.0;
+        float param_17 = phaseAt(param_16, gl_FragCoord, _52);
+        int param_18 = _52.viewCount;
+        int param_19 = viewAt(param_17, param_18, _52);
+        float3 greenView = lowViewBits(param_19);
+        float param_20 = _52.subpixelPhase;
+        float param_21 = phaseAt(param_20, gl_FragCoord, _52);
+        int param_22 = _52.viewCount;
+        int param_23 = viewAt(param_21, param_22, _52);
+        float3 blueView = lowViewBits(param_23);
+        out.outColor = float4(redView.x, greenView.y, blueView.z, 1.0);
+        return out;
+    }
+    if (_52.pattern == 6)
+    {
+        bool right = in.fragUV.x >= 0.5;
+        bool bottom = in.fragUV.y >= 0.5;
+        float3 _553;
+        if ((!right) && (!bottom))
+        {
+            _553 = float3(1.0, 0.0, 0.0);
+        }
+        else
+        {
+            float3 _562;
+            if (right && (!bottom))
+            {
+                _562 = float3(0.0, 1.0, 0.0);
+            }
+            else
+            {
+                _562 = select(float3(1.0, 1.0, 0.0), float3(0.0, 0.0, 1.0), bool3((!right) && bottom));
+            }
+            _553 = _562;
+        }
+        float3 color = _553;
+        out.outColor = float4(color, 1.0);
+        return out;
+    }
+    float _587;
+    if (_52.pattern == 7)
+    {
+        _587 = 1.0;
+    }
+    else
+    {
+        _587 = (_52.pattern == 8) ? 0.300000011920928955078125 : 0.0;
+    }
+    float parallaxScale = _587;
+    float param_24 = -_52.subpixelPhase;
+    float param_25 = phaseAt(param_24, gl_FragCoord, _52);
+    int param_26 = _52.viewCount;
+    int redView_1 = viewAt(param_25, param_26, _52);
+    float param_27 = 0.0;
+    float param_28 = phaseAt(param_27, gl_FragCoord, _52);
+    int param_29 = _52.viewCount;
+    int greenView_1 = viewAt(param_28, param_29, _52);
+    float param_30 = _52.subpixelPhase;
+    float param_31 = phaseAt(param_30, gl_FragCoord, _52);
+    int param_32 = _52.viewCount;
+    int blueView_1 = viewAt(param_31, param_32, _52);
+    float2 param_33 = in.fragUV;
+    int param_34 = redView_1;
+    float param_35 = parallaxScale;
+    float2 param_36 = in.fragUV;
+    int param_37 = greenView_1;
+    float param_38 = parallaxScale;
+    float2 param_39 = in.fragUV;
+    int param_40 = blueView_1;
+    float param_41 = parallaxScale;
+    out.outColor = float4(proceduralScene(param_33, param_34, param_35, _52), proceduralScene(param_36, param_37, param_38, _52), proceduralScene(param_39, param_40, param_41, _52), 1.0);
+    return out;
+}
+

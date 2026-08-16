@@ -2167,6 +2167,7 @@ int Image::drawNativeOutput(Context* context) {
 			context->gridSize.x * context->gridSize.y);
 	}
 	interlacerDataFrag.outputSize = {(float)width, (float)height};
+	interlacerDataFrag.imageSize = context->imageSize;
 	interlacerDataFrag.quiltSize = nativeDisplayConfig.quiltGrid;
 	interlacerDataFrag.tileSize = 1.0f / nativeDisplayConfig.quiltGrid;
 	const bool hasSlope = std::abs(nativeDisplayConfig.slope) > 0.001f;
@@ -2190,6 +2191,7 @@ int Image::drawNativeOutput(Context* context) {
 	interlacerDataFrag.flipImageX = nativeDisplayConfig.flipImageX ? 1 : 0;
 	interlacerDataFrag.flipImageY = nativeDisplayConfig.flipImageY ? 1 : 0;
 	interlacerDataFrag.reserved2 = 0;
+	interlacerDataFrag.swapLeftRight = context->swapLeftRight;
 	interlacerDataFrag.sourceRgbd = context->imageType == Color_Plus_Depth ? 1 : 0;
 	interlacerDataFrag.stereoStrength = (float)context->stereoStrength;
 	interlacerDataFrag.stereoDepth = (float)context->stereoDepth;
@@ -2212,15 +2214,42 @@ int Image::drawNativeOutput(Context* context) {
 	targetInfo.texture = outputTexture;
 	targetInfo.load_op = SDL_GPU_LOADOP_CLEAR;
 	targetInfo.store_op = SDL_GPU_STOREOP_STORE;
-	targetInfo.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
+	if (context->backgroundStyle == Solid) clearColorCurrent = clearColorSolid;
+	else if (context->backgroundStyle == Light) clearColorCurrent = clearColorLight;
+	else if (context->backgroundStyle == Dark) clearColorCurrent = clearColorDark;
+	targetInfo.clear_color = {clearColorCurrent.r, clearColorCurrent.g,
+		clearColorCurrent.b, clearColorCurrent.a};
 	SDL_GPURenderPass* renderPass = SDL_BeginGPURenderPass(commandBuffer, &targetInfo, 1, nullptr);
 	if (renderPass == nullptr) return -1;
 
 	SDL_GPUViewport viewport{0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f};
 	SDL_SetGPUViewport(renderPass, &viewport);
+	if (context->backgroundStyle == Blur && blurTexture != nullptr) {
+		bindPipeline(renderPass, imagePipeline);
+		SDL_GPUTextureSamplerBinding backgroundBindings[2] = {
+			{.texture = imageTexture, .sampler = imageSampler},
+			{.texture = blurTexture, .sampler = imageSampler}
+		};
+		SDL_BindGPUFragmentSamplers(renderPass, 0, &backgroundBindings[0], 2);
+		imageDataVert.displayImageAspect = {1.0f, 1.0f, 1.0f};
+		imageDataVert.fillScreen = 1;
+		imageDataVert.projection = glm::mat4(1.0f);
+		imageDataVert.transform = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f));
+		imageDataFrag.windowSize = {(float)width, (float)height};
+		imageDataFrag.imageSize = context->imageSize;
+		imageDataFrag.gridSize = context->gridSize;
+		imageDataFrag.visibility = 1.0f;
+		imageDataFrag.mode = context->mode;
+		imageDataFrag.type = context->imageType;
+		imageDataFrag.blur = 1;
+		drawImage(commandBuffer, renderPass);
+	}
+
 	bindPipeline(renderPass, interlacerPipeline);
 	imageDataVert.displayImageAspect = {1.0f, 1.0f, 1.0f};
-	imageDataVert.fillScreen = 1;
+	imageDataVert.displayImageAspect.x = (float)width / (float)height;
+	imageDataVert.displayImageAspect.y = context->imageSize.x / context->imageSize.y;
+	imageDataVert.fillScreen = 0;
 	imageDataVert.projection = glm::mat4(1.0f);
 	imageDataVert.transform = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f));
 	SDL_PushGPUVertexUniformData(commandBuffer, 0, &imageDataVert, sizeof(imageDataVert));
