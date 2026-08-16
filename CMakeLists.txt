@@ -1,15 +1,16 @@
 cmake_minimum_required(VERSION 3.22)
-project(Rendepth LANGUAGES CXX)
+project(Rendepth VERSION 3.0.0 LANGUAGES CXX)
 set(EXECUTABLE_NAME Rendepth)
 
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
-option(RENDEPTH_ENABLE_ONNX_RUNTIME "Enable native ONNX Runtime depth inference" OFF)
-option(RENDEPTH_ENABLE_ROCM "Enable the ONNX Runtime ROCm execution provider" OFF)
+option(RENDEPTH_ENABLE_ONNX_RUNTIME "Enable native ONNX Runtime depth inference" ON)
+option(RENDEPTH_ENABLE_ROCM "Enable the ONNX Runtime ROCm execution provider" ON)
 option(RENDEPTH_BUILD_DEPTH_TEST "Build the standalone ONNX depth test harness" OFF)
 option(RENDEPTH_COMPILE_SHADERS "Compile shader sources before building Rendepth" OFF)
 set(RENDEPTH_ONNXRUNTIME_DIR "" CACHE PATH "ONNX Runtime installation directory")
 set(RENDEPTH_ROCM_DIR "/usr/lib64/rocm" CACHE PATH "ROCm installation directory")
+find_package(CURL REQUIRED)
 set(EXECUTABLE_OUTPUT_PATH ../Binary)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,7 +35,7 @@ if(APPLE)
     set(CMAKE_INSTALL_RPATH "@loader_path/../Library")
     set(CMAKE_MACOSX_RPATH TRUE)
 elseif(UNIX)
-    set(CMAKE_INSTALL_RPATH "\${ORIGIN\}/../Library")
+    set(CMAKE_INSTALL_RPATH "\$ORIGIN/../Library")
 endif()
 
 set(SDL_AUDIO OFF)
@@ -203,7 +204,8 @@ endif()
 target_compile_definitions(Rendepth PUBLIC SDL_MAIN_USE_CALLBACKS)
 
 target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp
-        Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp)
+        Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
+        Source/ModelDownloader.cpp)
 
 target_include_directories(Rendepth PUBLIC
         ThirdParty/glm ThirdParty/SDL/include ThirdParty/SDL_image/include
@@ -214,16 +216,28 @@ target_link_directories(Rendepth PUBLIC "\${ORIGIN}/../Library")
 
 target_link_libraries(Rendepth PUBLIC
         SDL3::SDL3 SDL3_ttf::SDL3_ttf SDL3_image::SDL3_image
-        glm)
+        glm CURL::libcurl)
 
 if(RENDEPTH_ENABLE_ONNX_RUNTIME)
-    if(NOT RENDEPTH_ONNXRUNTIME_DIR)
+    if(NOT RENDEPTH_ENABLE_ROCM AND NOT RENDEPTH_ONNXRUNTIME_DIR)
         message(FATAL_ERROR "RENDEPTH_ONNXRUNTIME_DIR must point to an ONNX Runtime installation")
     endif()
-    set(RENDEPTH_ONNXRUNTIME_INCLUDE_DIR "${RENDEPTH_ONNXRUNTIME_DIR}/include")
-    if(EXISTS "${RENDEPTH_ONNXRUNTIME_DIR}/include/onnxruntime/onnxruntime_cxx_api.h")
-        set(RENDEPTH_ONNXRUNTIME_INCLUDE_DIR
-                "${RENDEPTH_ONNXRUNTIME_DIR}/include/onnxruntime")
+    if(RENDEPTH_ENABLE_ROCM)
+        find_path(RENDEPTH_ONNXRUNTIME_INCLUDE_DIR
+                NAMES onnxruntime_cxx_api.h
+                PATHS "${RENDEPTH_ROCM_DIR}/include/onnxruntime"
+                      "/usr/include/onnxruntime"
+                NO_DEFAULT_PATH)
+        if(NOT RENDEPTH_ONNXRUNTIME_INCLUDE_DIR)
+            message(FATAL_ERROR
+                    "Could not find ONNX Runtime headers matching the ROCm installation")
+        endif()
+    else()
+        set(RENDEPTH_ONNXRUNTIME_INCLUDE_DIR "${RENDEPTH_ONNXRUNTIME_DIR}/include")
+        if(EXISTS "${RENDEPTH_ONNXRUNTIME_DIR}/include/onnxruntime/onnxruntime_cxx_api.h")
+            set(RENDEPTH_ONNXRUNTIME_INCLUDE_DIR
+                    "${RENDEPTH_ONNXRUNTIME_DIR}/include/onnxruntime")
+        endif()
     endif()
     target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_ONNX_RUNTIME)
     target_include_directories(Rendepth PUBLIC
@@ -252,11 +266,11 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
     set_target_properties(Rendepth PROPERTIES
             SKIP_BUILD_RPATH FALSE
             BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib;${RENDEPTH_ROCM_DIR}/lib"
-            INSTALL_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib;${RENDEPTH_ROCM_DIR}/lib")
+            INSTALL_RPATH "\$ORIGIN/../Library")
     if(RENDEPTH_ENABLE_ROCM)
         set_target_properties(Rendepth PROPERTIES
                 BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ROCM_DIR}/lib"
-                INSTALL_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ROCM_DIR}/lib")
+                INSTALL_RPATH "\$ORIGIN/../Library;${RENDEPTH_ROCM_DIR}/lib")
         target_link_options(Rendepth PRIVATE "-Wl,--disable-new-dtags")
         add_custom_command(TARGET Rendepth POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E rm -f
@@ -289,16 +303,92 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
         set_target_properties(DepthTest PROPERTIES
                 SKIP_BUILD_RPATH FALSE
                 BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib;${RENDEPTH_ROCM_DIR}/lib"
-                INSTALL_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib;${RENDEPTH_ROCM_DIR}/lib")
+                INSTALL_RPATH "\$ORIGIN/../Library")
         if(RENDEPTH_ENABLE_ROCM)
             set_target_properties(DepthTest PROPERTIES
                     BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ROCM_DIR}/lib"
-                    INSTALL_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ROCM_DIR}/lib")
+                    INSTALL_RPATH "\$ORIGIN/../Library;${RENDEPTH_ROCM_DIR}/lib")
             target_link_options(DepthTest PRIVATE "-Wl,--disable-new-dtags")
         endif()
     endif()
 
 endif()
+
+include(GNUInstallDirs)
+install(TARGETS Rendepth
+        RUNTIME DESTINATION libexec/rendepth/Binary)
+install(TARGETS SDL3-shared SDL3_image-shared SDL3_ttf-shared glm
+        RUNTIME DESTINATION libexec/rendepth/Library
+        LIBRARY DESTINATION libexec/rendepth/Library
+        ARCHIVE DESTINATION libexec/rendepth/Library)
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/Assets/"
+        DESTINATION libexec/rendepth/Assets)
+if(WIN32)
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/Shaders/Compiled/"
+            DESTINATION libexec/rendepth/Shaders/Compiled
+            FILES_MATCHING PATTERN "*.dxil")
+elseif(APPLE)
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/Shaders/Compiled/"
+            DESTINATION libexec/rendepth/Shaders/Compiled
+            FILES_MATCHING PATTERN "*.msl")
+elseif(UNIX)
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/Shaders/Compiled/"
+            DESTINATION libexec/rendepth/Shaders/Compiled
+            FILES_MATCHING PATTERN "*.spv")
+endif()
+if(RENDEPTH_ENABLE_ONNX_RUNTIME AND UNIX AND NOT APPLE AND NOT RENDEPTH_ENABLE_ROCM)
+    install(DIRECTORY "${RENDEPTH_ONNXRUNTIME_DIR}/lib/"
+            DESTINATION libexec/rendepth/Library
+            FILES_MATCHING PATTERN "libonnxruntime.so*"
+                           PATTERN "libonnxruntime_providers_shared.so*"
+            PATTERN "pkgconfig" EXCLUDE
+            PATTERN "cmake" EXCLUDE)
+endif()
+if(RENDEPTH_ENABLE_ROCM AND UNIX AND NOT APPLE)
+    install(CODE
+            "set(_rendepth_library_dir
+                    \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/libexec/rendepth/Library\")
+             if(NOT EXISTS
+                    \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/libexec/rendepth/Binary\")
+                 set(_rendepth_library_dir
+                     \"\$ENV{DESTDIR}/usr/libexec/rendepth/Library\")
+             endif()
+             execute_process(COMMAND \"${CMAKE_COMMAND}\" -E make_directory
+                    \"\${_rendepth_library_dir}\")
+             execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
+                    \"${RENDEPTH_ROCM_ONNXRUNTIME_LIBRARY}\"
+                    \"\${_rendepth_library_dir}/libonnxruntime.so.1\")
+             execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
+                    \"${RENDEPTH_ROCM_DIR}/lib/libonnxruntime_providers_rocm.so\"
+                    \"\${_rendepth_library_dir}/libonnxruntime_providers_rocm.so\")")
+endif()
+install(FILES "${CMAKE_SOURCE_DIR}/LICENSE"
+        DESTINATION share/licenses/rendepth)
+if(UNIX AND NOT APPLE)
+    install(PROGRAMS "${CMAKE_SOURCE_DIR}/Packaging/rendepth-launcher"
+            DESTINATION bin
+            RENAME rendepth)
+    install(FILES "${CMAKE_SOURCE_DIR}/Packaging/rendepth.desktop"
+            DESTINATION share/applications)
+    install(FILES "${CMAKE_SOURCE_DIR}/Assets/Rendepth.png"
+            DESTINATION share/icons/hicolor/512x512/apps
+            RENAME rendepth.png)
+endif()
+
+set(CPACK_PACKAGE_NAME "rendepth")
+set(CPACK_PACKAGE_VENDOR "Outmode")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Convert any image to 3D")
+set(CPACK_PACKAGE_DESCRIPTION "Make any normal photo into UHD 3D. Rendepth uses machine learning algorithms to generate depth from regular color images, allowing you to adjust stereo and parallax settings for your display. Exports to open standard stereoscopic formats.")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_CONTACT "Outmode")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
+set(CPACK_RPM_PACKAGE_LICENSE "MIT")
+set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
+set(CPACK_RPM_PACKAGE_RELEASE 1)
+if(RENDEPTH_ENABLE_ROCM AND UNIX AND NOT APPLE)
+    set(CPACK_RPM_PACKAGE_REQUIRES "onnxruntime-rocm >= 1.22.2")
+endif()
+include(CPack)
 
 if(WIN32)
     target_link_libraries(Rendepth PUBLIC pthread)

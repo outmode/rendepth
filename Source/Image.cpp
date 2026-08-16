@@ -65,7 +65,6 @@ namespace {
 		NativeDisplayConfig loaded = config;
 		float pitch = 0.0f, slope = 0.0f, center = 0.0f, dpi = 0.0f;
 		float screenWidth = 0.0f, screenHeight = 0.0f, viewCone = 0.0f;
-		float fringe = 0.0f;
 		const bool complete =
 			readCalibrationNumber(document, "pitch", pitch) && pitch > 0.0f &&
 			readCalibrationNumber(document, "slope", slope) && std::abs(slope) > 0.001f &&
@@ -83,7 +82,6 @@ namespace {
 		loaded.dpi = dpi;
 		loaded.screenSize = {(int)std::lround(screenWidth), (int)std::lround(screenHeight)};
 		if (readCalibrationNumber(document, "viewCone", viewCone)) loaded.viewCone = viewCone;
-		readCalibrationNumber(document, "fringe", fringe);
 		bool vendorInvertView = false;
 		if (readCalibrationBool(document, "invView", vendorInvertView))
 			loaded.invertView = !vendorInvertView;
@@ -97,13 +95,6 @@ namespace {
 		}
 		config = loaded;
 
-		if (document.HasMember("serial") && document["serial"].IsString())
-			SDL_Log("Looking Glass calibration serial: %s", document["serial"].GetString());
-		SDL_Log("Loaded Looking Glass calibration from %s "
-			"(pitch=%.4f slope=%.4f center=%.4f DPI=%.1f panel=%dx%d fringe=%.4f view=%s)",
-			path.string().c_str(), config.pitch, config.slope, config.center,
-			config.dpi, config.screenSize.x, config.screenSize.y, fringe,
-			config.invertView ? "inverted" : "forward");
 		return true;
 	}
 
@@ -210,8 +201,6 @@ int Image::initNativeOutput(Context* context) {
 		}
 			nativeOutputEnabled = true;
 			nativeOutputLastSize = {0, 0};
-		SDL_Log("Native quilt output enabled on %s (%dx%d)",
-			displayName.c_str(), bounds.w, bounds.h);
 		break;
 	}
 	if (displays != nullptr) SDL_free(displays);

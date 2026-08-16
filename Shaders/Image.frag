@@ -222,13 +222,13 @@ vec3 generateStereoImage(vec2 inUV) {
 	float aspect = imageSize.x / imageSize.y;
 
 	for (int i = 0; i < sampleCount; ++i) {
-		uv.x = (depthSamples[i] * stereoStrength / aspect) / stereoScale + stereoOffset;
+		uv.x = (depthSamples[i] * stereoStrength / aspect) / stereoScale + stereoOffset / aspect;
 		minDepthLeft = min(minDepthLeft, getDepth(imageTexture, clampEdge(depthUV + uv, minUVDepth, maxUVDepth)));
 		minDepthRight = min(minDepthRight, getDepth(imageTexture, clampEdge(depthUV - uv, minUVDepth, maxUVDepth)));
 	}
 
-	float parallaxLeft = (stereoStrength / aspect * getParallax(minDepthLeft)) / stereoScale + stereoOffset;
-	float parallaxRight = (stereoStrength / aspect * getParallax(minDepthRight)) / stereoScale + stereoOffset;
+	float parallaxLeft = (stereoStrength / aspect * getParallax(minDepthLeft)) / stereoScale + stereoOffset / aspect;
+	float parallaxRight = (stereoStrength / aspect * getParallax(minDepthRight)) / stereoScale + stereoOffset / aspect;
 
 	vec3 colorLeft = getColor(imageTexture,
 		clampEdge(colorUV + vec2(parallaxLeft, 0.0), minUVColor, maxUVColor)).rgb;

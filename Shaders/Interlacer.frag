@@ -29,7 +29,7 @@ layout (set = 3, binding = 0) uniform InterlacerData {
 	int reserved3;
 };
 
-const float stereoScale = 5000.0;
+const float stereoScale = 4000.0;
 const float offsetBoost = -8.0;
 const float zNear = 0.1;
 const float zFar = 100.0;
@@ -70,12 +70,12 @@ vec3 sampleRgbd(vec2 uv, int view) {
 	float offsetSign = normalizedView < 0.0 ? 1.0 : -1.0;
 	for (int i = 0; i < sampleCount; ++i) {
 		float depthOffset = (depthSamples[i] * stereoStrength * viewAmount / aspect) /
-			stereoScale + stereoOffset * offsetBoost * viewAmount;
+			stereoScale + stereoOffset * offsetBoost * viewAmount / aspect;
 		minDepth = min(minDepth, getDepth(quiltTexture, clampEdge(
 			depthUV + vec2(offsetSign * depthOffset, 0.0), minUVDepth, maxUVDepth)));
 	}
 	float parallax = (stereoStrength * viewAmount / aspect * getParallax(minDepth)) /
-		stereoScale + stereoOffset * offsetBoost * viewAmount;
+		stereoScale + stereoOffset * offsetBoost * viewAmount / aspect;
 	colorUV = clampEdge(colorUV + vec2(offsetSign * parallax, 0.0),
 		vec2(0.001, 0.0), vec2(0.499, 1.0));
 	return textureLod(quiltTexture, colorUV, 0.0).rgb;

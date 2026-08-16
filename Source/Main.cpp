@@ -57,6 +57,7 @@
 #include "Utils.h"
 #include "Image.h"
 #include "DepthEstimator.h"
+#include "ModelDownloader.h"
 
 Context context{};
 Image imageView{};
@@ -172,6 +173,7 @@ std::filesystem::path exePath = std::filesystem::path(
 	SDL_GetBasePath()).parent_path().parent_path();
 std::filesystem::path homeDir = Core::getHomeDirectory();
 std::filesystem::path homePath = homeDir / ".Rendepth";
+static std::string modelDirectory;
 
 static std::random_device randDevice;
 static std::mt19937 randGen(randDevice());
@@ -1392,6 +1394,7 @@ void saveOptions() {
 	document.AddMember(rapidjson::GenericStringRef(borderlessSetting),
 		Image::useBorderlessWindow, allocator);
 	nameCache.push_back(borderlessSetting);
+	document.AddMember("modelDirectory", rapidjson::Value(modelDirectory.c_str(), allocator), allocator);
 
     rapidjson::StringBuffer output;
     rapidjson::PrettyWriter writer(output);
@@ -1447,6 +1450,9 @@ void loadOptions() {
 	auto borderlessSetting = borderlessSettingKey.c_str();
 	if (document.HasMember(borderlessSetting)) {
 		Image::useBorderlessWindow = document[borderlessSetting].GetBool();
+	}
+	if (document.HasMember("modelDirectory") && document["modelDirectory"].IsString()) {
+		modelDirectory = document["modelDirectory"].GetString();
 	}
 
 	Core::defaultImportFormat = Color_Only;
@@ -2674,7 +2680,17 @@ static int nativeDepthRun(void* ptr) {
 		menuSelection[ChoiceModel.label], 0, static_cast<int>(depthModelFiles.size()) - 1);
 	if (!nativeDepthEstimatorLoaded) {
 		DepthEstimator::Config config;
-		config.modelPath = homePath / "Models" / depthModelFiles[modelOption];
+		const auto modelDirectoryPath = modelDirectory.empty()
+			? homePath / "Models" : std::filesystem::path(modelDirectory);
+		config.modelPath = ModelDownloader::ensureAvailable(
+			modelDirectoryPath, depthModelFiles[modelOption], nativeDepthEstimatorError);
+		if (config.modelPath.empty()) {
+			std::cerr << "Native depth model download failed: "
+				<< nativeDepthEstimatorError << '\n';
+			depthGenerationError = true;
+			depthGenAlive = false;
+			return 0;
+		}
 	#ifdef RENDEPTH_ENABLE_ROCM
 		config.provider = DepthEstimator::Provider::ROCM;
 	#endif

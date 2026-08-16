@@ -150,22 +150,22 @@ float3 sampleRgbd(thread const float2& uv, thread const int& view, constant Inte
     float offsetSign = (normalizedView < 0.0) ? 1.0 : (-1.0);
     for (int i = 0; i < 5; i++)
     {
-        float depthOffset = ((((_212[i] * _75.stereoStrength) * viewAmount) / aspect) / 5000.0) + ((_75.stereoOffset * (-8.0)) * viewAmount);
+        float depthOffset = ((((_212[i] * _75.stereoStrength) * viewAmount) / aspect) / 4000.0) + (((_75.stereoOffset * (-8.0)) * viewAmount) / aspect);
         float2 param_4 = depthUV + float2(offsetSign * depthOffset, 0.0);
         float2 param_5 = minUVDepth;
         float2 param_6 = maxUVDepth;
-        float2 _248 = clampEdge(param_4, param_5, param_6);
-        float2 param_7 = _248;
+        float2 _250 = clampEdge(param_4, param_5, param_6);
+        float2 param_7 = _250;
         minDepth = fast::min(minDepth, getDepth(quiltTexture, quiltTextureSmplr, param_7));
     }
     float param_8 = minDepth;
-    float _263 = getParallax(param_8, _75);
-    float parallax = ((((_75.stereoStrength * viewAmount) / aspect) * _263) / 5000.0) + ((_75.stereoOffset * (-8.0)) * viewAmount);
+    float _265 = getParallax(param_8, _75);
+    float parallax = ((((_75.stereoStrength * viewAmount) / aspect) * _265) / 4000.0) + (((_75.stereoOffset * (-8.0)) * viewAmount) / aspect);
     float2 param_9 = colorUV + float2(offsetSign * parallax, 0.0);
     float2 param_10 = float2(0.001000000047497451305389404296875, 0.0);
     float2 param_11 = float2(0.499000012874603271484375, 1.0);
-    float2 _285 = clampEdge(param_9, param_10, param_11);
-    colorUV = _285;
+    float2 _289 = clampEdge(param_9, param_10, param_11);
+    colorUV = _289;
     return quiltTexture.sample(quiltTextureSmplr, colorUV, level(0.0)).xyz;
 }
 
@@ -230,17 +230,17 @@ fragment main0_out main0(main0_in in [[stage_in]], constant InterlacerData& _75 
     basePhase -= _75.center;
     float2 param = in.fragUV;
     float param_1 = basePhase - _75.subpixelPhase;
-    float3 _476 = sampleView(param, param_1, _75, quiltTexture, quiltTextureSmplr);
+    float3 _480 = sampleView(param, param_1, _75, quiltTexture, quiltTextureSmplr);
     float3 color;
-    color.x = _476.x;
+    color.x = _480.x;
     float2 param_2 = in.fragUV;
     float param_3 = basePhase;
-    float3 _483 = sampleView(param_2, param_3, _75, quiltTexture, quiltTextureSmplr);
-    color.y = _483.y;
+    float3 _487 = sampleView(param_2, param_3, _75, quiltTexture, quiltTextureSmplr);
+    color.y = _487.y;
     float2 param_4 = in.fragUV;
     float param_5 = basePhase + _75.subpixelPhase;
-    float3 _493 = sampleView(param_4, param_5, _75, quiltTexture, quiltTextureSmplr);
-    color.z = _493.z;
+    float3 _497 = sampleView(param_4, param_5, _75, quiltTexture, quiltTextureSmplr);
+    color.z = _497.z;
     out.outColor = float4(color, 1.0);
     return out;
 }
