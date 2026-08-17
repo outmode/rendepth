@@ -46,6 +46,7 @@ public:
 	inline static SDL_GPUTexture* iconTexture = nullptr;
 	inline static SDL_GPUTexture* helpTexture = nullptr;
 	inline static SDL_GPUTexture* infoTexture = nullptr;
+	inline static SDL_GPUTexture* subtitleTexture = nullptr;
 	inline static SDL_GPUTexture* menuTexture = nullptr;
 	inline static SDL_GPUTexture* sliderTexture = nullptr;
 	inline static SDL_GPUTexture* exportTexture = nullptr;
@@ -55,6 +56,7 @@ public:
 	inline static SDL_Surface* ssimSurface = nullptr;
 	inline static TTF_Font* helpFont = nullptr;
 	inline static TTF_Font* infoFont = nullptr;
+	inline static TTF_Font* subtitleFont = nullptr;
 	inline static TTF_Font* menuFont = nullptr;
 
 	struct Vertex {
@@ -158,6 +160,7 @@ public:
 	inline static bool useBackgroundSolid = false;
 	inline static glm::vec2 helpTextSize;
 	inline static glm::vec2 infoTextSize;
+	inline static glm::vec2 subtitleTextSize;
 	inline static glm::vec2 menuTextureSize { 1024.0, 1024.0 };
 	inline static glm::vec2 menuTextureOffset { 2.0, 2.0 };
 	inline static bool displayHelp = false;
@@ -176,6 +179,7 @@ public:
 	static int load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData);
 	static int updateVideoFrame(Context* context, SDL_Surface* imageData, bool firstFrame,
 		int logicalWidth, int logicalHeight, bool updateBlur = true);
+	static void updateVideoSubtitle(Context* context, const std::string& text);
 	static int draw(Context* context);
 	static int initNativeOutput(Context* context);
 	static bool nativeOutputAvailable();

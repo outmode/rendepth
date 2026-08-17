@@ -191,6 +191,12 @@ static void serviceVideo() {
 	}
 	getIcon(IconType::Play).image = videoPlayer.playing() ? IconType::Pause : IconType::Play;
 	updateVideoSlider();
+	static std::string shownSubtitle;
+	const auto subtitle = videoPlayer.subtitleText();
+	if (subtitle != shownSubtitle) {
+		Image::updateVideoSubtitle(&context, subtitle);
+		shownSubtitle = subtitle;
+	}
 	bool previewFrame = false;
 	if (SDL_Surface* frame = videoPlayer.takeFrame(&previewFrame)) {
 		if (!videoFrameLoaded) {
@@ -326,19 +332,24 @@ static std::string formatFileSize(std::uintmax_t size) {
 static void callDepthGen(int imageIndex, bool speculative = false);
 
 int previousFileIndex() {
-	int index = fileIndex - 1;;
-	if (!fileList.empty()) {
-		if (index < 0) index = (int)fileList.size() - 1;
+	if (fileList.empty() || fileIndex < 0) return -1;
+	const bool currentIsVideo = isSupportedVideo(fileList[fileIndex].link);
+	for (int offset = 1; offset <= static_cast<int>(fileList.size()); ++offset) {
+		const int index = (fileIndex - offset + static_cast<int>(fileList.size())) %
+			static_cast<int>(fileList.size());
+		if (isSupportedVideo(fileList[index].link) == currentIsVideo) return index;
 	}
-	return index;
+	return fileIndex;
 }
 
 int nextFileIndex() {
-	int index = fileIndex + 1;
-	if (!fileList.empty()) {
-		index = index % (int)fileList.size();
+	if (fileList.empty() || fileIndex < 0) return -1;
+	const bool currentIsVideo = isSupportedVideo(fileList[fileIndex].link);
+	for (int offset = 1; offset <= static_cast<int>(fileList.size()); ++offset) {
+		const int index = (fileIndex + offset) % static_cast<int>(fileList.size());
+		if (isSupportedVideo(fileList[index].link) == currentIsVideo) return index;
 	}
-	return index;
+	return fileIndex;
 }
 
 static void setSlideshow(bool slide);
@@ -396,6 +407,7 @@ void gotoPreviousImage() {
 	if (isPlayingSlideshow) cancelSlideshow();
 	preloadDir = -1;
 	auto previousIndex = previousFileIndex();
+	if (previousIndex == fileIndex) return;
 	if (doingPreload) {
 		if (asyncData.fileIndex == previousIndex) {
 			pendingPreloadNavigation = previousIndex;
@@ -439,6 +451,7 @@ void gotoNextImage() {
 	if (isPlayingSlideshow) cancelSlideshow();
 	preloadDir = 1;
 	auto nextIndex = nextFileIndex();
+	if (nextIndex == fileIndex) return;
 	if (doingPreload) {
 		if (asyncData.fileIndex == nextIndex) {
 			pendingPreloadNavigation = nextIndex;
@@ -1178,7 +1191,73 @@ static std::string formatVideoTimecode(const Icon& timeline) {
 		}
 		return std::format("{}:{:02}", seconds / 60, seconds % 60);
 	};
-	return "Video Time: " + formatTime(position) + " / " + formatTime(duration);
+	return "Video Location : " + formatTime(position) + " / " + formatTime(duration);
+}
+
+static std::string filterInfoFontText(const std::string& text) {
+	if (Image::infoFont == nullptr) return text;
+	std::string filtered;
+	filtered.reserve(text.size());
+	for (size_t index = 0; index < text.size();) {
+		const auto first = static_cast<unsigned char>(text[index]);
+		Uint32 codepoint = 0;
+		size_t codepointLength = 0;
+		if (first < 0x80) {
+			codepoint = first;
+			codepointLength = 1;
+		} else if ((first & 0xE0) == 0xC0) {
+			codepoint = first & 0x1F;
+			codepointLength = 2;
+		} else if ((first & 0xF0) == 0xE0) {
+			codepoint = first & 0x0F;
+			codepointLength = 3;
+		} else if ((first & 0xF8) == 0xF0) {
+			codepoint = first & 0x07;
+			codepointLength = 4;
+		} else {
+			++index;
+			continue;
+		}
+
+		if (index + codepointLength > text.size()) break;
+		bool valid = true;
+		for (size_t offset = 1; offset < codepointLength; ++offset) {
+			const auto continuation = static_cast<unsigned char>(text[index + offset]);
+			if ((continuation & 0xC0) != 0x80) {
+				valid = false;
+				break;
+			}
+			codepoint = (codepoint << 6) | (continuation & 0x3F);
+		}
+		const bool validRange = valid &&
+			((codepointLength != 2 || codepoint >= 0x80) &&
+			 (codepointLength != 3 || codepoint >= 0x800) &&
+			 (codepointLength != 4 || codepoint >= 0x10000) &&
+			 codepoint <= 0x10FFFF && !(codepoint >= 0xD800 && codepoint <= 0xDFFF));
+		if (validRange && TTF_FontHasGlyph(Image::infoFont, codepoint))
+			filtered.append(text, index, codepointLength);
+		else
+			filtered += '-';
+		index += valid ? codepointLength : 1;
+	}
+	return filtered;
+}
+
+static float videoTimelineWidth = 0.0f;
+static float videoVolumeWidth = 0.0f;
+static float videoTrackButtonWidth = 0.0f;
+static float videoControlGap = 0.0f;
+static double currentVideoVolume = 1.0;
+
+static float videoControlWidth() {
+	const auto sliderThumbDiameter = style.getIconSlider(Style::getCurrentScale()) * 2.0f;
+	return videoTimelineWidth + videoVolumeWidth + videoTrackButtonWidth * 2.0f +
+		sliderThumbDiameter * 2.0f +
+		videoControlGap * 3.0f;
+}
+
+static float videoControlCenter(float precedingWidth, float controlWidth) {
+	return precedingWidth + controlWidth * 0.5f - videoControlWidth() * 0.5f;
 }
 
 static void seekVideoFromSlider() {
@@ -1300,27 +1379,87 @@ Icon IconOffset = {
 		};
 
 static Icon IconVideoSeek = {
-	IconType::None, IconType::None, IconGroup::None, IconMode::Slider, IconState::Idle,
+	IconType::VideoSeek, IconType::Maximize, IconGroup::None, IconMode::Slider, IconState::Idle,
 	"Video Position", style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {{ style.getIconSlider(Style::getCurrentScale()), style.getIconSlider(Style::getCurrentScale()) },
-			{ 0.0f, -style.getIconSlider(Style::getCurrentScale()) - 10.0f }, alignCenterBottom,
+			{ videoControlCenter(0.0f, videoTimelineWidth +
+				style.getIconSlider(Style::getCurrentScale()) * 2.0f),
+				-style.getIconSlider(Style::getCurrentScale()) - 10.0f }, alignCenterBottom,
 			{ 0.0f, -positionEdgeLarge * 2.0f, 0.0f, 1.0f }, areaBottomRightFull};
 	},
 	[]() { seekVideoFromSlider(); }, 1.0, false, false,
-	{{ style.getIconDragger(Style::getCurrentScale()) * 12.0f,
+	{{ videoTimelineWidth,
 		style.getIconBar(Style::getCurrentScale()) }, { 0.0f, 0.0f }, alignCenter,
 		areaTopLeft, areaBottomRightFull}
 };
 
+static Icon IconVideoVolume = {
+	IconType::VideoVolume, IconType::Minimize, IconGroup::None, IconMode::Slider, IconState::Idle,
+	"Video Volume", style.getColor(Style::Color::White, Style::Alpha::Solid),
+	[]()->Canvas {
+		return {{ style.getIconSlider(Style::getCurrentScale()), style.getIconSlider(Style::getCurrentScale()) },
+			{ videoControlCenter(videoTimelineWidth + style.getIconSlider(Style::getCurrentScale()) * 2.0f +
+				videoControlGap, videoVolumeWidth + style.getIconSlider(Style::getCurrentScale()) * 2.0f),
+				-style.getIconSlider(Style::getCurrentScale()) - 10.0f }, alignCenterBottom,
+			{ 0.0f, -positionEdgeLarge * 2.0f, 0.0f, 1.0f }, areaBottomRightFull};
+	},
+	[]() {
+		if (currentSlider != nullptr) {
+			const auto percent = getSliderPercent(*currentSlider);
+			currentVideoVolume = percent <= 0.01 ? 0.0 :
+				percent >= 0.99 ? 1.0 : percent;
+			setSliderPercent(*currentSlider, currentVideoVolume);
+			videoPlayer.setVolume(currentVideoVolume);
+		}
+	}, 1.0, false, false,
+	{{ videoVolumeWidth, style.getIconBar(Style::getCurrentScale()) }, { 0.0f, 0.0f }, alignCenter,
+		areaTopLeft, areaBottomRightFull}
+};
+
+static Icon IconVideoAudio = {
+	IconType::VideoAudio, IconType::Loading, IconGroup::None, IconMode::Button, IconState::Idle,
+	"Audio Language", style.getColor(Style::Color::White, Style::Alpha::Solid),
+	[]()->Canvas {
+		return {{ style.getIconSlider(Style::getCurrentScale()), style.getIconSlider(Style::getCurrentScale()) },
+			{ videoControlCenter(videoTimelineWidth + style.getIconSlider(Style::getCurrentScale()) * 2.0f +
+				videoControlGap + videoVolumeWidth + style.getIconSlider(Style::getCurrentScale()) * 2.0f +
+				videoControlGap,
+				videoTrackButtonWidth),
+				-style.getIconSlider(Style::getCurrentScale()) - 10.0f }, alignCenterBottom,
+			{ 0.0f, -positionEdgeLarge * 2.0f, 0.0f, 1.0f }, areaBottomRightFull};
+	}, []() { videoPlayer.cycleAudioTrack(); }, 1.0, false, false
+};
+
+static Icon IconVideoCaption = {
+	IconType::VideoCaption, IconType::Loading, IconGroup::None, IconMode::Button, IconState::Idle,
+	"Caption Language", style.getColor(Style::Color::White, Style::Alpha::Solid),
+	[]()->Canvas {
+		return {{ style.getIconSlider(Style::getCurrentScale()), style.getIconSlider(Style::getCurrentScale()) },
+			{ videoControlCenter(videoTimelineWidth + style.getIconSlider(Style::getCurrentScale()) * 2.0f +
+				videoControlGap + videoVolumeWidth + style.getIconSlider(Style::getCurrentScale()) * 2.0f +
+				videoControlGap +
+				videoTrackButtonWidth + videoControlGap, videoTrackButtonWidth),
+				-style.getIconSlider(Style::getCurrentScale()) - 10.0f }, alignCenterBottom,
+			{ 0.0f, -positionEdgeLarge * 2.0f, 0.0f, 1.0f }, areaBottomRightFull};
+	}, []() { videoPlayer.cycleSubtitleTrack(); }, 1.0, false, false
+};
+
 static std::vector appIcons = { IconLoading, IconFullscreen, IconOpen, IconBatch, IconSave,
 	IconOptions, IconSettings, IconBack, IconForward, IconStereo3D,
-	IconStrength, IconDepth, IconOffset, IconPlay, IconVideoSeek, IconHelp, IconClose };
+	IconStrength, IconDepth, IconOffset, IconPlay, IconVideoSeek, IconVideoVolume,
+	IconVideoAudio, IconVideoCaption, IconHelp, IconClose };
 
 static void finishSliderDrag() {
+	const bool volumeSliderChanged = currentSlider != nullptr &&
+		currentSlider->type == IconType::VideoVolume;
+	if (currentSlider != nullptr) {
+		currentSlider->state = IconState::Idle;
+		currentSlider->shown = false;
+	}
 	if (videoSliderScrubbing) {
 		if (activeVideo && videoPlayer.ready()) {
-			auto& timeline = getIcon(IconType::None);
+	auto& timeline = getIcon(IconType::VideoSeek);
 			videoPlayer.seek(getSliderPercent(timeline) * videoPlayer.duration(), false);
 			videoPlayer.setPlaying(videoSliderWasPlaying);
 		}
@@ -1328,31 +1467,54 @@ static void finishSliderDrag() {
 		videoSliderWasPlaying = false;
 	}
 	currentSlider = nullptr;
+	if (volumeSliderChanged) saveOptions();
 	mouseIsDown = false;
 	isDragging = false;
+	isIconCaptured = false;
 	SDL_CaptureMouse(false);
 }
 
 static void setVideoControlsVisible(bool visible) {
-	auto& timeline = getIcon(IconType::None);
+			auto& timeline = getIcon(IconType::VideoSeek);
 	timeline.active = visible;
 	if (!visible) {
 		if (currentSlider == &timeline || videoSliderScrubbing)
 			finishSliderDrag();
+		getIcon(IconType::VideoVolume).active = false;
+		getIcon(IconType::VideoAudio).active = false;
+		getIcon(IconType::VideoCaption).active = false;
 	}
-	if (visible) getIcon(IconType::Play).active = true;
+	if (visible) {
+		getIcon(IconType::Play).active = true;
+		getIcon(IconType::VideoVolume).active = activeVideo;
+		getIcon(IconType::VideoAudio).active = activeVideo;
+		getIcon(IconType::VideoCaption).active = activeVideo;
+	}
 }
 
 static void updateVideoSlider() {
 	if (!activeVideo) return;
-	auto& timeline = getIcon(IconType::None);
+	auto& timeline = getIcon(IconType::VideoSeek);
 	const auto scale = std::max(context.displayScale, 0.01f);
 	const auto preferredWidth = style.getIconDragger(Style::getCurrentScale()) * 12.0f;
 	const auto thumbDiameter = style.getIconSlider(Style::getCurrentScale()) * 2.0f;
 	const auto availableWidth = std::max(thumbDiameter,
 		windowSize.x / scale - positionEdgeLarge * 2.0f);
-	timeline.slider.size.x = std::min(preferredWidth, availableWidth);
+	const auto totalWidth = std::min(preferredWidth, availableWidth);
+	// Keep the language buttons close together while retaining the same gap
+	// between the volume slider and the first language button.
+	videoControlGap = style.getIconSpacer(Style::getCurrentScale()) * 0.75f;
+	videoTrackButtonWidth = thumbDiameter;
+	videoVolumeWidth = thumbDiameter * 1.4f;
+	const auto minimumControlsWidth = thumbDiameter * 6.4f + videoControlGap * 3.0f;
+	const auto controlsWidth = std::max(minimumControlsWidth, totalWidth);
+	videoTimelineWidth = controlsWidth - videoVolumeWidth - videoTrackButtonWidth * 2.0f -
+		thumbDiameter * 2.0f - videoControlGap * 3.0f;
+	videoTimelineWidth = std::max(thumbDiameter, videoTimelineWidth);
+	timeline.slider.size.x = videoTimelineWidth;
 	timeline.slider.size.y = style.getIconBar(Style::getCurrentScale());
+	getIcon(IconType::VideoVolume).slider.size = { videoVolumeWidth, timeline.slider.size.y };
+	setSliderPercent(getIcon(IconType::VideoVolume), currentVideoVolume);
 	if (!videoSliderScrubbing && videoPlayer.duration() > 0.0)
 		setSliderPercent(timeline, videoPlayer.position() / videoPlayer.duration());
 }
@@ -1553,6 +1715,7 @@ void saveOptions() {
 		Image::useBorderlessWindow, allocator);
 	nameCache.push_back(borderlessSetting);
 	document.AddMember("modelDirectory", rapidjson::Value(modelDirectory.c_str(), allocator), allocator);
+	document.AddMember("videoVolume", currentVideoVolume, allocator);
 
     rapidjson::StringBuffer output;
     rapidjson::PrettyWriter writer(output);
@@ -1612,6 +1775,11 @@ void loadOptions() {
 	if (document.HasMember("modelDirectory") && document["modelDirectory"].IsString()) {
 		modelDirectory = document["modelDirectory"].GetString();
 	}
+	if (document.HasMember("videoVolume") && document["videoVolume"].IsNumber()) {
+		currentVideoVolume = glm::clamp(document["videoVolume"].GetDouble(), 0.0, 1.0);
+		setSliderPercent(getIcon(IconType::VideoVolume), currentVideoVolume);
+		videoPlayer.setVolume(currentVideoVolume);
+	}
 
 	Core::defaultImportFormat = Color_Only;
 }
@@ -1635,6 +1803,7 @@ static void toggleStereoSettings() {
 
 static void toggleOptions() {
 	context.displayMenu = !context.displayMenu;
+	if (activeVideo) setVideoControlsVisible(!context.displayMenu);
 	auto& icon = getIcon(IconType::Options);
 	icon.image = context.displayMenu ? IconType::Close : IconType::Options;
 	setShowStereoSettings(showingStereoSettings && !context.displayMenu);
@@ -2142,6 +2311,9 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 		SDL_Log("Failed To Initialize SDL: %s", SDL_GetError());
 		return SDL_APP_FAILURE;
 	}
+	if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+		SDL_Log("Audio playback is unavailable: %s", SDL_GetError());
+	}
 
 	if (!fileList.empty()) {
 		FileInfo emptyFile{};
@@ -2190,6 +2362,7 @@ static int loadImage(void* ptr) {
 	if (isSupportedVideo(fileList[fileIndex].link)) {
 		std::string error;
 		videoPlayer.close();
+		videoPlayer.setVolume(currentVideoVolume);
 		activeVideo = videoPlayer.open(fileList[fileIndex].link, error);
 		videoFrameLoaded = false;
 		if (!activeVideo) {
@@ -2218,7 +2391,7 @@ static int loadImage(void* ptr) {
 
 SDL_AppResult SDL_AppIterate(void* appstate) {
 	if ((currentSlider != nullptr || videoSliderScrubbing) &&
-		!(SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK)) {
+		!(SDL_GetGlobalMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK)) {
 		finishSliderDrag();
 	}
 	serviceNativeGpuUpscale();
@@ -2569,6 +2742,8 @@ void checkMouseState() {
 		auto displayMenu = !(context.displayMenu && (icon.type == IconType::Forward || icon.type == IconType::Back ||
 			icon.type == IconType::File || icon.type == IconType::Folder || icon.type == IconType::Save || icon.type == IconType::Window ||
 			icon.type == IconType::Fullscreen || icon.type == IconType::Play || icon.type == IconType::Pause ||
+			icon.type == IconType::VideoSeek || icon.type == IconType::VideoVolume ||
+			icon.type == IconType::VideoAudio || icon.type == IconType::VideoCaption ||
 			icon.type == IconType::Settings));
 		auto displayXD = !(context.displayMenu && icon.type == IconType::Stereo_3D);
 		auto displaySave = true;
@@ -2580,7 +2755,9 @@ void checkMouseState() {
 		if (withinArea(context.mouse, getCoordinates(icon.canvas().topLeft, aspectScale),
 			getCoordinates(icon.canvas().bottomRight, aspectScale))) {
 			icon.state = IconState::Near;
-			const bool displayVideo = icon.type != IconType::None || activeVideo;
+			const bool displayVideo = (icon.type == IconType::VideoSeek ||
+				icon.type == IconType::VideoVolume || icon.type == IconType::VideoAudio ||
+				icon.type == IconType::VideoCaption) ? activeVideo : true;
 			icon.active = displayLoading && displaySettings && displayStereo && displayParallax &&
 				displayOpen && displaySave && displayMenu && displayXD && displayVideo;
 			if (icon.type == IconType::Loading) icon.active = true;
@@ -2603,12 +2780,16 @@ void checkMouseState() {
 						auto doShowInfo = true;
 						if (icon.label != currentInfoLabel) {
 							currentInfoLabel = icon.label;
+							if (activeVideo && icon.type == IconType::VideoAudio)
+								currentInfoLabel += " : " + filterInfoFontText(videoPlayer.audioLanguage());
+							else if (activeVideo && icon.type == IconType::VideoCaption)
+								currentInfoLabel += " : " + filterInfoFontText(videoPlayer.subtitleLanguage());
 							if ((icon.type == IconType::Back || icon.type == IconType::Forward) &&
 									(!fileList.empty() && fileList.size() > fileIndex)) {
 								currentInfoLabel = Core::getFileText(fileList[fileIndex], context.imageSize);
 							}
 							if (icon.mode == IconMode::Slider) {
-								if (activeVideo && icon.type == IconType::None)
+								if (activeVideo && icon.type == IconType::VideoSeek)
 									currentInfoLabel = formatVideoTimecode(icon);
 								else
 									currentInfoLabel += " : " +
@@ -3225,7 +3406,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
 	} else if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
 		if (event->button.button == SDL_BUTTON_LEFT) {
+			context.mouse.x = event->button.x * Image::mouseScale;
+			context.mouse.y = event->button.y * Image::mouseScale;
+			mouseLastActive = getTimeNow();
+			checkMouseState();
 			mouseIsDown = true;
+			bool languageButtonClicked = false;
 			for (auto& icon : appIcons) {
 				if (icon.state == IconState::Over && icon.active) {
 					auto allowCallback = true;
@@ -3238,6 +3424,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 					if ((!isConverting && (!doingPreload || isNavigationIcon)) ||
 						icon.type == IconType::Close) {
 						if (icon.mode == IconMode::Button) {
+							languageButtonClicked = icon.type == IconType::VideoAudio ||
+								icon.type == IconType::VideoCaption;
 							if (isPlayingSlideshow && (icon.type != IconType::Forward &&
 								icon.type != IconType::Back)) {
 								if (icon.type == IconType::Stereo_3D) {
@@ -3267,7 +3455,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 							}
 						} else if (icon.mode == IconMode::Slider) {
 							currentSlider = &icon;
-							if (activeVideo && icon.type == IconType::None) {
+			if (activeVideo && icon.type == IconType::VideoSeek) {
 								videoSliderScrubbing = true;
 								videoSliderWasPlaying = videoPlayer.playing();
 								videoScrubLastPreviewTime =
@@ -3277,6 +3465,13 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 						}
 					}
 				}
+			}
+			if (languageButtonClicked) {
+				// Rebuild the hover label after the track change so the selected
+				// language remains visible instead of being cleared by the click.
+				currentInfoLabel.clear();
+				mouseLastActive = getTimeNow();
+				checkMouseState();
 			}
 			if (currentSlider != nullptr) SDL_CaptureMouse(true);
 
@@ -3291,10 +3486,6 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			}
 
 			showCustomCursor(true);
-			context.mouse.x = event->button.x * Image::mouseScale;
-			context.mouse.y = event->button.y * Image::mouseScale;
-			mouseLastActive = getTimeNow();
-			checkMouseState();
 			if (!isIconCaptured && !isConverting) isDragging = true;
 		} else if (event->button.button == SDL_BUTTON_RIGHT) {
 			context.mouse.x = event->button.x * Image::mouseScale;
@@ -3349,8 +3540,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		mouseLastActive = getTimeNow();
 		checkMouseState();
 
-		if (currentSlider != nullptr &&
-			(event->motion.state & SDL_BUTTON_LMASK)) {
+		if (currentSlider != nullptr && mouseIsDown) {
 			auto aspectScale = 1.0;
 			if (preferredStereoMode == SBS_Full && isFullscreen)
 				aspectScale = 2.0;
@@ -3359,7 +3549,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 				event->motion.yrel / aspectScale);
 			auto sliderExtents = currentSlider->slider.size.x * 0.5f;
 			currentSlider->slider.position.x = glm::clamp(currentSlider->slider.position.x,
-				std::ceil(-sliderExtents), std::floor(sliderExtents));
+				-sliderExtents, sliderExtents);
 			currentSlider->slider.position.y = 0.0f;
 			if (currentSlider->callback) currentSlider->callback();
 		} else if (currentSlider != nullptr) {

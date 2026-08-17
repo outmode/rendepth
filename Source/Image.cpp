@@ -30,7 +30,7 @@
 
 namespace {
 	using BlurClock = std::chrono::steady_clock;
-	constexpr auto videoBlurInterval = std::chrono::seconds(3);
+	constexpr auto videoBlurInterval = std::chrono::milliseconds(670);
 	constexpr Uint32 blurSnapshotSize = 32;
 	constexpr Uint32 blurSnapshotMipLevels = 6;
 	BlurClock::time_point blurTransitionStart{};
@@ -379,6 +379,38 @@ int Image::updateVideoFrame(Context* context, SDL_Surface* imageData, bool first
 		imageDataFrag.blurMix = 0.0f;
 	}
 	return 0;
+}
+
+void Image::updateVideoSubtitle(Context* context, const std::string& text) {
+	if (context == nullptr) return;
+	if (text.empty()) {
+		if (subtitleTexture != nullptr) {
+			SDL_ReleaseGPUTexture(context->device, subtitleTexture);
+			subtitleTexture = nullptr;
+		}
+		subtitleTextSize = {};
+		return;
+	}
+	if (subtitleFont == nullptr) return;
+	const auto wrapWidth = std::max(256.0f, context->windowSize.x * 0.95f);
+	SDL_Color textColor = { 255, 255, 255, 255 };
+	SDL_Surface* subtitleData = TTF_RenderText_Blended_Wrapped(subtitleFont,
+		text.c_str(), text.size(), textColor, static_cast<int>(wrapWidth));
+	if (subtitleData == nullptr) {
+		SDL_Log("Could Not Render Subtitle Font.");
+		return;
+	}
+	subtitleTextSize = { subtitleData->w, subtitleData->h };
+	if (subtitleTexture != nullptr) {
+		SDL_ReleaseGPUTexture(context->device, subtitleTexture);
+		subtitleTexture = nullptr;
+	}
+	SDL_Surface* rgbaSubtitleData = SDL_ConvertSurface(subtitleData, SDL_PIXELFORMAT_ABGR8888);
+	if (rgbaSubtitleData != nullptr) {
+		uploadTexture(context, rgbaSubtitleData, &subtitleTexture, "Subtitle Texture");
+		SDL_DestroySurface(rgbaSubtitleData);
+	}
+	SDL_DestroySurface(subtitleData);
 }
 
 void Image::initMenuTexture() {
@@ -1171,6 +1203,16 @@ int Image::initFonts(Context* context) {
 	}
 	TTF_SetFontStyle(helpFont, fontStyle);
 
+	if (subtitleFont) TTF_CloseFont(subtitleFont);
+	const auto subtitleFontPath = assetPath / "NotoSans.ttf";
+	const auto subtitleFontSize = style.getHelpFontSize(Style::getCurrentScale()) * 1.15f * context->displayScale;
+	subtitleFont = TTF_OpenFont((exePath / subtitleFontPath).string().c_str(), subtitleFontSize);
+	if (subtitleFont == nullptr) {
+		SDL_Log("Could Not Load Subtitle Font: %s", (exePath / subtitleFontPath).string().c_str());
+		return -1;
+	}
+	TTF_SetFontStyle(subtitleFont, fontStyle);
+
 	if (menuFont) TTF_CloseFont(menuFont);
 	menuFont = TTF_OpenFont(fontFileAbsPath.string().c_str(),
 		style.getMenuFontSize(Style::getCurrentScale()) * context->displayScale);
@@ -1936,17 +1978,6 @@ int Image::draw(Context* context) {
 						glm::vec3(aspectScale, 1.0));
 					drawSprite(commandBuffer, renderPass);
 
-					if (icon.type == IconType::None) {
-						const auto thumbPosition = Utils::getCanvasPosition(context,
-							&iconCanvas, &icon.slider, aspectScale * context->displayScale);
-						const auto thumbDiameter = glm::vec2(
-							style.getIconSlider(Style::getCurrentScale()) * 2.0f * context->displayScale);
-						setSpriteUniforms(glm::vec3(thumbPosition, 1.0f),
-							glm::vec3(thumbDiameter, 1.0f), viewColorWhiteSolid,
-							(float)icon.visibility, 1, { 0, 0 }, { 1, 1 }, { 0.5f, 0.5f },
-							glm::vec3(aspectScale, 1.0f));
-						drawSprite(commandBuffer, renderPass);
-					}
 				}
 			}
 
@@ -2110,6 +2141,19 @@ int Image::draw(Context* context) {
 				}
 			}
 
+			if (!context->displayMenu && subtitleTexture != nullptr) {
+				bindPipeline(renderPass, spritePipeline);
+				SDL_GPUTextureSamplerBinding subtitleBindings[1] = {{ .texture = subtitleTexture, .sampler = imageSampler }};
+				SDL_BindGPUFragmentSamplers(renderPass, 0, &subtitleBindings[0], 1);
+				const auto subtitleMargin = 24.0f * context->displayScale;
+				const auto subtitleCenter = glm::vec3(windowSize.x * 0.5f, windowSize.y, 0.0f) -
+					glm::vec3(0.0f, subtitleTextSize.y + subtitleMargin, 0.0f);
+				setSpriteUniforms(subtitleCenter, glm::vec3(subtitleTextSize, 1.0f),
+					viewColorWhiteSolid, 1.0f, 1, {0.0f, 0.0f}, {1.0f, 1.0f},
+					glm::vec2(0.5f), glm::vec3(aspectScale, 1.0f));
+				drawSprite(commandBuffer, renderPass);
+			}
+
 			bindPipeline(renderPass, iconPipeline);
 			SDL_GPUTextureSamplerBinding iconSampleBindings[1] = {{ .texture = iconTexture, .sampler = imageSampler } };
 			SDL_BindGPUFragmentSamplers(renderPass, 0, &iconSampleBindings[0], 1);
@@ -2120,7 +2164,9 @@ int Image::draw(Context* context) {
 				auto iconPosition = Utils::getCanvasPosition(context, &iconCanvas, &icon.slider, aspectScale * context->displayScale);
 				iconDataVert.transform = glm::translate(glm::mat4(1.0f),glm::vec3(iconPosition, 1.0f));
 				auto iconRadius = style.getIconRadius(Style::getCurrentScale());
-				if (icon.mode == IconMode::Slider) iconRadius = style.getIconSlider(Style::getCurrentScale());
+				if (icon.mode == IconMode::Slider || icon.type == IconType::VideoAudio ||
+					icon.type == IconType::VideoCaption)
+					iconRadius = style.getIconSlider(Style::getCurrentScale());
 				iconDataVert.transform = glm::scale(iconDataVert.transform,
 					glm::vec3(glm::vec2(2.0) * iconRadius * aspectScale * context->displayScale, 1.0f));
 				iconDataVert.gridOffset = getIconCoordinates(IconType::Background);
@@ -2328,6 +2374,7 @@ void Image::quit(Context* context){
 	SDL_ReleaseGPUTexture(context->device, blurTextureNext);
 	SDL_ReleaseGPUTexture(context->device, iconTexture);
 	SDL_ReleaseGPUTexture(context->device, helpTexture);
+	if (subtitleTexture != nullptr) SDL_ReleaseGPUTexture(context->device, subtitleTexture);
 	SDL_ReleaseGPUTexture(context->device, menuTexture);
 	SDL_ReleaseGPUTexture(context->device, sliderTexture);
 	SDL_ReleaseGPUTexture(context->device, exportTexture);
@@ -2335,6 +2382,7 @@ void Image::quit(Context* context){
 	SDL_DestroySurface(menuTextSurface);
 	SDL_DestroySurface(ssimSurface);
 	TTF_CloseFont(menuFont);
+	TTF_CloseFont(subtitleFont);
 	TTF_CloseFont(helpFont);
 	TTF_Quit();
 	Core::quit(context);

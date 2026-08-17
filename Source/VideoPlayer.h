@@ -24,6 +24,12 @@ public:
 	std::string takeError();
 	void seek(double seconds, bool fastPreview = false);
 	void setPlaying(bool playing);
+	void setVolume(double volume);
+	void cycleAudioTrack();
+	void cycleSubtitleTrack();
+	std::string audioLanguage() const;
+	std::string subtitleLanguage() const;
+	std::string subtitleText() const;
 	bool playing() const;
 	bool ready() const;
 	double position() const;

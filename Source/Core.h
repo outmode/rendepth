@@ -74,7 +74,8 @@ enum class IconType {
 	Fullscreen, Window, Sort, Sort_Reverse, Info, Minimize, Maximize, Close,
 	Loading, Loading_Fade, Options, Settings, Folder, Save, Delete, Crop,
 	Glasses, Focus, Layers, Stereo_2D, Stereo_3D, Cursor_Empty, Cursor_Black, Cursor_Pink,
-	Logo_White, Logo_Dark, Logo_Light, Play, Pause, File, Mono_SD, Mono_SR
+	Logo_White, Logo_Dark, Logo_Light, Play, Pause, File, Mono_SD, Mono_SR,
+	VideoSeek, VideoVolume, VideoAudio, VideoCaption
 };
 
 enum class IconGroup {

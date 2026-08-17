@@ -39,7 +39,7 @@ elseif(UNIX)
     set(CMAKE_INSTALL_RPATH "\$ORIGIN/../Library")
 endif()
 
-set(SDL_AUDIO OFF)
+set(SDL_AUDIO ON)
 set(SDL_CAMERA OFF)
 set(SDL_VIDEO ON)
 set(SDL_HIDAPI OFF)
@@ -268,7 +268,6 @@ if(RENDEPTH_ENABLE_FFMPEG)
             --disable-autodetect
             --disable-avdevice
             --disable-avfilter
-            --disable-swresample
             --disable-iconv
             --disable-x86asm
             --disable-shared
@@ -278,22 +277,26 @@ if(RENDEPTH_ENABLE_FFMPEG)
             --disable-everything
             --enable-avcodec
             --enable-avformat
+            --enable-swresample
             --enable-avutil
             --enable-swscale
             --enable-protocol=file
             --enable-demuxer=avi,asf,matroska,mov,mpegps,mpegts,mpegvideo
+            --enable-decoder=aac,ac3,eac3,flac,mp3,opus,vorbis,alac,wmav1,wmav2,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,ass,ssa,subrip,mov_text,webvtt
+            --enable-parser=aac,aac_latm,ac3,flac,mpegaudio,opus,vorbis
             ${RENDEPTH_FFMPEG_DAV1D_OPTIONS}
         BUILD_COMMAND "${RENDEPTH_FFMPEG_MAKE}"
         INSTALL_COMMAND "${RENDEPTH_FFMPEG_MAKE}" install
         BUILD_BYPRODUCTS
             "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavformat.a"
             "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavcodec.a"
+            "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libswresample.a"
             "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libswscale.a"
             "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavutil.a"
         UPDATE_COMMAND ""
         TEST_COMMAND "")
 
-    foreach(ffmpeg_library IN ITEMS avformat avcodec swscale avutil)
+    foreach(ffmpeg_library IN ITEMS avformat avcodec swresample swscale avutil)
         add_library(RendepthFFmpeg_${ffmpeg_library} STATIC IMPORTED GLOBAL)
         set_target_properties(RendepthFFmpeg_${ffmpeg_library} PROPERTIES
             IMPORTED_LOCATION
@@ -306,6 +309,7 @@ if(RENDEPTH_ENABLE_FFMPEG)
     target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_FFMPEG)
     target_link_libraries(Rendepth PUBLIC
         RendepthFFmpeg_avformat RendepthFFmpeg_avcodec
+        RendepthFFmpeg_swresample
         RendepthFFmpeg_swscale RendepthFFmpeg_avutil
         ${RENDEPTH_FFMPEG_DAV1D_LINK} ${CMAKE_DL_LIBS})
     if(UNIX)
