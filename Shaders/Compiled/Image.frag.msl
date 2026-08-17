@@ -69,11 +69,11 @@ struct ImageDataFrag
     int effectRandom;
     int swapLeftRight;
     int force;
-    int padding;
+    float blurMix;
 };
 
-constant spvUnsafeArray<float, 5> _183 = spvUnsafeArray<float, 5>({ 0.0, 1.0, 3.0, 7.0, 16.0 });
-constant spvUnsafeArray<float, 5> _520 = spvUnsafeArray<float, 5>({ 0.125, 0.25, 0.375, 0.5, 0.625 });
+constant spvUnsafeArray<float, 5> _188 = spvUnsafeArray<float, 5>({ 0.0, 1.0, 3.0, 7.0, 16.0 });
+constant spvUnsafeArray<float, 5> _539 = spvUnsafeArray<float, 5>({ 0.125, 0.25, 0.375, 0.5, 0.625 });
 
 struct main0_out
 {
@@ -96,17 +96,20 @@ int getQuiltRow(thread const int& row, thread const int& column, thread const in
 }
 
 static inline __attribute__((always_inline))
-float3 blurImage(thread const float2& uv, texture2d<float> blurTexture, sampler blurTextureSmplr)
+float3 blurImage(thread const float2& uv, constant ImageDataFrag& _124, texture2d<float> blurTexture, sampler blurTextureSmplr, texture2d<float> blurTextureNext, sampler blurTextureNextSmplr)
 {
     float3 result = float3(0.0);
     float totalWeight = 0.0;
+    float snapshotMix = smoothstep(0.0, 1.0, _124.blurMix);
     for (int y = -2; y <= 2; y++)
     {
         for (int x = -2; x <= 2; x++)
         {
-            float2 offsetUV = float2(_183[abs(x)], _183[abs(y)]) / float2(200.0);
+            float2 offsetUV = float2(_188[abs(x)], _188[abs(y)]) / float2(200.0);
             totalWeight += 1.0;
-            result += blurTexture.sample(blurTextureSmplr, (uv + offsetUV)).xyz;
+            float3 currentSample = blurTexture.sample(blurTextureSmplr, (uv + offsetUV), level(3.0)).xyz;
+            float3 nextSample = blurTextureNext.sample(blurTextureNextSmplr, (uv + offsetUV), level(3.0)).xyz;
+            result += mix(currentSample, nextSample, float3(snapshotMix));
         }
     }
     result /= float3(totalWeight);
@@ -147,10 +150,10 @@ float2 effectZoom(thread const float2& uv, thread const float2& depthUV, constan
     float2 result = depthUV;
     for (;;)
     {
-        int _667 = samples;
-        int _668 = _667 - 1;
-        samples = _668;
-        if (_667 > 0)
+        int _686 = samples;
+        int _687 = _686 - 1;
+        samples = _687;
+        if (_686 > 0)
         {
             float2 param_1 = result;
             depth = fast::min(depth, getColor(imageTexture, imageTextureSmplr, param_1).x);
@@ -178,10 +181,10 @@ float2 effectDolly(thread const float2& uv, thread const float2& depthUV, consta
     float2 result = depthUV;
     for (;;)
     {
-        int _724 = samples;
-        int _725 = _724 - 1;
-        samples = _725;
-        if (_724 > 0)
+        int _743 = samples;
+        int _744 = _743 - 1;
+        samples = _744;
+        if (_743 > 0)
         {
             float2 param_1 = result;
             depth = fast::min(depth, 1.0 - getColor(imageTexture, imageTextureSmplr, param_1).x);
@@ -248,38 +251,38 @@ float3 combineStereoViews(thread float3& leftColor, thread float3& rightColor, c
         leftColor = rightColor;
         rightColor = tempColor;
     }
-    bool _250 = _124.mode == 4;
-    bool _257;
-    if (!_250)
+    bool _269 = _124.mode == 4;
+    bool _276;
+    if (!_269)
     {
-        _257 = _124.mode == 5;
+        _276 = _124.mode == 5;
     }
     else
     {
-        _257 = _250;
+        _276 = _269;
     }
-    if (_257)
+    if (_276)
     {
-        float3x3 _266;
+        float3x3 _285;
         if (_124.mode == 5)
         {
-            _266 = float3x3(float3(0.456099987030029296875, 0.500483989715576171875, 0.17638100683689117431640625), float3(-0.4008220136165618896484375, -0.0378246009349822998046875, -0.01575889997184276580810546875), float3(-0.015216100029647350311279296875, -0.02059710025787353515625, -0.0054685599170625209808349609375));
+            _285 = float3x3(float3(0.456099987030029296875, 0.500483989715576171875, 0.17638100683689117431640625), float3(-0.4008220136165618896484375, -0.0378246009349822998046875, -0.01575889997184276580810546875), float3(-0.015216100029647350311279296875, -0.02059710025787353515625, -0.0054685599170625209808349609375));
         }
         else
         {
-            _266 = float3x3(float3(0.43900001049041748046875, 0.4469999969005584716796875, 0.1480000019073486328125), float3(0.0), float3(0.0));
+            _285 = float3x3(float3(0.43900001049041748046875, 0.4469999969005584716796875, 0.1480000019073486328125), float3(0.0), float3(0.0));
         }
-        float3x3 leftFilter = _266;
-        float3x3 _293;
+        float3x3 leftFilter = _285;
+        float3x3 _312;
         if (_124.mode == 5)
         {
-            _293 = float3x3(float3(-0.043470598757266998291015625, -0.08793880045413970947265625, -0.001555289956741034984588623046875), float3(0.3784759938716888427734375, 0.733640015125274658203125, -0.01845029927790164947509765625), float3(-0.072152696549892425537109375, -0.112961001694202423095703125, 1.22640001773834228515625));
+            _312 = float3x3(float3(-0.043470598757266998291015625, -0.08793880045413970947265625, -0.001555289956741034984588623046875), float3(0.3784759938716888427734375, 0.733640015125274658203125, -0.01845029927790164947509765625), float3(-0.072152696549892425537109375, -0.112961001694202423095703125, 1.22640001773834228515625));
         }
         else
         {
-            _293 = float3x3(float3(0.0), float3(0.0949999988079071044921875, 0.9340000152587890625, -0.004999999888241291046142578125), float3(-0.017999999225139617919921875, -0.0280000008642673492431640625, 1.05700004100799560546875));
+            _312 = float3x3(float3(0.0), float3(0.0949999988079071044921875, 0.9340000152587890625, -0.004999999888241291046142578125), float3(-0.017999999225139617919921875, -0.0280000008642673492431640625, 1.05700004100799560546875));
         }
-        float3x3 rightFilter = _293;
+        float3x3 rightFilter = _312;
         result = fast::clamp(leftColor * leftFilter, float3(0.0), float3(1.0)) + fast::clamp(rightColor * rightFilter, float3(0.0), float3(1.0));
         float3 param = result;
         result = correctColor(param);
@@ -332,33 +335,33 @@ float3 combineStereoViews(thread float3& leftColor, thread float3& rightColor, c
                         {
                             if (_124.mode == 13)
                             {
-                                bool _397 = spvSMod(currentPixel.x, 2) == 0;
-                                bool _404;
-                                if (_397)
+                                bool _416 = spvSMod(currentPixel.x, 2) == 0;
+                                bool _423;
+                                if (_416)
                                 {
-                                    _404 = spvSMod(currentPixel.y, 2) == 0;
+                                    _423 = spvSMod(currentPixel.y, 2) == 0;
                                 }
                                 else
                                 {
-                                    _404 = _397;
+                                    _423 = _416;
                                 }
-                                if (_404)
+                                if (_423)
                                 {
                                     result = leftColor;
                                 }
                                 else
                                 {
-                                    bool _412 = spvSMod(currentPixel.x, 2) == 1;
-                                    bool _419;
-                                    if (_412)
+                                    bool _431 = spvSMod(currentPixel.x, 2) == 1;
+                                    bool _438;
+                                    if (_431)
                                     {
-                                        _419 = spvSMod(currentPixel.y, 2) == 1;
+                                        _438 = spvSMod(currentPixel.y, 2) == 1;
                                     }
                                     else
                                     {
-                                        _419 = _412;
+                                        _438 = _431;
                                     }
-                                    if (_419)
+                                    if (_438)
                                     {
                                         result = leftColor;
                                     }
@@ -387,50 +390,50 @@ float3 generateStereoImage(thread const float2& inUV, constant ImageDataFrag& _1
     float2 param = depthUV;
     float2 param_1 = float2(0.500999987125396728515625, 0.0);
     float2 param_2 = float2(0.999000012874603271484375, 1.0);
-    float2 _495 = clampEdge(param, param_1, param_2);
-    float2 param_3 = _495;
+    float2 _514 = clampEdge(param, param_1, param_2);
+    float2 param_3 = _514;
     float centerDepth = getDepth(imageTexture, imageTextureSmplr, param_3);
     float minDepthLeft = centerDepth;
     float minDepthRight = centerDepth;
     float aspect = _124._imageSize.x / _124._imageSize.y;
     for (int i = 0; i < 5; i++)
     {
-        uv.x = (((_520[i] * _124.stereoStrength) / aspect) / 25000.0) + (_124.stereoOffset / aspect);
+        uv.x = (((_539[i] * _124.stereoStrength) / aspect) / 25000.0) + (_124.stereoOffset / aspect);
         float2 param_4 = depthUV + uv;
         float2 param_5 = float2(0.500999987125396728515625, 0.0);
         float2 param_6 = float2(0.999000012874603271484375, 1.0);
-        float2 _547 = clampEdge(param_4, param_5, param_6);
-        float2 param_7 = _547;
+        float2 _566 = clampEdge(param_4, param_5, param_6);
+        float2 param_7 = _566;
         minDepthLeft = fast::min(minDepthLeft, getDepth(imageTexture, imageTextureSmplr, param_7));
         float2 param_8 = depthUV - uv;
         float2 param_9 = float2(0.500999987125396728515625, 0.0);
         float2 param_10 = float2(0.999000012874603271484375, 1.0);
-        float2 _558 = clampEdge(param_8, param_9, param_10);
-        float2 param_11 = _558;
+        float2 _577 = clampEdge(param_8, param_9, param_10);
+        float2 param_11 = _577;
         minDepthRight = fast::min(minDepthRight, getDepth(imageTexture, imageTextureSmplr, param_11));
     }
     float param_12 = minDepthLeft;
-    float _571 = getParallax(param_12, _124);
-    float parallaxLeft = (((_124.stereoStrength / aspect) * _571) / 25000.0) + (_124.stereoOffset / aspect);
+    float _590 = getParallax(param_12, _124);
+    float parallaxLeft = (((_124.stereoStrength / aspect) * _590) / 25000.0) + (_124.stereoOffset / aspect);
     float param_13 = minDepthRight;
-    float _586 = getParallax(param_13, _124);
-    float parallaxRight = (((_124.stereoStrength / aspect) * _586) / 25000.0) + (_124.stereoOffset / aspect);
+    float _605 = getParallax(param_13, _124);
+    float parallaxRight = (((_124.stereoStrength / aspect) * _605) / 25000.0) + (_124.stereoOffset / aspect);
     float2 param_14 = colorUV + float2(parallaxLeft, 0.0);
     float2 param_15 = float2(0.001000000047497451305389404296875, 0.0);
     float2 param_16 = float2(0.499000012874603271484375, 1.0);
-    float2 _606 = clampEdge(param_14, param_15, param_16);
-    float2 param_17 = _606;
+    float2 _625 = clampEdge(param_14, param_15, param_16);
+    float2 param_17 = _625;
     float3 colorLeft = getColor(imageTexture, imageTextureSmplr, param_17).xyz;
     float2 param_18 = colorUV - float2(parallaxRight, 0.0);
     float2 param_19 = float2(0.001000000047497451305389404296875, 0.0);
     float2 param_20 = float2(0.499000012874603271484375, 1.0);
-    float2 _618 = clampEdge(param_18, param_19, param_20);
-    float2 param_21 = _618;
+    float2 _637 = clampEdge(param_18, param_19, param_20);
+    float2 param_21 = _637;
     float3 colorRight = getColor(imageTexture, imageTextureSmplr, param_21).xyz;
     float3 param_22 = colorLeft;
     float3 param_23 = colorRight;
-    float3 _626 = combineStereoViews(param_22, param_23, _124, gl_FragCoord);
-    return _626;
+    float3 _645 = combineStereoViews(param_22, param_23, _124, gl_FragCoord);
+    return _645;
 }
 
 static inline __attribute__((always_inline))
@@ -445,7 +448,7 @@ float3 getAnaglyphRight(thread const float3& color)
     return float3(0.0, color.y, color.z);
 }
 
-fragment main0_out main0(main0_in in [[stage_in]], constant ImageDataFrag& _124 [[buffer(0)]], texture2d<float> imageTexture [[texture(0)]], texture2d<float> blurTexture [[texture(1)]], sampler imageTextureSmplr [[sampler(0)]], sampler blurTextureSmplr [[sampler(1)]], float4 gl_FragCoord [[position]])
+fragment main0_out main0(main0_in in [[stage_in]], constant ImageDataFrag& _124 [[buffer(0)]], texture2d<float> imageTexture [[texture(0)]], texture2d<float> blurTexture [[texture(1)]], texture2d<float> blurTextureNext [[texture(2)]], sampler imageTextureSmplr [[sampler(0)]], sampler blurTextureSmplr [[sampler(1)]], sampler blurTextureNextSmplr [[sampler(2)]], float4 gl_FragCoord [[position]])
 {
     main0_out out = {};
     float2 monoUV = float2(in.fragUV.x * 0.5, in.fragUV.y);
@@ -520,73 +523,73 @@ fragment main0_out main0(main0_in in [[stage_in]], constant ImageDataFrag& _124 
     if (_124.blur == 1)
     {
         float2 param_9 = monoUV;
-        float3 _998 = blurImage(param_9, blurTexture, blurTextureSmplr);
-        imageColor.x = _998.x;
-        imageColor.y = _998.y;
-        imageColor.z = _998.z;
-        float4 _1006 = imageColor;
-        float3 _1010 = mix(clearColor, _1006.xyz, float3(0.89999997615814208984375));
-        imageColor.x = _1010.x;
-        imageColor.y = _1010.y;
-        imageColor.z = _1010.z;
-        bool _1019 = _124.mode == 4;
-        bool _1026;
-        if (!_1019)
+        float3 _1017 = blurImage(param_9, _124, blurTexture, blurTextureSmplr, blurTextureNext, blurTextureNextSmplr);
+        imageColor.x = _1017.x;
+        imageColor.y = _1017.y;
+        imageColor.z = _1017.z;
+        float4 _1025 = imageColor;
+        float3 _1029 = mix(clearColor, _1025.xyz, float3(0.89999997615814208984375));
+        imageColor.x = _1029.x;
+        imageColor.y = _1029.y;
+        imageColor.z = _1029.z;
+        bool _1038 = _124.mode == 4;
+        bool _1045;
+        if (!_1038)
         {
-            _1026 = _124.mode == 5;
+            _1045 = _124.mode == 5;
         }
         else
         {
-            _1026 = _1019;
+            _1045 = _1038;
         }
-        if (_1026)
+        if (_1045)
         {
-            float3x3 _1033;
+            float3x3 _1052;
             if (_124.mode == 5)
             {
-                _1033 = float3x3(float3(0.456099987030029296875, 0.500483989715576171875, 0.17638100683689117431640625), float3(-0.4008220136165618896484375, -0.0378246009349822998046875, -0.01575889997184276580810546875), float3(-0.015216100029647350311279296875, -0.02059710025787353515625, -0.0054685599170625209808349609375));
+                _1052 = float3x3(float3(0.456099987030029296875, 0.500483989715576171875, 0.17638100683689117431640625), float3(-0.4008220136165618896484375, -0.0378246009349822998046875, -0.01575889997184276580810546875), float3(-0.015216100029647350311279296875, -0.02059710025787353515625, -0.0054685599170625209808349609375));
             }
             else
             {
-                _1033 = float3x3(float3(0.43900001049041748046875, 0.4469999969005584716796875, 0.1480000019073486328125), float3(0.0), float3(0.0));
+                _1052 = float3x3(float3(0.43900001049041748046875, 0.4469999969005584716796875, 0.1480000019073486328125), float3(0.0), float3(0.0));
             }
-            float3x3 leftFilter = _1033;
-            float3x3 _1042;
+            float3x3 leftFilter = _1052;
+            float3x3 _1061;
             if (_124.mode == 5)
             {
-                _1042 = float3x3(float3(-0.043470598757266998291015625, -0.08793880045413970947265625, -0.001555289956741034984588623046875), float3(0.3784759938716888427734375, 0.733640015125274658203125, -0.01845029927790164947509765625), float3(-0.072152696549892425537109375, -0.112961001694202423095703125, 1.22640001773834228515625));
+                _1061 = float3x3(float3(-0.043470598757266998291015625, -0.08793880045413970947265625, -0.001555289956741034984588623046875), float3(0.3784759938716888427734375, 0.733640015125274658203125, -0.01845029927790164947509765625), float3(-0.072152696549892425537109375, -0.112961001694202423095703125, 1.22640001773834228515625));
             }
             else
             {
-                _1042 = float3x3(float3(0.0), float3(0.0949999988079071044921875, 0.9340000152587890625, -0.004999999888241291046142578125), float3(-0.017999999225139617919921875, -0.0280000008642673492431640625, 1.05700004100799560546875));
+                _1061 = float3x3(float3(0.0), float3(0.0949999988079071044921875, 0.9340000152587890625, -0.004999999888241291046142578125), float3(-0.017999999225139617919921875, -0.0280000008642673492431640625, 1.05700004100799560546875));
             }
-            float3x3 rightFilter = _1042;
-            float4 _1047 = imageColor;
-            float4 _1052 = imageColor;
-            float3 _1057 = fast::clamp(_1047.xyz * leftFilter, float3(0.0), float3(1.0)) + fast::clamp(_1052.xyz * rightFilter, float3(0.0), float3(1.0));
-            imageColor.x = _1057.x;
-            imageColor.y = _1057.y;
-            imageColor.z = _1057.z;
+            float3x3 rightFilter = _1061;
+            float4 _1066 = imageColor;
+            float4 _1071 = imageColor;
+            float3 _1076 = fast::clamp(_1066.xyz * leftFilter, float3(0.0), float3(1.0)) + fast::clamp(_1071.xyz * rightFilter, float3(0.0), float3(1.0));
+            imageColor.x = _1076.x;
+            imageColor.y = _1076.y;
+            imageColor.z = _1076.z;
         }
         else
         {
-            bool _1067 = _124.mode == 1;
-            bool _1073;
-            if (_1067)
+            bool _1086 = _124.mode == 1;
+            bool _1092;
+            if (_1086)
             {
-                _1073 = _124.type == 1;
+                _1092 = _124.type == 1;
             }
             else
             {
-                _1073 = _1067;
+                _1092 = _1086;
             }
-            if (_1073)
+            if (_1092)
             {
                 float3 param_10 = imageColor.xyz;
-                float3 _1079 = getAnaglyphGrayscale(param_10);
-                imageColor.x = _1079.x;
-                imageColor.y = _1079.y;
-                imageColor.z = _1079.z;
+                float3 _1098 = getAnaglyphGrayscale(param_10);
+                imageColor.x = _1098.x;
+                imageColor.y = _1098.y;
+                imageColor.z = _1098.z;
             }
             else
             {
@@ -618,26 +621,26 @@ fragment main0_out main0(main0_in in [[stage_in]], constant ImageDataFrag& _124 
                 }
                 else
                 {
-                    bool _1133 = _124.type == 8;
-                    bool _1139;
-                    if (_1133)
+                    bool _1151 = _124.type == 8;
+                    bool _1157;
+                    if (_1151)
                     {
-                        _1139 = _124.gridSize[0u] > 0.0;
+                        _1157 = _124.gridSize[0u] > 0.0;
                     }
                     else
                     {
-                        _1139 = _1133;
+                        _1157 = _1151;
                     }
-                    bool _1145;
-                    if (_1139)
+                    bool _1163;
+                    if (_1157)
                     {
-                        _1145 = _124.gridSize[1u] > 0.0;
+                        _1163 = _124.gridSize[1u] > 0.0;
                     }
                     else
                     {
-                        _1145 = _1139;
+                        _1163 = _1157;
                     }
-                    if (_1145)
+                    if (_1163)
                     {
                         int columns = int(_124.gridSize[0u]);
                         int rows = int(_124.gridSize[1u]);
@@ -662,10 +665,10 @@ fragment main0_out main0(main0_in in [[stage_in]], constant ImageDataFrag& _124 
                     if (_124.type == 1)
                     {
                         float3 param_16 = imageColor.xyz;
-                        float3 _1205 = getAnaglyphGrayscale(param_16);
-                        imageColor.x = _1205.x;
-                        imageColor.y = _1205.y;
-                        imageColor.z = _1205.z;
+                        float3 _1223 = getAnaglyphGrayscale(param_16);
+                        imageColor.x = _1223.x;
+                        imageColor.y = _1223.y;
+                        imageColor.z = _1223.z;
                     }
                 }
                 else
@@ -704,41 +707,41 @@ fragment main0_out main0(main0_in in [[stage_in]], constant ImageDataFrag& _124 
                             zoomUV.x *= 0.5;
                             zoomUV = fast::clamp(zoomUV, float2(0.0), float2(0.49500000476837158203125, 1.0));
                             float2 param_22 = zoomUV;
-                            float3 _1288 = getColor(imageTexture, imageTextureSmplr, param_22).xyz;
-                            imageColor.x = _1288.x;
-                            imageColor.y = _1288.y;
-                            imageColor.z = _1288.z;
+                            float3 _1306 = getColor(imageTexture, imageTextureSmplr, param_22).xyz;
+                            imageColor.x = _1306.x;
+                            imageColor.y = _1306.y;
+                            imageColor.z = _1306.z;
                         }
                         else
                         {
                             if (_124.type == 2)
                             {
                                 float2 param_23 = in.fragUV;
-                                float3 _1303 = generateStereoImage(param_23, _124, gl_FragCoord, imageTexture, imageTextureSmplr);
-                                imageColor.x = _1303.x;
-                                imageColor.y = _1303.y;
-                                imageColor.z = _1303.z;
+                                float3 _1321 = generateStereoImage(param_23, _124, gl_FragCoord, imageTexture, imageTextureSmplr);
+                                imageColor.x = _1321.x;
+                                imageColor.y = _1321.y;
+                                imageColor.z = _1321.z;
                             }
                             else
                             {
                                 if (_124.type == 1)
                                 {
                                     float2 param_24 = in.fragUV;
-                                    float3 _1319 = getColor(imageTexture, imageTextureSmplr, param_24).xyz;
-                                    imageColor.x = _1319.x;
-                                    imageColor.y = _1319.y;
-                                    imageColor.z = _1319.z;
-                                    bool _1328 = _124.mode != 4;
-                                    bool _1334;
-                                    if (_1328)
+                                    float3 _1337 = getColor(imageTexture, imageTextureSmplr, param_24).xyz;
+                                    imageColor.x = _1337.x;
+                                    imageColor.y = _1337.y;
+                                    imageColor.z = _1337.z;
+                                    bool _1346 = _124.mode != 4;
+                                    bool _1352;
+                                    if (_1346)
                                     {
-                                        _1334 = _124.mode != 5;
+                                        _1352 = _124.mode != 5;
                                     }
                                     else
                                     {
-                                        _1334 = _1328;
+                                        _1352 = _1346;
                                     }
-                                    if (_1334)
+                                    if (_1352)
                                     {
                                         float3 param_25 = imageColor.xyz;
                                         float3 leftColor = getAnaglyphLeft(param_25);
@@ -746,52 +749,52 @@ fragment main0_out main0(main0_in in [[stage_in]], constant ImageDataFrag& _124 
                                         float3 rightColor = getAnaglyphRight(param_26);
                                         float3 param_27 = leftColor;
                                         float3 param_28 = rightColor;
-                                        float3 _1351 = combineStereoViews(param_27, param_28, _124, gl_FragCoord);
-                                        imageColor.x = _1351.x;
-                                        imageColor.y = _1351.y;
-                                        imageColor.z = _1351.z;
+                                        float3 _1369 = combineStereoViews(param_27, param_28, _124, gl_FragCoord);
+                                        imageColor.x = _1369.x;
+                                        imageColor.y = _1369.y;
+                                        imageColor.z = _1369.z;
                                     }
                                 }
                                 else
                                 {
-                                    bool _1361 = _124.type == 3;
-                                    bool _1368;
-                                    if (!_1361)
+                                    bool _1379 = _124.type == 3;
+                                    bool _1386;
+                                    if (!_1379)
                                     {
-                                        _1368 = _124.type == 5;
+                                        _1386 = _124.type == 5;
                                     }
                                     else
                                     {
-                                        _1368 = _1361;
+                                        _1386 = _1379;
                                     }
-                                    bool _1375;
-                                    if (!_1368)
+                                    bool _1393;
+                                    if (!_1386)
                                     {
-                                        _1375 = _124.type == 4;
+                                        _1393 = _124.type == 4;
                                     }
                                     else
                                     {
-                                        _1375 = _1368;
+                                        _1393 = _1386;
                                     }
-                                    bool _1382;
-                                    if (!_1375)
+                                    bool _1400;
+                                    if (!_1393)
                                     {
-                                        _1382 = _124.type == 6;
+                                        _1400 = _124.type == 6;
                                     }
                                     else
                                     {
-                                        _1382 = _1375;
+                                        _1400 = _1393;
                                     }
-                                    bool _1389;
-                                    if (!_1382)
+                                    bool _1407;
+                                    if (!_1400)
                                     {
-                                        _1389 = _124.type == 7;
+                                        _1407 = _124.type == 7;
                                     }
                                     else
                                     {
-                                        _1389 = _1382;
+                                        _1407 = _1400;
                                     }
-                                    if (_1389)
+                                    if (_1407)
                                     {
                                         float2 param_29 = monoUV;
                                         float3 leftColor_1 = getColor(imageTexture, imageTextureSmplr, param_29).xyz;
@@ -799,10 +802,10 @@ fragment main0_out main0(main0_in in [[stage_in]], constant ImageDataFrag& _124 
                                         float3 rightColor_1 = getColor(imageTexture, imageTextureSmplr, param_30).xyz;
                                         float3 param_31 = leftColor_1;
                                         float3 param_32 = rightColor_1;
-                                        float3 _1406 = combineStereoViews(param_31, param_32, _124, gl_FragCoord);
-                                        imageColor.x = _1406.x;
-                                        imageColor.y = _1406.y;
-                                        imageColor.z = _1406.z;
+                                        float3 _1424 = combineStereoViews(param_31, param_32, _124, gl_FragCoord);
+                                        imageColor.x = _1424.x;
+                                        imageColor.y = _1424.y;
+                                        imageColor.z = _1424.z;
                                     }
                                     else
                                     {
@@ -814,10 +817,10 @@ fragment main0_out main0(main0_in in [[stage_in]], constant ImageDataFrag& _124 
                                             float3 rightColor_2 = getColor(imageTexture, imageTextureSmplr, param_34).xyz;
                                             float3 param_35 = leftColor_2;
                                             float3 param_36 = rightColor_2;
-                                            float3 _1433 = combineStereoViews(param_35, param_36, _124, gl_FragCoord);
-                                            imageColor.x = _1433.x;
-                                            imageColor.y = _1433.y;
-                                            imageColor.z = _1433.z;
+                                            float3 _1451 = combineStereoViews(param_35, param_36, _124, gl_FragCoord);
+                                            imageColor.x = _1451.x;
+                                            imageColor.y = _1451.y;
+                                            imageColor.z = _1451.z;
                                         }
                                         else
                                         {

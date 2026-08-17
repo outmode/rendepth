@@ -58,9 +58,26 @@
 #include "Image.h"
 #include "DepthEstimator.h"
 #include "ModelDownloader.h"
+#include "VideoPlayer.h"
 
 Context context{};
 Image imageView{};
+static VideoPlayer videoPlayer;
+static bool activeVideo = false;
+static bool videoFrameLoaded = false;
+static double getTimeNow();
+static void updateVideoSlider();
+static void setVideoControlsVisible(bool visible);
+static void finishSliderDrag();
+static Icon& getIcon(IconType type);
+static void checkMouseState();
+
+static bool isSupportedVideo(const std::string& path) {
+	return VideoPlayer::supported(std::filesystem::path(path));
+}
+
+static void serviceVideo();
+static void failVideoLoad(const std::string& error);
 
 glm::vec2 windowSize{};
 auto switchedImage = false;
@@ -106,6 +123,10 @@ std::string qualityMode = "0";
 bool display3D = false;
 bool prevNextKeyDown = false;
 Icon* currentSlider = nullptr;
+static bool videoSliderScrubbing = false;
+static bool videoSliderWasPlaying = false;
+static double videoScrubLastPreviewTime = 0.0;
+static constexpr double videoScrubPreviewInterval = 0.075;
 auto currentSliderValue = 0.0;
 auto showingStereoSettings = false;
 auto isPlayingSlideshow = false;
@@ -142,6 +163,56 @@ Style style;
 
 std::vector<FileInfo> fileList{};
 auto fileIndex = 0;
+static void failVideoLoad(const std::string& error) {
+	if (!error.empty()) {
+		const char* path = fileList.empty() ? "" : fileList[fileIndex].link.c_str();
+		SDL_Log("Could not load video %s: %s", path, error.c_str());
+	}
+	videoPlayer.close();
+	activeVideo = false;
+	videoFrameLoaded = false;
+	context.loading = false;
+	doneLoadingImage = true;
+	setVideoControlsVisible(false);
+	getIcon(IconType::Play).image = IconType::Play;
+	if (!fileList.empty()) SDL_SetWindowTitle(context.window, fileList[fileIndex].name.c_str());
+	Core::drawText(&context, "Could Not Load Video", Image::helpFont,
+		Image::helpTexture, Image::helpTextSize, "Help Texture");
+	Image::displayHelp = true;
+	Image::displayInfo = false;
+}
+
+static void serviceVideo() {
+	if (!activeVideo) return;
+	videoPlayer.update();
+	if (const std::string error = videoPlayer.takeError(); !error.empty()) {
+		failVideoLoad(error);
+		return;
+	}
+	getIcon(IconType::Play).image = videoPlayer.playing() ? IconType::Pause : IconType::Play;
+	updateVideoSlider();
+	bool previewFrame = false;
+	if (SDL_Surface* frame = videoPlayer.takeFrame(&previewFrame)) {
+		if (!videoFrameLoaded) {
+			context.imageType = Color_Only;
+			context.fileName = fileList[fileIndex].base;
+			context.loading = false;
+			Image::displayHelp = false;
+			SDL_SetWindowTitle(context.window, fileList[fileIndex].name.c_str());
+			context.fileLink = fileList[fileIndex].link;
+			Image::updateVideoFrame(&context, frame, true,
+				videoPlayer.width(), videoPlayer.height(), true);
+			context.infoText = Core::getFileText(fileList[fileIndex], context.imageSize);
+			videoFrameLoaded = true;
+			doneLoadingImage = true;
+			checkMouseState();
+		} else {
+			Image::updateVideoFrame(&context, frame, false,
+				videoPlayer.width(), videoPlayer.height(), !previewFrame);
+		}
+		SDL_DestroySurface(frame);
+	}
+}
 auto preloadDir = 1;
 std::atomic doingPreload = false;
 static SDL_Thread* preloadThread = nullptr;
@@ -192,7 +263,6 @@ enum GenMode {
 static glm::vec2 refreshWindowSize();
 static void setMaximize(bool maximize = true);
 static void toggleMaximized();
-static void checkMouseState();
 static void hideUI(bool hideCustomMouse = true, bool hideRealMouse = false);
 static void showCustomCursor(bool show);
 static double getTimeNow() {
@@ -419,7 +489,7 @@ int getRandImageIndex() {
 	auto randIndex = randImage(randGen);
 	auto randAttempts = 64;
 	while ((randIndex == fileIndex || randIndex == nextRandIndex ||
-		isStereoImage(fileList[randIndex].type)) && --randAttempts > 0) {
+		isStereoImage(fileList[randIndex].type) || isSupportedVideo(fileList[randIndex].path)) && --randAttempts > 0) {
 		randIndex = randImage(randGen);
 	}
 	return randIndex;
@@ -1086,11 +1156,43 @@ static double currentStereoOffset = (1.0 - sliderStart) / 50.0;
 static double currentGridAngle = sliderStart;
 
 static double getSliderPercent(const Icon& icon) {
-	return icon.slider.position.x / icon.slider.size.x + 0.5;
+	if (icon.slider.size.x <= 0.0f) return 0.0;
+	return glm::clamp(icon.slider.position.x / icon.slider.size.x + 0.5, 0.0, 1.0);
 }
 
 static void setSliderPercent(Icon& icon, double percent) {
-	icon.slider.position.x = icon.slider.size.x * static_cast<float>(percent - 0.5);
+	icon.slider.position.x = icon.slider.size.x *
+		static_cast<float>(glm::clamp(percent, 0.0, 1.0) - 0.5);
+}
+
+static std::string formatVideoTimecode(const Icon& timeline) {
+	const double duration = std::max(0.0, videoPlayer.duration());
+	const double position = glm::clamp(
+		getSliderPercent(timeline) * duration, 0.0, duration);
+	const bool showHours = duration >= 3600.0;
+	auto formatTime = [showHours](double value) {
+		const auto seconds = static_cast<long long>(std::max(0.0, value));
+		if (showHours) {
+			return std::format("{}:{:02}:{:02}", seconds / 3600,
+				(seconds / 60) % 60, seconds % 60);
+		}
+		return std::format("{}:{:02}", seconds / 60, seconds % 60);
+	};
+	return "Video Time: " + formatTime(position) + " / " + formatTime(duration);
+}
+
+static void seekVideoFromSlider() {
+	if (!activeVideo || currentSlider == nullptr) return;
+	const double target = getSliderPercent(*currentSlider) * videoPlayer.duration();
+	if (!videoSliderScrubbing) {
+		videoPlayer.seek(target);
+		return;
+	}
+	const double now = getTimeNow();
+	if (now - videoScrubLastPreviewTime >= videoScrubPreviewInterval) {
+		videoPlayer.seek(target, true);
+		videoScrubLastPreviewTime = now;
+	}
 }
 
 static void updateStrengthSlider() {
@@ -1197,11 +1299,67 @@ Icon IconOffset = {
 			areaTopLeft, areaBottomRightFull },
 		};
 
+static Icon IconVideoSeek = {
+	IconType::None, IconType::None, IconGroup::None, IconMode::Slider, IconState::Idle,
+	"Video Position", style.getColor(Style::Color::White, Style::Alpha::Solid),
+	[]()->Canvas {
+		return {{ style.getIconSlider(Style::getCurrentScale()), style.getIconSlider(Style::getCurrentScale()) },
+			{ 0.0f, -style.getIconSlider(Style::getCurrentScale()) - 10.0f }, alignCenterBottom,
+			{ 0.0f, -positionEdgeLarge * 2.0f, 0.0f, 1.0f }, areaBottomRightFull};
+	},
+	[]() { seekVideoFromSlider(); }, 1.0, false, false,
+	{{ style.getIconDragger(Style::getCurrentScale()) * 12.0f,
+		style.getIconBar(Style::getCurrentScale()) }, { 0.0f, 0.0f }, alignCenter,
+		areaTopLeft, areaBottomRightFull}
+};
+
 static std::vector appIcons = { IconLoading, IconFullscreen, IconOpen, IconBatch, IconSave,
 	IconOptions, IconSettings, IconBack, IconForward, IconStereo3D,
-	IconStrength, IconDepth, IconOffset, IconPlay, IconHelp, IconClose };
+	IconStrength, IconDepth, IconOffset, IconPlay, IconVideoSeek, IconHelp, IconClose };
+
+static void finishSliderDrag() {
+	if (videoSliderScrubbing) {
+		if (activeVideo && videoPlayer.ready()) {
+			auto& timeline = getIcon(IconType::None);
+			videoPlayer.seek(getSliderPercent(timeline) * videoPlayer.duration(), false);
+			videoPlayer.setPlaying(videoSliderWasPlaying);
+		}
+		videoSliderScrubbing = false;
+		videoSliderWasPlaying = false;
+	}
+	currentSlider = nullptr;
+	mouseIsDown = false;
+	isDragging = false;
+	SDL_CaptureMouse(false);
+}
+
+static void setVideoControlsVisible(bool visible) {
+	auto& timeline = getIcon(IconType::None);
+	timeline.active = visible;
+	if (!visible) {
+		if (currentSlider == &timeline || videoSliderScrubbing)
+			finishSliderDrag();
+	}
+	if (visible) getIcon(IconType::Play).active = true;
+}
+
+static void updateVideoSlider() {
+	if (!activeVideo) return;
+	auto& timeline = getIcon(IconType::None);
+	const auto scale = std::max(context.displayScale, 0.01f);
+	const auto preferredWidth = style.getIconDragger(Style::getCurrentScale()) * 12.0f;
+	const auto thumbDiameter = style.getIconSlider(Style::getCurrentScale()) * 2.0f;
+	const auto availableWidth = std::max(thumbDiameter,
+		windowSize.x / scale - positionEdgeLarge * 2.0f);
+	timeline.slider.size.x = std::min(preferredWidth, availableWidth);
+	timeline.slider.size.y = style.getIconBar(Style::getCurrentScale());
+	if (!videoSliderScrubbing && videoPlayer.duration() > 0.0)
+		setSliderPercent(timeline, videoPlayer.position() / videoPlayer.duration());
+}
 
 static const SDL_DialogFileFilter filters[] = {
+	{ "All Media",  "jpg;jpeg;jps;png;pns;tga;bmp;mp4;m4v;mov;mkv;webm;avi;wmv;mpeg;mpg" },
+	{ "Videos", "mp4;m4v;mov;mkv;webm;avi;wmv;mpeg;mpg" },
 	{ "All Images",  "jpg;jpeg;jps;png;pns;tga;bmp" },
 	{ "JPG Images", "jpg;jpeg" },
 	{ "JPS Images", "jps" },
@@ -1224,7 +1382,7 @@ static void SDLCALL openFileCallback(void* userdata, const char* const* filelist
 	std::vector<std::string> fileNames{};
 
 	while (*filelist) {
-		if (isSupportedImage(*filelist)) fileNames.push_back(*filelist);
+		if (isSupportedImage(*filelist) || isSupportedVideo(*filelist)) fileNames.push_back(*filelist);
 		filelist++;
 	}
 
@@ -1720,6 +1878,11 @@ static void setSlideshow(bool slide) {
 }
 
 static void toggleSlideshow() {
+	if (activeVideo) {
+		videoPlayer.setPlaying(!videoPlayer.playing());
+		getIcon(IconType::Play).image = videoPlayer.playing() ? IconType::Pause : IconType::Play;
+		return;
+	}
 	setSlideshow(!isPlayingSlideshow);
 }
 
@@ -1753,7 +1916,7 @@ static void toggleMaximized() {
 static void pushFileInfo(const std::filesystem::path& filePath) {
 	auto extension = filePath.extension();
 	std::string fileName = filePath.string();
-	if (isSupportedImage(fileName)) {
+	if (isSupportedImage(fileName) || isSupportedVideo(fileName)) {
 		if (fileName.empty()) return;
 		if (filePath.filename().string().empty()) return;
 		auto modifiedTime = last_write_time(filePath);
@@ -1770,6 +1933,7 @@ static void pushFileInfo(const std::filesystem::path& filePath) {
 		info.preload = nullptr;
 		info.type = Core::getImageType(info.name);
 		if (info.type == Unknown_Format) info.type = Core::defaultImportFormat;
+		if (isSupportedVideo(fileName)) info.type = Color_Only;
 		fileList.push_back(info);
 	}
 }
@@ -1980,11 +2144,19 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	}
 
 	if (!fileList.empty()) {
-		if (Image::init(&context, fileList[fileIndex]) < 0) {
+		FileInfo emptyFile{};
+		FileInfo& initialImage = isSupportedVideo(fileList[fileIndex].link)
+			? emptyFile : fileList[fileIndex];
+		if (Image::init(&context, initialImage) < 0) {
 			SDL_Log("Could Not Initialize Image.");
 			return SDL_APP_FAILURE;
 		}
-		doneLoadingImage = true;
+		if (isSupportedVideo(fileList[fileIndex].link)) {
+			doneLoadingImage = false;
+			loadImage(nullptr);
+		} else {
+			doneLoadingImage = true;
+		}
 	} else {
 		FileInfo emptyFile{};
 		if (Image::init(&context, emptyFile) < 0) {
@@ -2015,6 +2187,29 @@ static auto visibilitySwitchMinimum = 0.75;
 static int loadImage(void* ptr) {
 	currentVisibility = 0.0;
 	targetVisibility = 0.0;
+	if (isSupportedVideo(fileList[fileIndex].link)) {
+		std::string error;
+		videoPlayer.close();
+		activeVideo = videoPlayer.open(fileList[fileIndex].link, error);
+		videoFrameLoaded = false;
+		if (!activeVideo) {
+			failVideoLoad(error);
+			return 1;
+		}
+		setVideoControlsVisible(true);
+		getIcon(IconType::Play).image = IconType::Pause;
+		SDL_SetWindowTitle(context.window, fileList[fileIndex].name.c_str());
+		Image::displayHelp = false;
+		Image::displayInfo = false;
+		context.loading = true;
+		return 0;
+	}
+	if (activeVideo) {
+		videoPlayer.close();
+		activeVideo = false;
+		videoFrameLoaded = false;
+		setVideoControlsVisible(false);
+	}
 	auto result = Image::load(&context, fileList[fileIndex], fileList[fileIndex].preload);
 	fileList[fileIndex].preload = nullptr;
 	doneLoadingImage = true;
@@ -2022,7 +2217,12 @@ static int loadImage(void* ptr) {
 }
 
 SDL_AppResult SDL_AppIterate(void* appstate) {
+	if ((currentSlider != nullptr || videoSliderScrubbing) &&
+		!(SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK)) {
+		finishSliderDrag();
+	}
 	serviceNativeGpuUpscale();
+	serviceVideo();
 	auto timeNow = getTimeNow();
 	context.deltaTime = timeNow - lastTime;
 	lastTime = timeNow;
@@ -2101,8 +2301,10 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		else if (Core::defaultImportFormat == Color_Anaglyph) menuSelection[ChoiceTags.label] = 1;
 		else if (Core::defaultImportFormat == Side_By_Side_Full) menuSelection[ChoiceTags.label] = 2;
 		else if (Core::defaultImportFormat == Side_By_Side_Half) menuSelection[ChoiceTags.label] = 3;
-		if (isPlayingSlideshow) preloadImage(nextRandIndex);
-		else preloadImage();
+		if (!activeVideo) {
+			if (isPlayingSlideshow) preloadImage(nextRandIndex);
+			else preloadImage();
+		}
 		if (rapidBrowseMode && display3D)
 			setDisplay3D(false);
 		if (display3D && !isFullscreen && showGoFullScreenOnce && (context.mode == SBS_Full ||
@@ -2378,8 +2580,9 @@ void checkMouseState() {
 		if (withinArea(context.mouse, getCoordinates(icon.canvas().topLeft, aspectScale),
 			getCoordinates(icon.canvas().bottomRight, aspectScale))) {
 			icon.state = IconState::Near;
+			const bool displayVideo = icon.type != IconType::None || activeVideo;
 			icon.active = displayLoading && displaySettings && displayStereo && displayParallax &&
-				displayOpen && displaySave && displayMenu && displayXD;
+				displayOpen && displaySave && displayMenu && displayXD && displayVideo;
 			if (icon.type == IconType::Loading) icon.active = true;
 			auto iconPosition = getCoordinates(
 				{icon.canvas().position * aspectScale
@@ -2404,8 +2607,13 @@ void checkMouseState() {
 									(!fileList.empty() && fileList.size() > fileIndex)) {
 								currentInfoLabel = Core::getFileText(fileList[fileIndex], context.imageSize);
 							}
-							if (icon.mode == IconMode::Slider) currentInfoLabel += " : " +
-								std::to_string(int(getSliderPercent(icon) * 100)) + "%";
+							if (icon.mode == IconMode::Slider) {
+								if (activeVideo && icon.type == IconType::None)
+									currentInfoLabel = formatVideoTimecode(icon);
+								else
+									currentInfoLabel += " : " +
+										std::to_string(int(getSliderPercent(icon) * 100)) + "%";
+							}
 							if (doShowInfo) {
 								Core::drawText(&context, currentInfoLabel, Image::infoFont, Image::infoTexture,
 										Image::infoTextSize, "Info Texture");
@@ -2422,7 +2630,10 @@ void checkMouseState() {
 			}
 		} else {
 			if (&icon == currentSlider) {
-				currentSlider = nullptr;
+				icon.state = IconState::Over;
+				icon.active = true;
+				isIconCaptured = true;
+				continue;
 			}
 			if (icon.type != IconType::Loading && !(icon.type == IconType::File && fileList.empty())) {
 				icon.state = IconState::Idle;
@@ -2917,7 +3128,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		mouseLeftWindow = false;
 	} else if (event->type == SDL_EVENT_WINDOW_MOUSE_LEAVE) {
 		mouseLeftWindow = true;
+		if (currentSlider != nullptr || videoSliderScrubbing)
+			finishSliderDrag();
 		hideUI(false);
+	} else if (event->type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+		finishSliderDrag();
 	} else if (event->type == SDL_EVENT_WINDOW_HIT_TEST) {
 		} else if (event->type == SDL_EVENT_KEY_DOWN) {
 			if (event->key.key == SDLK_ESCAPE) {
@@ -3052,10 +3267,18 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 							}
 						} else if (icon.mode == IconMode::Slider) {
 							currentSlider = &icon;
+							if (activeVideo && icon.type == IconType::None) {
+								videoSliderScrubbing = true;
+								videoSliderWasPlaying = videoPlayer.playing();
+								videoScrubLastPreviewTime =
+									getTimeNow() - videoScrubPreviewInterval;
+								videoPlayer.setPlaying(false);
+							}
 						}
 					}
 				}
 			}
+			if (currentSlider != nullptr) SDL_CaptureMouse(true);
 
 			if (context.displayMenu) {
 				for (const auto& choice : *context.menuChoices) {
@@ -3099,15 +3322,13 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		}
 	} else if (event->type == SDL_EVENT_MOUSE_BUTTON_UP) {
 		if (event->button.button == SDL_BUTTON_LEFT) {
+			finishSliderDrag();
 			auto timeNow = getTimeNow();
 			auto clickDiff = timeNow - lastClick;
 			lastClick = timeNow;
 			if (!isIconCaptured && !context.displayMenu) {
 				if (clickDiff < doubleClickTime) toggleMaximized();
 			}
-			isDragging = false;
-			mouseIsDown = false;
-			currentSlider = nullptr;
 		}
 	} else if (event->type == SDL_EVENT_MOUSE_MOTION) {
 		mouseMoveDelay--;
@@ -3128,7 +3349,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		mouseLastActive = getTimeNow();
 		checkMouseState();
 
-		if (currentSlider != nullptr) {
+		if (currentSlider != nullptr &&
+			(event->motion.state & SDL_BUTTON_LMASK)) {
 			auto aspectScale = 1.0;
 			if (preferredStereoMode == SBS_Full && isFullscreen)
 				aspectScale = 2.0;
@@ -3140,13 +3362,15 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 				std::ceil(-sliderExtents), std::floor(sliderExtents));
 			currentSlider->slider.position.y = 0.0f;
 			if (currentSlider->callback) currentSlider->callback();
+		} else if (currentSlider != nullptr) {
+			finishSliderDrag();
 		}
 	} else if (event->type == SDL_EVENT_MOUSE_WHEEL) {
 		wheelSpeed += (int)event->wheel.y;
 		mouseLastActive = getTimeNow();
 	} else if (event->type == SDL_EVENT_DROP_FILE) {
 		std::string droppedFile = event->drop.data;
-		if (isSupportedImage(droppedFile)) {
+		if (isSupportedImage(droppedFile) || isSupportedVideo(droppedFile)) {
 			if (!isConverting && !doingPreload && !context.loading) {
 				if (isPlayingSlideshow) cancelSlideshow();
 				parseFileList({ droppedFile });
@@ -3161,6 +3385,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 }
 
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
+	videoPlayer.close();
+	activeVideo = false;
 	saveOptions();
 	resetDepthGeneration();
 	nativeDepthEstimator.unload();

@@ -23,11 +23,19 @@
 #include "rapidjson/document.h"
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
 
 namespace {
+	using BlurClock = std::chrono::steady_clock;
+	constexpr auto videoBlurInterval = std::chrono::seconds(3);
+	constexpr Uint32 blurSnapshotSize = 32;
+	constexpr Uint32 blurSnapshotMipLevels = 6;
+	BlurClock::time_point blurTransitionStart{};
+	bool videoBlurActive = false;
+
 	bool readCalibrationNumber(const rapidjson::Value& object, const char* name, float& result) {
 		if (!object.IsObject() || !object.HasMember(name)) return false;
 		const auto& entry = object[name];
@@ -345,6 +353,34 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData) {
 	return 0;
 }
 
+int Image::updateVideoFrame(Context* context, SDL_Surface* imageData, bool firstFrame,
+		int logicalWidth, int logicalHeight, bool updateBlur) {
+	if (context == nullptr || imageData == nullptr) return -1;
+	const glm::ivec2 frameSize{imageData->w, imageData->h};
+	const bool reuseTexture = !firstFrame && frameSize == videoTextureSize;
+	context->imageSize = {
+		(float)(logicalWidth > 0 ? logicalWidth : imageData->w),
+		(float)(logicalHeight > 0 ? logicalHeight : imageData->h)};
+	imageSize = context->imageSize;
+	updateSize(context);
+	if (uploadTexture(context, imageData, &imageTexture, "Video Texture",
+			reuseTexture, !reuseTexture, false) < 0) return -1;
+	videoTextureSize = frameSize;
+	if (firstFrame || (updateBlur && (blurTexture == nullptr || blurTextureNext == nullptr))) {
+		blitBlurTexture(context, imageTexture, (Uint32)imageData->w, (Uint32)imageData->h);
+		videoBlurActive = true;
+		blurTransitionStart = BlurClock::now();
+		imageDataFrag.blurMix = 0.0f;
+	} else if (updateBlur && BlurClock::now() - blurTransitionStart >= videoBlurInterval) {
+		std::swap(blurTexture, blurTextureNext);
+		blitBlurTexture(context, imageTexture, (Uint32)imageData->w,
+			(Uint32)imageData->h, true);
+		blurTransitionStart = BlurClock::now();
+		imageDataFrag.blurMix = 0.0f;
+	}
+	return 0;
+}
+
 void Image::initMenuTexture() {
 	if (menuTextSurface) SDL_DestroySurface(menuTextSurface);
 	optionsLabels.clear();
@@ -658,7 +694,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	}
 
 	SDL_GPUShader* imageFragmentShader = Core::loadShader(context->device,
-		"Image.frag", 2, 1, 0, 0);
+		"Image.frag", 3, 1, 0, 0);
 	if (imageFragmentShader == nullptr) {
 		SDL_Log("Failed To Create Image Fragment Shader.");
 		return -1;
@@ -981,7 +1017,7 @@ int Image::reloadShader(Context* context) {
 	SDL_GPUShader* vertexShader = Core::loadShader(context->device,
 		"Image.vert", 0, 1, 0, 0);
 	SDL_GPUShader* fragmentShader = Core::loadShader(context->device,
-		"Image.frag", 2, 1, 0, 0);
+		"Image.frag", 3, 1, 0, 0);
 	if (vertexShader == nullptr || fragmentShader == nullptr) {
 		if (vertexShader != nullptr) SDL_ReleaseGPUShader(context->device, vertexShader);
 		if (fragmentShader != nullptr) SDL_ReleaseGPUShader(context->device, fragmentShader);
@@ -1148,8 +1184,9 @@ int Image::initFonts(Context* context) {
 }
 
 int Image::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTexture** gpuTexture,
-		const std::string& textureName) {
-	auto textureMipLevels = (Uint32) std::floor(log2(std::max(imageData->w, imageData->h))) + 1;
+		const std::string& textureName, bool reuseTexture, bool waitForGpu, bool generateMipmaps) {
+	auto textureMipLevels = generateMipmaps
+		? (Uint32) std::floor(log2(std::max(imageData->w, imageData->h))) + 1 : 1;
 	auto gpuFormat = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
 	auto bytesPerPixel = 4;
 	SDL_GPUTextureCreateInfo textureCreateInfo = {
@@ -1161,8 +1198,11 @@ int Image::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTextur
 		.layer_count_or_depth = 1,
 		.num_levels = textureMipLevels
 	};
-	if (*gpuTexture != nullptr) SDL_ReleaseGPUTexture(context->device, *gpuTexture);
-	*gpuTexture = SDL_CreateGPUTexture(context->device, &textureCreateInfo);
+	if (!reuseTexture || *gpuTexture == nullptr) {
+		if (*gpuTexture != nullptr) SDL_ReleaseGPUTexture(context->device, *gpuTexture);
+		*gpuTexture = SDL_CreateGPUTexture(context->device, &textureCreateInfo);
+	}
+	if (*gpuTexture == nullptr) return -1;
 
 	SDL_SetGPUTextureName(
 		context->device,
@@ -1177,14 +1217,23 @@ int Image::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTextur
 
 	SDL_GPUTransferBuffer* textureTransferBuffer = SDL_CreateGPUTransferBuffer(
 		context->device, &transferBufferInfo);
+	if (textureTransferBuffer == nullptr) return -1;
 
 	auto textureTransferPtr = (Uint8*)SDL_MapGPUTransferBuffer(
 		context->device,
 		textureTransferBuffer,
 		false
 	);
-
-	SDL_memcpy(textureTransferPtr, imageData->pixels, imageData->w * imageData->h * bytesPerPixel);
+	if (textureTransferPtr == nullptr) {
+		SDL_ReleaseGPUTransferBuffer(context->device, textureTransferBuffer);
+		return -1;
+	}
+	const size_t rowBytes = static_cast<size_t>(imageData->w) * bytesPerPixel;
+	for (int row = 0; row < imageData->h; ++row) {
+		SDL_memcpy(textureTransferPtr + static_cast<size_t>(row) * rowBytes,
+			static_cast<const Uint8*>(imageData->pixels) + static_cast<size_t>(row) * imageData->pitch,
+			rowBytes);
+	}
 	SDL_UnmapGPUTransferBuffer(context->device, textureTransferBuffer);
 
 	SDL_GPUCommandBuffer* uploadCmdBuf = SDL_AcquireGPUCommandBuffer(context->device);
@@ -1201,15 +1250,19 @@ int Image::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTextur
 	};
 	SDL_UploadToGPUTexture(
 		copyPass, &textureTransferInfo,
-		&textureRegion, false
+		&textureRegion, reuseTexture
 	);
 
 	SDL_EndGPUCopyPass(copyPass);
-	SDL_GenerateMipmapsForGPUTexture(uploadCmdBuf, *gpuTexture);
+	if (generateMipmaps) SDL_GenerateMipmapsForGPUTexture(uploadCmdBuf, *gpuTexture);
 
-	SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(uploadCmdBuf);
-	SDL_WaitForGPUFences(context->device, true, &fence, 1);
-	SDL_ReleaseGPUFence(context->device, fence);
+	if (waitForGpu) {
+		SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(uploadCmdBuf);
+		SDL_WaitForGPUFences(context->device, true, &fence, 1);
+		SDL_ReleaseGPUFence(context->device, fence);
+	} else {
+		SDL_SubmitGPUCommandBuffer(uploadCmdBuf);
+	}
 	SDL_ReleaseGPUTransferBuffer(context->device, textureTransferBuffer);
 
 	return 0;
@@ -1310,87 +1363,64 @@ SDL_Surface* Image::upscaleSurfaceGPU(Context* context, const SDL_Surface* sourc
 	return result;
 }
 
-void Image::blitBlurTexture(Context* context, SDL_GPUTexture *inputTexture, Uint32 imageWidth, Uint32 imageHeight) {
-	static Uint32 blitSize = 32;
-	static Uint32 blurSize = 4;
-
-	if (blitTexture == nullptr) {
-		SDL_GPUTextureCreateInfo blitTextureCreateInfo = {
-			.type = SDL_GPU_TEXTURETYPE_2D,
-			.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-			.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-			.width = blitSize,
-			.height = blitSize,
-			.layer_count_or_depth = 1,
-			.num_levels = 1
-		};
-
-		blitTexture = SDL_CreateGPUTexture(context->device, &blitTextureCreateInfo);
-
-		SDL_SetGPUTextureName(
-			context->device,
-			blitTexture,
-			"Blit Texture"
-		);
-	}
-
+void Image::blitBlurTexture(Context* context, SDL_GPUTexture* inputTexture,
+		Uint32 imageWidth, Uint32 imageHeight, bool nextSnapshotOnly) {
+	if (context == nullptr || inputTexture == nullptr) return;
+	const SDL_GPUTextureCreateInfo textureInfo = {
+		.type = SDL_GPU_TEXTURETYPE_2D,
+		.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+		.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+		.width = blurSnapshotSize,
+		.height = blurSnapshotSize,
+		.layer_count_or_depth = 1,
+		.num_levels = blurSnapshotMipLevels
+	};
 	if (blurTexture == nullptr) {
-		SDL_GPUTextureCreateInfo blurTextureCreateInfo = {
-			.type = SDL_GPU_TEXTURETYPE_2D,
-			.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-			.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-			.width = blurSize,
-			.height = blurSize,
-			.layer_count_or_depth = 1,
-			.num_levels = 1
-		};
-
-		blurTexture = SDL_CreateGPUTexture(context->device, &blurTextureCreateInfo);
-
-		SDL_SetGPUTextureName(
-			context->device,
-			blurTexture,
-			"BlurTexture"
-		);
+		blurTexture = SDL_CreateGPUTexture(context->device, &textureInfo);
+		if (blurTexture != nullptr)
+			SDL_SetGPUTextureName(context->device, blurTexture, "Blur Texture Current");
 	}
+	if (blurTextureNext == nullptr) {
+		blurTextureNext = SDL_CreateGPUTexture(context->device, &textureInfo);
+		if (blurTextureNext != nullptr)
+			SDL_SetGPUTextureName(context->device, blurTextureNext, "Blur Texture Next");
+	}
+	if (blurTexture == nullptr || blurTextureNext == nullptr) return;
 
 	SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(context->device);
-
-	SDL_GPUBlitInfo blitImageInfo = {
-		.source = {
-			.texture = inputTexture,
-			.layer_or_depth_plane = 0,
-			.w = context->imageType == Color_Plus_Depth ? imageWidth / 2 : imageWidth,
-			.h = imageHeight },
-		.destination = {
-			.texture = blitTexture,
-			.layer_or_depth_plane = 0,
-			.w = blitSize,
-			.h = blitSize },
-		.load_op = SDL_GPU_LOADOP_LOAD,
-		.filter = SDL_GPU_FILTER_LINEAR
+	if (commandBuffer == nullptr) return;
+	const auto sourceWidth = context->imageType == Color_Plus_Depth
+		? imageWidth / 2 : imageWidth;
+	auto captureSnapshot = [&](SDL_GPUTexture* destination) {
+		const SDL_GPUBlitInfo blitInfo = {
+			.source = {
+				.texture = inputTexture,
+				.layer_or_depth_plane = 0,
+				.w = sourceWidth,
+				.h = imageHeight },
+			.destination = {
+				.texture = destination,
+				.layer_or_depth_plane = 0,
+				.w = blurSnapshotSize,
+				.h = blurSnapshotSize },
+			.load_op = SDL_GPU_LOADOP_DONT_CARE,
+			.filter = SDL_GPU_FILTER_LINEAR
+		};
+		SDL_BlitGPUTexture(commandBuffer, &blitInfo);
+		SDL_GenerateMipmapsForGPUTexture(commandBuffer, destination);
 	};
-	SDL_BlitGPUTexture(commandBuffer, &blitImageInfo);
 
-	SDL_GPUBlitInfo blitBlurInfo = {
-		.source = {
-			.texture = blitTexture,
-			.layer_or_depth_plane = 0,
-			.w = blitSize,
-			.h = blitSize },
-		.destination = {
-			.texture = blurTexture,
-			.layer_or_depth_plane = 0,
-			.w = blurSize,
-			.h = blurSize },
-		.load_op = SDL_GPU_LOADOP_LOAD,
-		.filter = SDL_GPU_FILTER_LINEAR
-	};
-	SDL_BlitGPUTexture(commandBuffer, &blitBlurInfo);
-
-	SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
-	SDL_WaitForGPUFences(context->device, true, &fence, 1);
-	SDL_ReleaseGPUFence(context->device, fence);
+	if (!nextSnapshotOnly) captureSnapshot(blurTexture);
+	captureSnapshot(blurTextureNext);
+	if (nextSnapshotOnly) {
+		SDL_SubmitGPUCommandBuffer(commandBuffer);
+	} else {
+		SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
+		SDL_WaitForGPUFences(context->device, true, &fence, 1);
+		SDL_ReleaseGPUFence(context->device, fence);
+		videoBlurActive = false;
+		imageDataFrag.blurMix = 0.0f;
+	}
 }
 
 static SDL_GPUViewport getViewport(int view, int views, glm::vec2 rect) {
@@ -1532,9 +1562,13 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 			SDL_BindGPUGraphicsPipeline(renderPass, imagePipeline);
 			SDL_BindGPUVertexBuffers(renderPass, 0, &vertexBinding, 1);
 			SDL_BindGPUIndexBuffer(renderPass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
-			SDL_GPUTextureSamplerBinding sampleBindings[2] = {{ .texture = sourceTexture != nullptr ? sourceTexture : imageTexture, .sampler = imageSampler },
-				{ .texture = blurTexture, .sampler = imageSampler }};
-			SDL_BindGPUFragmentSamplers(renderPass, 0, &sampleBindings[0], 2);
+			SDL_GPUTextureSamplerBinding sampleBindings[3] = {
+				{ .texture = sourceTexture != nullptr ? sourceTexture : imageTexture,
+					.sampler = imageSampler },
+				{ .texture = blurTexture, .sampler = imageSampler },
+				{ .texture = blurTextureNext != nullptr ? blurTextureNext : blurTexture,
+					.sampler = imageSampler }};
+			SDL_BindGPUFragmentSamplers(renderPass, 0, &sampleBindings[0], 3);
 
 			if (stereoFormat == Side_By_Side_Full || stereoFormat == Side_By_Side_Half ||
 				stereoFormat == Stereo_Free_View_Grid || stereoFormat == Stereo_Free_View_LRL) {
@@ -1701,6 +1735,14 @@ void Image::setSpriteUniforms(glm::vec3 position, glm::vec3 size, glm::vec4 colo
 }
 
 int Image::draw(Context* context) {
+	if (videoBlurActive) {
+		const auto elapsed = BlurClock::now() - blurTransitionStart;
+		imageDataFrag.blurMix = glm::clamp(
+			std::chrono::duration<float>(elapsed).count() /
+			std::chrono::duration<float>(videoBlurInterval).count(), 0.0f, 1.0f);
+	} else {
+		imageDataFrag.blurMix = 0.0f;
+	}
 	if (nativeOutputEnabled) {
 		nativeOutputSourceReady = imageTexture != nullptr;
 		if (nativeOutputSourceReady) drawNativeOutput(context);
@@ -1773,11 +1815,14 @@ int Image::draw(Context* context) {
 				}
 				SDL_SetGPUViewport(renderPass, &drawViewport);
 
-				if (imageTexture != nullptr && blurTexture != nullptr) {
+				if (imageTexture != nullptr && blurTexture != nullptr &&
+					blurTextureNext != nullptr) {
 					bindPipeline(renderPass, imagePipeline);
-					SDL_GPUTextureSamplerBinding sampleBindings[2] = {{ .texture = imageTexture, .sampler = imageSampler },
-						{ .texture = blurTexture, .sampler = imageSampler }};
-					SDL_BindGPUFragmentSamplers(renderPass, 0, &sampleBindings[0], 2);
+					SDL_GPUTextureSamplerBinding sampleBindings[3] = {
+						{ .texture = imageTexture, .sampler = imageSampler },
+						{ .texture = blurTexture, .sampler = imageSampler },
+						{ .texture = blurTextureNext, .sampler = imageSampler }};
+					SDL_BindGPUFragmentSamplers(renderPass, 0, &sampleBindings[0], 3);
 
 					imageDataVert.fillScreen = 1;
 					imageDataVert.projection = glm::mat4(1.0f);
@@ -1890,6 +1935,18 @@ int Image::draw(Context* context) {
 						{ 1, 1 }, glm::vec2(slideEnd, 1.0 - slideEnd),
 						glm::vec3(aspectScale, 1.0));
 					drawSprite(commandBuffer, renderPass);
+
+					if (icon.type == IconType::None) {
+						const auto thumbPosition = Utils::getCanvasPosition(context,
+							&iconCanvas, &icon.slider, aspectScale * context->displayScale);
+						const auto thumbDiameter = glm::vec2(
+							style.getIconSlider(Style::getCurrentScale()) * 2.0f * context->displayScale);
+						setSpriteUniforms(glm::vec3(thumbPosition, 1.0f),
+							glm::vec3(thumbDiameter, 1.0f), viewColorWhiteSolid,
+							(float)icon.visibility, 1, { 0, 0 }, { 1, 1 }, { 0.5f, 0.5f },
+							glm::vec3(aspectScale, 1.0f));
+						drawSprite(commandBuffer, renderPass);
+					}
 				}
 			}
 
@@ -2058,7 +2115,7 @@ int Image::draw(Context* context) {
 			SDL_BindGPUFragmentSamplers(renderPass, 0, &iconSampleBindings[0], 1);
 
 			for (const auto& icon : *context->appIcons) {
-				if (!icon.active) continue;
+				if (!icon.active || icon.type == IconType::None) continue;
 				auto iconCanvas = icon.canvas();
 				auto iconPosition = Utils::getCanvasPosition(context, &iconCanvas, &icon.slider, aspectScale * context->displayScale);
 				iconDataVert.transform = glm::translate(glm::mat4(1.0f),glm::vec3(iconPosition, 1.0f));
@@ -2213,13 +2270,15 @@ int Image::drawNativeOutput(Context* context) {
 
 	SDL_GPUViewport viewport{0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f};
 	SDL_SetGPUViewport(renderPass, &viewport);
-	if (context->backgroundStyle == Blur && blurTexture != nullptr) {
+	if (context->backgroundStyle == Blur && blurTexture != nullptr &&
+		blurTextureNext != nullptr) {
 		bindPipeline(renderPass, imagePipeline);
-		SDL_GPUTextureSamplerBinding backgroundBindings[2] = {
+		SDL_GPUTextureSamplerBinding backgroundBindings[3] = {
 			{.texture = imageTexture, .sampler = imageSampler},
-			{.texture = blurTexture, .sampler = imageSampler}
+			{.texture = blurTexture, .sampler = imageSampler},
+			{.texture = blurTextureNext, .sampler = imageSampler}
 		};
-		SDL_BindGPUFragmentSamplers(renderPass, 0, &backgroundBindings[0], 2);
+		SDL_BindGPUFragmentSamplers(renderPass, 0, &backgroundBindings[0], 3);
 		imageDataVert.displayImageAspect = {1.0f, 1.0f, 1.0f};
 		imageDataVert.fillScreen = 1;
 		imageDataVert.projection = glm::mat4(1.0f);
@@ -2266,7 +2325,7 @@ void Image::quit(Context* context){
 	SDL_ReleaseGPUBuffer(context->device, sharedIndexBuffer);
 	SDL_ReleaseGPUTexture(context->device, imageTexture);
 	SDL_ReleaseGPUTexture(context->device, blurTexture);
-	SDL_ReleaseGPUTexture(context->device, blitTexture);
+	SDL_ReleaseGPUTexture(context->device, blurTextureNext);
 	SDL_ReleaseGPUTexture(context->device, iconTexture);
 	SDL_ReleaseGPUTexture(context->device, helpTexture);
 	SDL_ReleaseGPUTexture(context->device, menuTexture);

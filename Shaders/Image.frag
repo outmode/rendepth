@@ -24,6 +24,7 @@ layout (location = 0) in vec2 fragUV;
 layout (location = 0) out vec4 outColor;
 layout (set = 2, binding = 0) uniform sampler2D imageTexture;
 layout (set = 2, binding = 1) uniform sampler2D blurTexture;
+layout (set = 2, binding = 2) uniform sampler2D blurTextureNext;
 layout (set = 3, binding = 0) uniform ImageDataFrag {
 	vec2 windowSize;
 	vec2 imageSize;
@@ -40,7 +41,7 @@ layout (set = 3, binding = 0) uniform ImageDataFrag {
 	int effectRandom;
 	int swapLeftRight;
 	int force;
-	int padding;
+	float blurMix;
 };
 
 #define Disabled 0
@@ -158,11 +159,14 @@ vec3 uncorrectColor(vec3 original) {
 vec3 blurImage(vec2 uv) {
 	vec3 result = vec3(0.0);
 	float totalWeight = 0.0;
+	float snapshotMix = smoothstep(0.0, 1.0, blurMix);
 	for (int y = -blurRange; y <= blurRange; y++) {
 		for (int x = -blurRange; x <= blurRange; x++) {
 			vec2 offsetUV = vec2(blurOffsets[abs(x)], blurOffsets[abs(y)]) / vec2(200.0);
 			totalWeight += 1.0;
-			result += texture(blurTexture, uv + offsetUV).rgb;
+			vec3 currentSample = textureLod(blurTexture, uv + offsetUV, 3.0).rgb;
+			vec3 nextSample = textureLod(blurTextureNext, uv + offsetUV, 3.0).rgb;
+			result += mix(currentSample, nextSample, snapshotMix);
 		}
 	}
 	result /= totalWeight;

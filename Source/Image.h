@@ -42,7 +42,7 @@ public:
 	inline static SDL_GPUBuffer* sharedIndexBuffer = nullptr;
 	inline static SDL_GPUTexture* imageTexture = nullptr;
 	inline static SDL_GPUTexture* blurTexture = nullptr;
-	inline static SDL_GPUTexture* blitTexture = nullptr;
+	inline static SDL_GPUTexture* blurTextureNext = nullptr;
 	inline static SDL_GPUTexture* iconTexture = nullptr;
 	inline static SDL_GPUTexture* helpTexture = nullptr;
 	inline static SDL_GPUTexture* infoTexture = nullptr;
@@ -93,7 +93,7 @@ public:
 		int effectRandom;
 		int swapLeftRight;
 		int force;
-		int quiltRowsBottomUp;
+		float blurMix;
 	};
 
 	struct InterlacerDataFrag {
@@ -144,6 +144,7 @@ public:
 	inline static SpriteDataVert spriteDataVert{};
 	inline static SpriteDataFrag spriteDataFrag{};
 	inline static glm::vec2 imageSize;
+	inline static glm::ivec2 videoTextureSize{};
 	inline static glm::vec2 safeImageSize;
 	inline static double safePercent = 0.8f;
 	inline static glm::vec4 clearColorLight{ 0.99, 0.99, 0.99, 1.0f };
@@ -173,6 +174,8 @@ public:
 	static int init(Context* context, FileInfo& imageInfo);
 	static int reloadShader(Context* context);
 	static int load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData);
+	static int updateVideoFrame(Context* context, SDL_Surface* imageData, bool firstFrame,
+		int logicalWidth, int logicalHeight, bool updateBlur = true);
 	static int draw(Context* context);
 	static int initNativeOutput(Context* context);
 	static bool nativeOutputAvailable();
@@ -185,10 +188,12 @@ public:
 	static void drawIcon(SDL_GPUCommandBuffer* commandBuffer, SDL_GPURenderPass* renderPass);
 	static void drawSprite(SDL_GPUCommandBuffer* commandBuffer, SDL_GPURenderPass* renderPass);
 	static int uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTexture** gpuTexture,
-		const std::string& textureName);
+		const std::string& textureName, bool reuseTexture = false,
+		bool waitForGpu = true, bool generateMipmaps = true);
 	static SDL_Surface* upscaleSurfaceGPU(Context* context, const SDL_Surface* source,
 		int outputWidth, int outputHeight);
-	static void blitBlurTexture(Context* context, SDL_GPUTexture *inputTexture, Uint32 imageWidth, Uint32 imageHeight);
+	static void blitBlurTexture(Context* context, SDL_GPUTexture* inputTexture,
+		Uint32 imageWidth, Uint32 imageHeight, bool nextSnapshotOnly = false);
 	static int renderStereoImage(Context* context, StereoFormat stereoFormat,
 		SDL_GPUTexture* sourceTexture = nullptr);
 	static SDL_Surface* getExportTexture(Context* context, StereoFormat stereoFormat);

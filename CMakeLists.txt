@@ -5,6 +5,7 @@ set(EXECUTABLE_NAME Rendepth)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 option(RENDEPTH_ENABLE_ONNX_RUNTIME "Enable native ONNX Runtime depth inference" ON)
+option(RENDEPTH_ENABLE_FFMPEG "Enable FFmpeg video playback" ON)
 option(RENDEPTH_ENABLE_ROCM "Enable the ONNX Runtime ROCm execution provider" ON)
 option(RENDEPTH_BUILD_DEPTH_TEST "Build the standalone ONNX depth test harness" OFF)
 option(RENDEPTH_COMPILE_SHADERS "Compile shader sources before building Rendepth" OFF)
@@ -203,7 +204,7 @@ endif()
 
 target_compile_definitions(Rendepth PUBLIC SDL_MAIN_USE_CALLBACKS)
 
-target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp
+target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp
         Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
         Source/ModelDownloader.cpp)
 
@@ -217,6 +218,100 @@ target_link_directories(Rendepth PUBLIC "\${ORIGIN}/../Library")
 target_link_libraries(Rendepth PUBLIC
         SDL3::SDL3 SDL3_ttf::SDL3_ttf SDL3_image::SDL3_image
         glm CURL::libcurl)
+
+if(RENDEPTH_ENABLE_FFMPEG)
+    if(NOT EXISTS "${CMAKE_SOURCE_DIR}/ThirdParty/FFmpeg/configure")
+        message(FATAL_ERROR
+                "FFmpeg is missing. Run: git submodule update --init ThirdParty/FFmpeg")
+    endif()
+
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(DAV1D QUIET IMPORTED_TARGET "dav1d >= 0.5.0")
+    endif()
+    if(DAV1D_FOUND)
+        set(RENDEPTH_FFMPEG_DAV1D_OPTIONS
+                --enable-libdav1d
+                --enable-decoder=av1,libdav1d,cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3)
+        set(RENDEPTH_FFMPEG_DAV1D_LINK PkgConfig::DAV1D)
+        message(STATUS "Rendepth: using system dav1d for FFmpeg AV1 decoding")
+    else()
+        set(RENDEPTH_FFMPEG_DAV1D_OPTIONS
+                --enable-decoder=av1,cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3)
+        message(STATUS "Rendepth: system dav1d not found; using FFmpeg's native AV1 decoder")
+    endif()
+    include(ExternalProject)
+    find_program(RENDEPTH_FFMPEG_MAKE NAMES gmake make mingw32-make REQUIRED)
+    set(RENDEPTH_FFMPEG_CONFIGURE
+        "${CMAKE_SOURCE_DIR}/ThirdParty/FFmpeg/configure")
+    if(WIN32)
+        find_program(RENDEPTH_BASH NAMES bash REQUIRED)
+        list(PREPEND RENDEPTH_FFMPEG_CONFIGURE "${RENDEPTH_BASH}")
+    endif()
+
+    set(RENDEPTH_FFMPEG_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg")
+    set(RENDEPTH_FFMPEG_BUILD "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg-build")
+    set(RENDEPTH_FFMPEG_LIBRARY_DIR "${RENDEPTH_FFMPEG_PREFIX}/lib")
+    set(RENDEPTH_FFMPEG_INCLUDE_DIR "${RENDEPTH_FFMPEG_PREFIX}/include")
+    file(MAKE_DIRECTORY "${RENDEPTH_FFMPEG_INCLUDE_DIR}")
+
+    ExternalProject_Add(RendepthFFmpeg
+        SOURCE_DIR "${CMAKE_SOURCE_DIR}/ThirdParty/FFmpeg"
+        BINARY_DIR "${RENDEPTH_FFMPEG_BUILD}"
+        CONFIGURE_COMMAND
+            ${RENDEPTH_FFMPEG_CONFIGURE}
+            "--prefix=${RENDEPTH_FFMPEG_PREFIX}"
+            --disable-programs
+            --disable-doc
+            --disable-debug
+            --disable-network
+            --disable-autodetect
+            --disable-avdevice
+            --disable-avfilter
+            --disable-swresample
+            --disable-iconv
+            --disable-x86asm
+            --disable-shared
+            --enable-static
+            --enable-pic
+            --enable-pthreads
+            --disable-everything
+            --enable-avcodec
+            --enable-avformat
+            --enable-avutil
+            --enable-swscale
+            --enable-protocol=file
+            --enable-demuxer=avi,asf,matroska,mov,mpegps,mpegts,mpegvideo
+            ${RENDEPTH_FFMPEG_DAV1D_OPTIONS}
+        BUILD_COMMAND "${RENDEPTH_FFMPEG_MAKE}"
+        INSTALL_COMMAND "${RENDEPTH_FFMPEG_MAKE}" install
+        BUILD_BYPRODUCTS
+            "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavformat.a"
+            "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavcodec.a"
+            "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libswscale.a"
+            "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavutil.a"
+        UPDATE_COMMAND ""
+        TEST_COMMAND "")
+
+    foreach(ffmpeg_library IN ITEMS avformat avcodec swscale avutil)
+        add_library(RendepthFFmpeg_${ffmpeg_library} STATIC IMPORTED GLOBAL)
+        set_target_properties(RendepthFFmpeg_${ffmpeg_library} PROPERTIES
+            IMPORTED_LOCATION
+                "${RENDEPTH_FFMPEG_LIBRARY_DIR}/lib${ffmpeg_library}.a"
+            INTERFACE_INCLUDE_DIRECTORIES "${RENDEPTH_FFMPEG_INCLUDE_DIR}")
+        add_dependencies(RendepthFFmpeg_${ffmpeg_library} RendepthFFmpeg)
+    endforeach()
+
+    add_dependencies(Rendepth RendepthFFmpeg)
+    target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_FFMPEG)
+    target_link_libraries(Rendepth PUBLIC
+        RendepthFFmpeg_avformat RendepthFFmpeg_avcodec
+        RendepthFFmpeg_swscale RendepthFFmpeg_avutil
+        ${RENDEPTH_FFMPEG_DAV1D_LINK} ${CMAKE_DL_LIBS})
+    if(UNIX)
+        target_link_libraries(Rendepth PUBLIC m pthread)
+    endif()
+endif()
 
 if(RENDEPTH_ENABLE_ONNX_RUNTIME)
     if(NOT RENDEPTH_ENABLE_ROCM AND NOT RENDEPTH_ONNXRUNTIME_DIR)
@@ -385,8 +480,15 @@ set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 set(CPACK_RPM_PACKAGE_LICENSE "MIT")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
 set(CPACK_RPM_PACKAGE_RELEASE 1)
+set(RENDEPTH_RPM_REQUIRES)
+if(RENDEPTH_ENABLE_FFMPEG AND DAV1D_FOUND)
+    list(APPEND RENDEPTH_RPM_REQUIRES "libdav1d >= 0.5.0")
+endif()
 if(RENDEPTH_ENABLE_ROCM AND UNIX AND NOT APPLE)
-    set(CPACK_RPM_PACKAGE_REQUIRES "onnxruntime-rocm >= 1.22.2")
+    list(APPEND RENDEPTH_RPM_REQUIRES "onnxruntime-rocm >= 1.22.2")
+endif()
+if(RENDEPTH_RPM_REQUIRES)
+    list(JOIN RENDEPTH_RPM_REQUIRES ", " CPACK_RPM_PACKAGE_REQUIRES)
 endif()
 include(CPack)
 
