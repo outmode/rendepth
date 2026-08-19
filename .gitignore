@@ -1,6 +1,7 @@
 /build/
 
 /Binary/*
+/Debug/
 /Library/*
 /Shaders/Temp/
 

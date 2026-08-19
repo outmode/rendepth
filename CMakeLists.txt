@@ -4,36 +4,37 @@ set(EXECUTABLE_NAME Rendepth)
 
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
-# ONNX Runtime is not bundled.  Keep the default build usable on Windows,
-# where the runtime path must be supplied explicitly, while preserving the
-# existing Linux/macOS default.
+# Build features are intentionally owned by this file rather than the CMake
+# cache.  A developer should only need to provide machine-specific SDK paths
+# (such as ONNX Runtime and cuDNN), not remember a separate set of IDE flags.
+# Clear legacy cache entries so an old CLion profile cannot silently override
+# these defaults.
+foreach(RENDEPTH_BUILD_FEATURE IN ITEMS
+        RENDEPTH_ENABLE_ONNX_RUNTIME
+        RENDEPTH_ENABLE_FFMPEG
+        RENDEPTH_ENABLE_ROCM
+        RENDEPTH_ENABLE_CUDA
+        RENDEPTH_BUILD_DEPTH_TEST
+        RENDEPTH_COMPILE_SHADERS)
+    unset(${RENDEPTH_BUILD_FEATURE} CACHE)
+endforeach()
+
 if(WIN32)
-    set(RENDEPTH_ONNX_DEFAULT OFF)
+    set(RENDEPTH_ENABLE_ONNX_RUNTIME ON)
+    set(RENDEPTH_ENABLE_FFMPEG OFF)
+    set(RENDEPTH_ENABLE_ROCM OFF)
+    set(RENDEPTH_ENABLE_CUDA ON)
 else()
-    set(RENDEPTH_ONNX_DEFAULT ON)
+    set(RENDEPTH_ENABLE_ONNX_RUNTIME ON)
+    set(RENDEPTH_ENABLE_FFMPEG ON)
+    set(RENDEPTH_ENABLE_ROCM ON)
+    set(RENDEPTH_ENABLE_CUDA OFF)
 endif()
-option(RENDEPTH_ENABLE_ONNX_RUNTIME "Enable native ONNX Runtime depth inference" ${RENDEPTH_ONNX_DEFAULT})
-# The bundled FFmpeg build uses a POSIX shell/configure toolchain.  Keep it
-# enabled by default on Unix, but require an explicit Windows toolchain choice
-# (for example MinGW/MSYS2) instead of accidentally invoking WSL bash.
-if(WIN32)
-    set(RENDEPTH_FFMPEG_DEFAULT OFF)
-else()
-    set(RENDEPTH_FFMPEG_DEFAULT ON)
-endif()
-option(RENDEPTH_ENABLE_FFMPEG "Enable FFmpeg video playback" ${RENDEPTH_FFMPEG_DEFAULT})
-# ROCm is only available on Linux.  Keep it enabled by default there for
-# existing AMD/ROCm builds, but never make Windows/NVIDIA builds search for a
-# ROCm installation that cannot exist on that platform.
-if(WIN32)
-    set(RENDEPTH_ROCM_DEFAULT OFF)
-else()
-    set(RENDEPTH_ROCM_DEFAULT ON)
-endif()
-option(RENDEPTH_ENABLE_ROCM "Enable the ONNX Runtime ROCm execution provider" ${RENDEPTH_ROCM_DEFAULT})
-option(RENDEPTH_ENABLE_CUDA "Enable the ONNX Runtime CUDA execution provider" OFF)
-option(RENDEPTH_BUILD_DEPTH_TEST "Build the standalone ONNX depth test harness" OFF)
-option(RENDEPTH_COMPILE_SHADERS "Compile shader sources before building Rendepth" OFF)
+set(RENDEPTH_BUILD_DEPTH_TEST OFF)
+set(RENDEPTH_COMPILE_SHADERS OFF)
+
+# ONNX Runtime is not bundled, so these remain cache entries for each local
+# machine or CI environment to supply.
 set(RENDEPTH_FFMPEG_ROOT "" CACHE PATH
         "MSVC-compatible FFmpeg SDK root (for example, vcpkg_installed/x64-windows)")
 set(RENDEPTH_ONNXRUNTIME_DIR "" CACHE PATH "ONNX Runtime installation directory")
@@ -43,7 +44,6 @@ set(RENDEPTH_ROCM_DIR "/usr/lib64/rocm" CACHE PATH "ROCm installation directory"
 if(NOT WIN32)
     find_package(CURL REQUIRED)
 endif()
-set(EXECUTABLE_OUTPUT_PATH ../Binary)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -51,9 +51,11 @@ set(CMAKE_POLICY_DEFAULT_CMP0077 OLD)
 set(CMAKE_POLICY_DEFAULT_CMP0095 OLD)
 set(CMAKE_POLICY_DEFAULT_CMP0068 OLD)
 
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/Binary)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_SOURCE_DIR}/Binary)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/Binary)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/Binary")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/Debug")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/Binary")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}/Binary")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}/Binary")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/Library)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG ${CMAKE_SOURCE_DIR}/Library)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/Library)
@@ -218,7 +220,7 @@ if(RENDEPTH_COMPILE_SHADERS)
         add_custom_target(RendepthShadercross
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                         "$<TARGET_FILE:shadercross>"
-                        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<TARGET_FILE_NAME:shadercross>"
+                        "$<TARGET_FILE_DIR:Rendepth>/$<TARGET_FILE_NAME:shadercross>"
                 DEPENDS shadercross)
         add_dependencies(Shaders RendepthShadercross)
     endif()
