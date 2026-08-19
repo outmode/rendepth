@@ -4,14 +4,45 @@ set(EXECUTABLE_NAME Rendepth)
 
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
-option(RENDEPTH_ENABLE_ONNX_RUNTIME "Enable native ONNX Runtime depth inference" ON)
-option(RENDEPTH_ENABLE_FFMPEG "Enable FFmpeg video playback" ON)
-option(RENDEPTH_ENABLE_ROCM "Enable the ONNX Runtime ROCm execution provider" ON)
+# ONNX Runtime is not bundled.  Keep the default build usable on Windows,
+# where the runtime path must be supplied explicitly, while preserving the
+# existing Linux/macOS default.
+if(WIN32)
+    set(RENDEPTH_ONNX_DEFAULT OFF)
+else()
+    set(RENDEPTH_ONNX_DEFAULT ON)
+endif()
+option(RENDEPTH_ENABLE_ONNX_RUNTIME "Enable native ONNX Runtime depth inference" ${RENDEPTH_ONNX_DEFAULT})
+# The bundled FFmpeg build uses a POSIX shell/configure toolchain.  Keep it
+# enabled by default on Unix, but require an explicit Windows toolchain choice
+# (for example MinGW/MSYS2) instead of accidentally invoking WSL bash.
+if(WIN32)
+    set(RENDEPTH_FFMPEG_DEFAULT OFF)
+else()
+    set(RENDEPTH_FFMPEG_DEFAULT ON)
+endif()
+option(RENDEPTH_ENABLE_FFMPEG "Enable FFmpeg video playback" ${RENDEPTH_FFMPEG_DEFAULT})
+# ROCm is only available on Linux.  Keep it enabled by default there for
+# existing AMD/ROCm builds, but never make Windows/NVIDIA builds search for a
+# ROCm installation that cannot exist on that platform.
+if(WIN32)
+    set(RENDEPTH_ROCM_DEFAULT OFF)
+else()
+    set(RENDEPTH_ROCM_DEFAULT ON)
+endif()
+option(RENDEPTH_ENABLE_ROCM "Enable the ONNX Runtime ROCm execution provider" ${RENDEPTH_ROCM_DEFAULT})
+option(RENDEPTH_ENABLE_CUDA "Enable the ONNX Runtime CUDA execution provider" OFF)
 option(RENDEPTH_BUILD_DEPTH_TEST "Build the standalone ONNX depth test harness" OFF)
 option(RENDEPTH_COMPILE_SHADERS "Compile shader sources before building Rendepth" OFF)
+set(RENDEPTH_FFMPEG_ROOT "" CACHE PATH
+        "MSVC-compatible FFmpeg SDK root (for example, vcpkg_installed/x64-windows)")
 set(RENDEPTH_ONNXRUNTIME_DIR "" CACHE PATH "ONNX Runtime installation directory")
+set(RENDEPTH_CUDNN_BIN_DIR "" CACHE PATH
+        "Directory containing the cuDNN runtime DLLs required by the CUDA ONNX Runtime provider")
 set(RENDEPTH_ROCM_DIR "/usr/lib64/rocm" CACHE PATH "ROCm installation directory")
-find_package(CURL REQUIRED)
+if(NOT WIN32)
+    find_package(CURL REQUIRED)
+endif()
 set(EXECUTABLE_OUTPUT_PATH ../Binary)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -74,7 +105,9 @@ set(SDLTTF_FREETYPE ON)
 set(SDLTTF_HARFBUZZ OFF)
 set(SDLTTF_PLUTOSVG OFF)
 
-set(GLM_STATIC_LIBRARY ON)
+# GLM is header-only in Rendepth. Building its optional library conflicts with
+# the shared-library setting on MSVC and produces an unusable import library.
+set(GLM_BUILD_LIBRARY OFF CACHE BOOL "Build GLM's optional library" FORCE)
 set(WITH_PERF_TOOL OFF)
 set(USE_OWN_FFTW OFF)
 set(BUILD_BENCHMARK OFF)
@@ -83,8 +116,15 @@ set(BUILD_TESTING OFF)
 set(BUILD_SHARED_LIBS ON)
 
 if(WIN32)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libstdc++ -mavx -w -O2")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -static-libstdc++ -mavx -w -O2")
+    if(MSVC)
+        # SDL and its vendored dependencies compile sources in parallel. /FS
+        # serializes PDB writes so MSVC builds remain reliable in CI as well.
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 /FS")
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /O2 /FS")
+    else()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libstdc++ -mavx -w -O2")
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -static-libstdc++ -mavx -w -O2")
+    endif()
 elseif(APPLE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libstdc++ -Xclang -w -O2")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -static-libstdc++ -Xclang -w -O2")
@@ -99,13 +139,32 @@ add_subdirectory(ThirdParty/SDL_image EXCLUDE_FROM_ALL)
 add_subdirectory(ThirdParty/glm EXCLUDE_FROM_ALL)
 
 if(RENDEPTH_COMPILE_SHADERS)
-    set(SDLSHADERCROSS_DXC ON CACHE BOOL "" FORCE)
+    # The Windows DXC source build requires ATL, which is not present in the
+    # standard Visual Studio Build Tools installation. Use the standalone DXC
+    # executable for the final HLSL -> DXIL conversion instead.
+    if(WIN32)
+        set(SDLSHADERCROSS_DXC OFF CACHE BOOL "" FORCE)
+        find_program(RENDEPTH_DXC_EXECUTABLE NAMES dxc dxc.exe REQUIRED)
+    else()
+        set(SDLSHADERCROSS_DXC ON CACHE BOOL "" FORCE)
+    endif()
     set(SDLSHADERCROSS_SHARED OFF CACHE BOOL "" FORCE)
     set(SDLSHADERCROSS_STATIC ON CACHE BOOL "" FORCE)
     set(SDLSHADERCROSS_VENDORED ON CACHE BOOL "" FORCE)
     set(SDLSHADERCROSS_CLI ON CACHE BOOL "" FORCE)
     set(SDLSHADERCROSS_INSTALL OFF CACHE BOOL "" FORCE)
+    # DXC's bundled LLVM/Clang targets contain dependency cycles that can only
+    # be represented by static libraries. Scope shared libraries off while
+    # configuring shadercross when the bundled DXC is used; the application's
+    # SDL libraries remain shared.
+    if(NOT WIN32)
+        set(RENDEPTH_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+        set(BUILD_SHARED_LIBS OFF)
+    endif()
     add_subdirectory(ThirdParty/SDL_shadercross EXCLUDE_FROM_ALL)
+    if(NOT WIN32)
+        set(BUILD_SHARED_LIBS ${RENDEPTH_BUILD_SHARED_LIBS})
+    endif()
 
     find_program(RENDEPTH_GLSLANG_VALIDATOR glslangValidator REQUIRED)
     set(RENDEPTH_SHADER_TEMP_DIR "${CMAKE_CURRENT_BINARY_DIR}/Shaders/Temp")
@@ -118,6 +177,20 @@ if(RENDEPTH_COMPILE_SHADERS)
         set(shader_dxil "${CMAKE_SOURCE_DIR}/Shaders/Compiled/${shader}.dxil")
         set(shader_msl "${CMAKE_SOURCE_DIR}/Shaders/Compiled/${shader}.msl")
         set(shader_hlsl "${RENDEPTH_SHADER_TEMP_DIR}/${shader}.hlsl")
+        if(WIN32)
+            if(shader MATCHES "\\.vert$")
+                set(shader_dxil_profile vs_6_0)
+            else()
+                set(shader_dxil_profile ps_6_0)
+            endif()
+            set(shader_dxil_command
+                    COMMAND "${RENDEPTH_DXC_EXECUTABLE}" -T ${shader_dxil_profile} -E main
+                            -Fo "${shader_dxil}" "${shader_hlsl}")
+        else()
+            set(shader_dxil_command
+                    COMMAND $<TARGET_FILE:shadercross> "${shader_hlsl}"
+                            -s HLSL -d DXIL -o "${shader_dxil}")
+        endif()
         add_custom_command(
                 OUTPUT "${shader_dxil}" "${shader_msl}"
                 COMMAND ${CMAKE_COMMAND} -E make_directory "${RENDEPTH_SHADER_TEMP_DIR}"
@@ -128,8 +201,7 @@ if(RENDEPTH_COMPILE_SHADERS)
                         -s SPIRV -d MSL -o "${shader_msl}"
                 COMMAND $<TARGET_FILE:shadercross> "${shader_spv}"
                         -s SPIRV -d HLSL -o "${shader_hlsl}"
-                COMMAND $<TARGET_FILE:shadercross> "${shader_hlsl}"
-                        -s HLSL -d DXIL -o "${shader_dxil}"
+                ${shader_dxil_command}
                 DEPENDS
                         "${CMAKE_SOURCE_DIR}/Shaders/${shader}"
                         $<TARGET_FILE:shadercross>
@@ -142,10 +214,20 @@ if(RENDEPTH_COMPILE_SHADERS)
     endforeach()
     add_custom_target(Shaders DEPENDS ${RENDEPTH_SHADER_OUTPUTS})
     add_custom_target(QuiltTestShaders DEPENDS ${QUILTTEST_SHADER_OUTPUTS})
+    if(WIN32)
+        add_custom_target(RendepthShadercross
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "$<TARGET_FILE:shadercross>"
+                        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<TARGET_FILE_NAME:shadercross>"
+                DEPENDS shadercross)
+        add_dependencies(Shaders RendepthShadercross)
+    endif()
 endif()
 
 if(WIN32)
-    add_compile_options(-Wl,-Bstatic)
+    if(NOT MSVC)
+        add_compile_options(-Wl,-Bstatic)
+    endif()
     add_executable(Rendepth WIN32 Assets/Rendepth.rc Source/Main.cpp)
 elseif(APPLE)
     if(NOT RENDEPTH_MAC_BUNDLE)
@@ -217,92 +299,153 @@ target_link_directories(Rendepth PUBLIC "\${ORIGIN}/../Library")
 
 target_link_libraries(Rendepth PUBLIC
         SDL3::SDL3 SDL3_ttf::SDL3_ttf SDL3_image::SDL3_image
-        glm CURL::libcurl)
+        glm)
+
+if(WIN32)
+    target_link_libraries(Rendepth PUBLIC winhttp)
+else()
+    target_link_libraries(Rendepth PUBLIC CURL::libcurl)
+endif()
 
 if(RENDEPTH_ENABLE_FFMPEG)
-    if(NOT EXISTS "${CMAKE_SOURCE_DIR}/ThirdParty/FFmpeg/configure")
-        message(FATAL_ERROR
-                "FFmpeg is missing. Run: git submodule update --init ThirdParty/FFmpeg")
-    endif()
-
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(DAV1D QUIET IMPORTED_TARGET "dav1d >= 0.5.0")
-    endif()
-    if(DAV1D_FOUND)
-        set(RENDEPTH_FFMPEG_DAV1D_OPTIONS
-                --enable-libdav1d
-                --enable-decoder=av1,libdav1d,cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3)
-        set(RENDEPTH_FFMPEG_DAV1D_LINK PkgConfig::DAV1D)
-        message(STATUS "Rendepth: using system dav1d for FFmpeg AV1 decoding")
-    else()
-        set(RENDEPTH_FFMPEG_DAV1D_OPTIONS
-                --enable-decoder=av1,cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3)
-        message(STATUS "Rendepth: system dav1d not found; using FFmpeg's native AV1 decoder")
-    endif()
-    include(ExternalProject)
-    find_program(RENDEPTH_FFMPEG_MAKE NAMES gmake make mingw32-make REQUIRED)
-    set(RENDEPTH_FFMPEG_CONFIGURE
-        "${CMAKE_SOURCE_DIR}/ThirdParty/FFmpeg/configure")
     if(WIN32)
-        find_program(RENDEPTH_BASH NAMES bash REQUIRED)
-        list(PREPEND RENDEPTH_FFMPEG_CONFIGURE "${RENDEPTH_BASH}")
+        if(NOT MSVC)
+            message(FATAL_ERROR
+                    "Windows FFmpeg playback requires an MSVC build and an MSVC-compatible FFmpeg SDK.")
+        endif()
+        if(NOT RENDEPTH_FFMPEG_ROOT)
+            message(FATAL_ERROR
+                    "RENDEPTH_FFMPEG_ROOT must point to an MSVC-compatible FFmpeg SDK. "
+                    "For vcpkg, use its installed/x64-windows directory.")
+        endif()
+
+        find_path(RENDEPTH_FFMPEG_INCLUDE_DIR
+                NAMES libavcodec/avcodec.h
+                PATHS "${RENDEPTH_FFMPEG_ROOT}/include"
+                NO_DEFAULT_PATH)
+        if(NOT RENDEPTH_FFMPEG_INCLUDE_DIR)
+            message(FATAL_ERROR
+                    "Could not find FFmpeg headers under ${RENDEPTH_FFMPEG_ROOT}/include.")
+        endif()
+
+        foreach(ffmpeg_library IN ITEMS avformat avcodec swscale avutil)
+            string(TOUPPER "${ffmpeg_library}" ffmpeg_library_upper)
+            find_library(RENDEPTH_FFMPEG_${ffmpeg_library_upper}_RELEASE
+                    NAMES ${ffmpeg_library} lib${ffmpeg_library}
+                    PATHS "${RENDEPTH_FFMPEG_ROOT}/lib"
+                    NO_DEFAULT_PATH)
+            find_library(RENDEPTH_FFMPEG_${ffmpeg_library_upper}_DEBUG
+                    NAMES ${ffmpeg_library} lib${ffmpeg_library}
+                    PATHS "${RENDEPTH_FFMPEG_ROOT}/debug/lib"
+                    NO_DEFAULT_PATH)
+            if(NOT RENDEPTH_FFMPEG_${ffmpeg_library_upper}_RELEASE OR
+                    NOT RENDEPTH_FFMPEG_${ffmpeg_library_upper}_DEBUG)
+                message(FATAL_ERROR
+                        "Could not find release and debug ${ffmpeg_library} import libraries under "
+                        "${RENDEPTH_FFMPEG_ROOT}.")
+            endif()
+            add_library(RendepthFFmpeg_${ffmpeg_library} UNKNOWN IMPORTED GLOBAL)
+            set_target_properties(RendepthFFmpeg_${ffmpeg_library} PROPERTIES
+                    IMPORTED_LOCATION_DEBUG
+                        "${RENDEPTH_FFMPEG_${ffmpeg_library_upper}_DEBUG}"
+                    IMPORTED_LOCATION_RELEASE
+                        "${RENDEPTH_FFMPEG_${ffmpeg_library_upper}_RELEASE}"
+                    IMPORTED_LOCATION_RELWITHDEBINFO
+                        "${RENDEPTH_FFMPEG_${ffmpeg_library_upper}_RELEASE}"
+                    IMPORTED_LOCATION_MINSIZEREL
+                        "${RENDEPTH_FFMPEG_${ffmpeg_library_upper}_RELEASE}"
+                    INTERFACE_INCLUDE_DIRECTORIES "${RENDEPTH_FFMPEG_INCLUDE_DIR}")
+        endforeach()
+
+        if(NOT EXISTS "${RENDEPTH_FFMPEG_ROOT}/bin" OR
+                NOT EXISTS "${RENDEPTH_FFMPEG_ROOT}/debug/bin")
+            message(FATAL_ERROR
+                    "FFmpeg runtime DLL directories were not found under ${RENDEPTH_FFMPEG_ROOT}.")
+        endif()
+        add_custom_command(TARGET Rendepth POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                        "$<IF:$<CONFIG:Debug>,${RENDEPTH_FFMPEG_ROOT}/debug/bin,${RENDEPTH_FFMPEG_ROOT}/bin>"
+                        "$<TARGET_FILE_DIR:Rendepth>")
+        install(DIRECTORY "${RENDEPTH_FFMPEG_ROOT}/bin/"
+                DESTINATION libexec/rendepth/Binary
+                FILES_MATCHING PATTERN "*.dll")
+    else()
+        if(NOT EXISTS "${CMAKE_SOURCE_DIR}/ThirdParty/FFmpeg/configure")
+            message(FATAL_ERROR
+                    "FFmpeg is missing. Run: git submodule update --init ThirdParty/FFmpeg")
+        endif()
+
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(DAV1D QUIET IMPORTED_TARGET "dav1d >= 0.5.0")
+        endif()
+        if(DAV1D_FOUND)
+            set(RENDEPTH_FFMPEG_DAV1D_OPTIONS
+                    --enable-libdav1d
+                    --enable-decoder=av1,libdav1d,cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3)
+            set(RENDEPTH_FFMPEG_DAV1D_LINK PkgConfig::DAV1D)
+            message(STATUS "Rendepth: using system dav1d for FFmpeg AV1 decoding")
+        else()
+            set(RENDEPTH_FFMPEG_DAV1D_OPTIONS
+                    --enable-decoder=av1,cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3)
+            message(STATUS "Rendepth: system dav1d not found; using FFmpeg's native AV1 decoder")
+        endif()
+        include(ExternalProject)
+        find_program(RENDEPTH_FFMPEG_MAKE NAMES gmake make REQUIRED)
+        set(RENDEPTH_FFMPEG_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg")
+        set(RENDEPTH_FFMPEG_BUILD "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg-build")
+        set(RENDEPTH_FFMPEG_LIBRARY_DIR "${RENDEPTH_FFMPEG_PREFIX}/lib")
+        set(RENDEPTH_FFMPEG_INCLUDE_DIR "${RENDEPTH_FFMPEG_PREFIX}/include")
+        file(MAKE_DIRECTORY "${RENDEPTH_FFMPEG_INCLUDE_DIR}")
+
+        ExternalProject_Add(RendepthFFmpeg
+            SOURCE_DIR "${CMAKE_SOURCE_DIR}/ThirdParty/FFmpeg"
+            BINARY_DIR "${RENDEPTH_FFMPEG_BUILD}"
+            CONFIGURE_COMMAND
+                "${CMAKE_SOURCE_DIR}/ThirdParty/FFmpeg/configure"
+                "--prefix=${RENDEPTH_FFMPEG_PREFIX}"
+                --disable-programs
+                --disable-doc
+                --disable-debug
+                --disable-network
+                --disable-autodetect
+                --disable-avdevice
+                --disable-avfilter
+                --disable-swresample
+                --disable-iconv
+                --disable-x86asm
+                --disable-shared
+                --enable-static
+                --enable-pic
+                --enable-pthreads
+                --disable-everything
+                --enable-avcodec
+                --enable-avformat
+                --enable-avutil
+                --enable-swscale
+                --enable-protocol=file
+                --enable-demuxer=avi,asf,matroska,mov,mpegps,mpegts,mpegvideo
+                ${RENDEPTH_FFMPEG_DAV1D_OPTIONS}
+            BUILD_COMMAND "${RENDEPTH_FFMPEG_MAKE}"
+            INSTALL_COMMAND "${RENDEPTH_FFMPEG_MAKE}" install
+            BUILD_BYPRODUCTS
+                "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavformat.a"
+                "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavcodec.a"
+                "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libswscale.a"
+                "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavutil.a"
+            UPDATE_COMMAND ""
+            TEST_COMMAND "")
+
+        foreach(ffmpeg_library IN ITEMS avformat avcodec swscale avutil)
+            add_library(RendepthFFmpeg_${ffmpeg_library} STATIC IMPORTED GLOBAL)
+            set_target_properties(RendepthFFmpeg_${ffmpeg_library} PROPERTIES
+                IMPORTED_LOCATION
+                    "${RENDEPTH_FFMPEG_LIBRARY_DIR}/lib${ffmpeg_library}.a"
+                INTERFACE_INCLUDE_DIRECTORIES "${RENDEPTH_FFMPEG_INCLUDE_DIR}")
+            add_dependencies(RendepthFFmpeg_${ffmpeg_library} RendepthFFmpeg)
+        endforeach()
+        add_dependencies(Rendepth RendepthFFmpeg)
     endif()
-
-    set(RENDEPTH_FFMPEG_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg")
-    set(RENDEPTH_FFMPEG_BUILD "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg-build")
-    set(RENDEPTH_FFMPEG_LIBRARY_DIR "${RENDEPTH_FFMPEG_PREFIX}/lib")
-    set(RENDEPTH_FFMPEG_INCLUDE_DIR "${RENDEPTH_FFMPEG_PREFIX}/include")
-    file(MAKE_DIRECTORY "${RENDEPTH_FFMPEG_INCLUDE_DIR}")
-
-    ExternalProject_Add(RendepthFFmpeg
-        SOURCE_DIR "${CMAKE_SOURCE_DIR}/ThirdParty/FFmpeg"
-        BINARY_DIR "${RENDEPTH_FFMPEG_BUILD}"
-        CONFIGURE_COMMAND
-            ${RENDEPTH_FFMPEG_CONFIGURE}
-            "--prefix=${RENDEPTH_FFMPEG_PREFIX}"
-            --disable-programs
-            --disable-doc
-            --disable-debug
-            --disable-network
-            --disable-autodetect
-            --disable-avdevice
-            --disable-avfilter
-            --disable-swresample
-            --disable-iconv
-            --disable-x86asm
-            --disable-shared
-            --enable-static
-            --enable-pic
-            --enable-pthreads
-            --disable-everything
-            --enable-avcodec
-            --enable-avformat
-            --enable-avutil
-            --enable-swscale
-            --enable-protocol=file
-            --enable-demuxer=avi,asf,matroska,mov,mpegps,mpegts,mpegvideo
-            ${RENDEPTH_FFMPEG_DAV1D_OPTIONS}
-        BUILD_COMMAND "${RENDEPTH_FFMPEG_MAKE}"
-        INSTALL_COMMAND "${RENDEPTH_FFMPEG_MAKE}" install
-        BUILD_BYPRODUCTS
-            "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavformat.a"
-            "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavcodec.a"
-            "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libswscale.a"
-            "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavutil.a"
-        UPDATE_COMMAND ""
-        TEST_COMMAND "")
-
-    foreach(ffmpeg_library IN ITEMS avformat avcodec swscale avutil)
-        add_library(RendepthFFmpeg_${ffmpeg_library} STATIC IMPORTED GLOBAL)
-        set_target_properties(RendepthFFmpeg_${ffmpeg_library} PROPERTIES
-            IMPORTED_LOCATION
-                "${RENDEPTH_FFMPEG_LIBRARY_DIR}/lib${ffmpeg_library}.a"
-            INTERFACE_INCLUDE_DIRECTORIES "${RENDEPTH_FFMPEG_INCLUDE_DIR}")
-        add_dependencies(RendepthFFmpeg_${ffmpeg_library} RendepthFFmpeg)
-    endforeach()
-
-    add_dependencies(Rendepth RendepthFFmpeg)
     target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_FFMPEG)
     target_link_libraries(Rendepth PUBLIC
         RendepthFFmpeg_avformat RendepthFFmpeg_avcodec
@@ -314,6 +457,9 @@ if(RENDEPTH_ENABLE_FFMPEG)
 endif()
 
 if(RENDEPTH_ENABLE_ONNX_RUNTIME)
+    if(RENDEPTH_ENABLE_CUDA AND NOT WIN32)
+        message(FATAL_ERROR "RENDEPTH_ENABLE_CUDA currently requires the Windows CUDA ONNX Runtime package")
+    endif()
     if(NOT RENDEPTH_ENABLE_ROCM AND NOT RENDEPTH_ONNXRUNTIME_DIR)
         message(FATAL_ERROR "RENDEPTH_ONNXRUNTIME_DIR must point to an ONNX Runtime installation")
     endif()
@@ -353,10 +499,31 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
                 "${RENDEPTH_ROCM_DIR}/lib")
     elseif(WIN32)
         target_link_libraries(Rendepth PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/onnxruntime.lib")
+        file(GLOB RENDEPTH_ONNXRUNTIME_RUNTIME_DLLS
+                "${RENDEPTH_ONNXRUNTIME_DIR}/lib/*.dll"
+                "${RENDEPTH_ONNXRUNTIME_DIR}/bin/*.dll")
+        if(NOT RENDEPTH_ONNXRUNTIME_RUNTIME_DLLS)
+            message(FATAL_ERROR "Could not find ONNX Runtime DLLs under ${RENDEPTH_ONNXRUNTIME_DIR}")
+        endif()
+        set(RENDEPTH_CUDA_RUNTIME_DLLS)
+        if(RENDEPTH_ENABLE_CUDA)
+            if(NOT EXISTS "${RENDEPTH_CUDNN_BIN_DIR}/cudnn64_9.dll")
+                message(FATAL_ERROR
+                        "RENDEPTH_CUDNN_BIN_DIR must contain cudnn64_9.dll when RENDEPTH_ENABLE_CUDA=ON")
+            endif()
+            file(GLOB RENDEPTH_CUDA_RUNTIME_DLLS "${RENDEPTH_CUDNN_BIN_DIR}/*.dll")
+        endif()
+        add_custom_command(TARGET Rendepth POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        ${RENDEPTH_ONNXRUNTIME_RUNTIME_DLLS} ${RENDEPTH_CUDA_RUNTIME_DLLS}
+                        "$<TARGET_FILE_DIR:Rendepth>")
     elseif(APPLE)
         target_link_libraries(Rendepth PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/libonnxruntime.dylib")
     else()
         target_link_libraries(Rendepth PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/libonnxruntime.so")
+    endif()
+    if(RENDEPTH_ENABLE_CUDA)
+        target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_CUDA)
     endif()
     set_target_properties(Rendepth PROPERTIES
             SKIP_BUILD_RPATH FALSE
@@ -394,6 +561,9 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
             target_link_libraries(DepthTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/libonnxruntime.dylib")
         else()
             target_link_libraries(DepthTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/libonnxruntime.so")
+        endif()
+        if(RENDEPTH_ENABLE_CUDA)
+            target_compile_definitions(DepthTest PUBLIC RENDEPTH_ENABLE_CUDA)
         endif()
         set_target_properties(DepthTest PROPERTIES
                 SKIP_BUILD_RPATH FALSE
@@ -493,13 +663,15 @@ endif()
 include(CPack)
 
 if(WIN32)
-    target_link_libraries(Rendepth PUBLIC pthread)
-    if(RENDEPTH_DLL_DIR)
-        add_custom_command(TARGET Rendepth POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${RENDEPTH_DLL_DIR}/libgcc_s_seh-1.dll
-                ${RENDEPTH_DLL_DIR}/libwinpthread-1.dll
-                $<TARGET_FILE_DIR:Rendepth>)
+    if(NOT MSVC)
+        target_link_libraries(Rendepth PUBLIC pthread)
+        if(RENDEPTH_DLL_DIR)
+            add_custom_command(TARGET Rendepth POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${RENDEPTH_DLL_DIR}/libgcc_s_seh-1.dll
+                    ${RENDEPTH_DLL_DIR}/libwinpthread-1.dll
+                    $<TARGET_FILE_DIR:Rendepth>)
+        endif()
     endif()
 elseif(UNIX)
     target_link_libraries(Rendepth PUBLIC stdc++)

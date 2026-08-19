@@ -49,6 +49,7 @@ public:
 	inline static SDL_GPUTexture* menuTexture = nullptr;
 	inline static SDL_GPUTexture* sliderTexture = nullptr;
 	inline static SDL_GPUTexture* exportTexture = nullptr;
+	inline static glm::uvec2 exportTextureSize{0, 0};
 	inline static SDL_GPUGraphicsPipeline* interlacerPipeline = nullptr;
 	inline static SDL_GPUSampler* imageSampler = nullptr;
 	inline static SDL_Surface* menuTextSurface = nullptr;
@@ -196,7 +197,7 @@ public:
 		Uint32 imageWidth, Uint32 imageHeight, bool nextSnapshotOnly = false);
 	static int renderStereoImage(Context* context, StereoFormat stereoFormat,
 		SDL_GPUTexture* sourceTexture = nullptr);
-	static SDL_Surface* getExportTexture(Context* context, StereoFormat stereoFormat);
+	static SDL_Surface* getExportTexture(Context* context);
 	static glm::vec2 getIconCoordinates(IconType iconType);
 	static glm::vec2 updateRatio(Context* context, glm::vec2 windowSize);
 	static void updateSize(Context* context);

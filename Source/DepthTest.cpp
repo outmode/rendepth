@@ -124,7 +124,7 @@ static float sampleCatmullRomDepth(const std::vector<float>& source,
 int main(int argc, char** argv) {
 	if (argc < 4) {
 		std::cerr << "Usage: DepthTest <model.onnx> <input-image> <output-depth.png> "
-			"[process-size] [--provider auto|cpu|rocm] [--upscale cpu|gpu]\n";
+			"[process-size] [--provider auto|cpu|cuda|rocm] [--upscale cpu|gpu]\n";
 		return 2;
 	}
 
@@ -150,6 +150,7 @@ int main(int argc, char** argv) {
 			const std::string provider = argv[++argument];
 			if (provider == "auto") config.provider = DepthEstimator::Provider::Auto;
 			else if (provider == "cpu") config.provider = DepthEstimator::Provider::CPU;
+			else if (provider == "cuda") config.provider = DepthEstimator::Provider::CUDA;
 			else if (provider == "rocm") config.provider = DepthEstimator::Provider::ROCM;
 			else {
 				std::cerr << "Unknown provider: " << provider << '\n';

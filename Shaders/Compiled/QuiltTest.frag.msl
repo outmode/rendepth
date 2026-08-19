@@ -5,14 +5,6 @@
 
 using namespace metal;
 
-// Implementation of signed integer mod accurate to SPIR-V specification
-template<typename Tx, typename Ty>
-inline Tx spvSMod(Tx x, Ty y)
-{
-    Tx remainder = x - y * (x / y);
-    return select(Tx(remainder + y), remainder, remainder == 0 || (x >= 0) == (y >= 0));
-}
-
 struct QuiltTestData
 {
     float2 outputSize;
@@ -52,11 +44,11 @@ float3 pixelIntegrityPattern(thread const int2& pixel, constant QuiltTestData& _
     }
     if (_307)
     {
-        bool _316 = spvSMod(pixel.x, 32) == 0;
+        bool _316 = (pixel.x % 32) == 0;
         bool _324;
         if (!_316)
         {
-            _324 = spvSMod(pixel.y, 32) == 0;
+            _324 = (pixel.y % 32) == 0;
         }
         else
         {
@@ -98,7 +90,7 @@ float3 pixelIntegrityPattern(thread const int2& pixel, constant QuiltTestData& _
     {
         return float3(1.0);
     }
-    bool checker = spvSMod((pixel.x / 32) + (pixel.y / 32), 2) == 0;
+    bool checker = (((pixel.x / 32) + (pixel.y / 32)) % 2) == 0;
     return select(float3(0.87999999523162841796875), float3(0.119999997317790985107421875), bool3(checker));
 }
 
@@ -182,7 +174,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant QuiltTestData& _52 [
     }
     if (_52.pattern == 1)
     {
-        int channel = spvSMod(pixel.x, 3);
+        int channel = pixel.x % 3;
         out.outColor = float4(float(channel == 0), float(channel == 1), float(channel == 2), 1.0);
         return out;
     }

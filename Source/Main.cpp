@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <format>
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <vector>
 #include <iostream>
@@ -50,6 +51,9 @@
 #include <random>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 
@@ -136,6 +140,7 @@ auto displayTipTime = 0.0;
 auto displayTipWait = 2.0;
 auto swapLeftRight = false;
 auto mouseLeftWindow = false;
+auto mouseStateInitialized = false;
 auto mouseIsDown = false;
 auto showGoFullScreenOnce = true;
 auto deltaIndex = 0;
@@ -787,7 +792,7 @@ Icon IconPlay = {
 	[]() {
 		toggleSlideshow();
 	},
-	1.0,
+	0.0,
 	false,
 	false
 };
@@ -930,7 +935,7 @@ Choice ChoiceStereo {
 Choice ChoiceExport {
 	"Export Format",
 	{ "Anaglyph", "Color + Depth", "SBS Full", "SBS Half",
-		"Free View", "Free View LRL" },
+		"Free View", "Free View LRL", "Light Field LKG" },
 };
 
 Choice ChoiceModel {
@@ -1010,9 +1015,9 @@ static void changeStereo(int option) {
 
 static std::array exportFormats = {
 	Color_Anaglyph, Color_Plus_Depth, Side_By_Side_Full, Side_By_Side_Half,
-	Stereo_Free_View_Grid, Stereo_Free_View_LRL };
+	Stereo_Free_View_Grid, Stereo_Free_View_LRL, Light_Field_LKG };
 static std::array exportTags = { "anaglyph",  "rgbd", "sbs", "sbs_half_width",
-	"free_view", "free_view_lrl" };
+	"free_view", "free_view_lrl", "qs" };
 static void changeExport(int option) {
 	option = std::clamp(option, 0, static_cast<int>(exportFormats.size()) - 1);
 	exportFormat = exportFormats[option];
@@ -1262,8 +1267,8 @@ Icon IconDepth = {
 				areaBottomRightFull };
 	},
 		[]() { updateDepthSlider(); },
-		1.0,
-	true,
+		0.0,
+		true,
 	false,
 	{
 		{ style.getIconDragger(Style::getCurrentScale()), style.getIconBar(Style::getCurrentScale()) },
@@ -1307,7 +1312,7 @@ static Icon IconVideoSeek = {
 			{ 0.0f, -style.getIconSlider(Style::getCurrentScale()) - 10.0f }, alignCenterBottom,
 			{ 0.0f, -positionEdgeLarge * 2.0f, 0.0f, 1.0f }, areaBottomRightFull};
 	},
-	[]() { seekVideoFromSlider(); }, 1.0, false, false,
+	[]() { seekVideoFromSlider(); }, 0.0, false, false,
 	{{ style.getIconDragger(Style::getCurrentScale()) * 12.0f,
 		style.getIconBar(Style::getCurrentScale()) }, { 0.0f, 0.0f }, alignCenter,
 		areaTopLeft, areaBottomRightFull}
@@ -1421,23 +1426,59 @@ static void saveFile() {
 		return;
 	}
 
-	auto data = Image::getExportTexture(&context, exportFormat);
-	auto exportDir = std::filesystem::path(context.fileLink).parent_path();
-	if (exportDir.filename() != exportFolderName) exportDir = exportDir / exportFolderName;
-	std::string exportType = "jpg";
-
-	std::string gridInfo;
-	if (exportFormat == Light_Field_LKG) {
-		std::string aspect = std::format("{:.3f}", context.imageSize.x / context.imageSize.y);
-		gridInfo = "9x8a" + aspect;
+	auto data = Image::getExportTexture(&context);
+	if (data == nullptr) {
+		SDL_Log("Export readback failed: %s", SDL_GetError());
+		doingFileOp = false;
+		return;
 	}
 
-	if (!exists(exportDir)) create_directories(exportDir);
-	std::string outFileName = removeFileTags(context.fileName);
-	std::filesystem::path outFilePath = outFileName + "_" + exportTag + gridInfo + "." + exportType;
-	auto outputPath = exportDir / outFilePath;
-	IMG_SaveJPG(data, outputPath.string().c_str(), 65);
+	std::string outFileName;
+	std::string outputPathString;
+	try {
+		auto exportDir = std::filesystem::path(context.fileLink).parent_path();
+		if (exportDir.filename() != exportFolderName) exportDir /= exportFolderName;
+
+		std::error_code directoryError;
+		std::filesystem::create_directories(exportDir, directoryError);
+		if (directoryError) {
+			SDL_Log("Could not create export directory %s: %s", exportDir.string().c_str(),
+				directoryError.message().c_str());
+			SDL_DestroySurface(data);
+			doingFileOp = false;
+			return;
+		}
+
+		std::string gridInfo;
+		if (exportFormat == Light_Field_LKG) {
+			const std::string aspect = std::format("{:.3f}",
+				context.imageSize.x / context.imageSize.y);
+			gridInfo = "9x8a" + aspect;
+		}
+
+		outFileName = removeFileTags(context.fileName);
+		const std::filesystem::path outFilePath = outFileName + "_" + exportTag +
+			gridInfo + ".jpg";
+		outputPathString = (exportDir / outFilePath).string();
+	} catch (const std::exception& error) {
+		SDL_Log("Could not prepare export path: %s", error.what());
+		SDL_DestroySurface(data);
+		doingFileOp = false;
+		return;
+	} catch (...) {
+		SDL_Log("Could not prepare export path: unknown filesystem error");
+		SDL_DestroySurface(data);
+		doingFileOp = false;
+		return;
+	}
+
+	const bool saved = IMG_SaveJPG(data, outputPathString.c_str(), 65);
 	SDL_DestroySurface(data);
+	if (!saved) {
+		SDL_Log("Could not save export to %s: %s", outputPathString.c_str(), SDL_GetError());
+		doingFileOp = false;
+		return;
+	}
 
 	auto nameMaxLen = 26;
 	auto displayName = outFileName;
@@ -1456,18 +1497,32 @@ static void saveFile() {
 static bool saveExportSurface(SDL_Surface* data, const std::filesystem::path& sourcePath,
 		const std::filesystem::path& exportDir) {
 	if (data == nullptr) return false;
-	if (!exists(exportDir)) create_directories(exportDir);
+	try {
+		std::error_code directoryError;
+		std::filesystem::create_directories(exportDir, directoryError);
+		if (directoryError) {
+			SDL_Log("Could not create batch export directory %s: %s",
+				exportDir.string().c_str(), directoryError.message().c_str());
+			return false;
+		}
 
-	std::string gridInfo;
-	if (exportFormat == Light_Field_LKG) {
-		std::string aspect = std::format("{:.3f}", context.imageSize.x / context.imageSize.y);
-		gridInfo = "9x8a" + aspect;
+		std::string gridInfo;
+		if (exportFormat == Light_Field_LKG) {
+			const std::string aspect = std::format("{:.3f}",
+				context.imageSize.x / context.imageSize.y);
+			gridInfo = "9x8a" + aspect;
+		}
+
+		const auto outFileName = removeFileTags(sourcePath.stem().string());
+		const auto outputPath = exportDir /
+			(outFileName + "_" + exportTag + gridInfo + ".jpg");
+		return IMG_SaveJPG(data, outputPath.string().c_str(), 65);
+	} catch (const std::exception& error) {
+		SDL_Log("Could not prepare batch export path: %s", error.what());
+	} catch (...) {
+		SDL_Log("Could not prepare batch export path: unknown filesystem error");
 	}
-
-	const auto outFileName = removeFileTags(sourcePath.stem().string());
-	const auto outputPath = exportDir /
-		(outFileName + "_" + exportTag + gridInfo + ".jpg");
-	return IMG_SaveJPG(data, outputPath.string().c_str(), 65);
+	return false;
 }
 
 static void processBatchExport() {
@@ -1505,7 +1560,7 @@ static void processBatchExport() {
 		if (batchTexture != nullptr) SDL_ReleaseGPUTexture(context.device, batchTexture);
 		return;
 	}
-	SDL_Surface* data = Image::getExportTexture(&batchContext, exportFormat);
+	SDL_Surface* data = Image::getExportTexture(&batchContext);
 	if (data != nullptr) {
 		saveExportSurface(data, inputPath, batchFolderPath / exportFolderName);
 		SDL_DestroySurface(data);
@@ -1574,10 +1629,11 @@ void loadOptions() {
 	SDL_IOStream* optionsFile = SDL_IOFromFile(optionsFilePath.c_str(), "r" );
 	size_t dataSize = 0;
 	if (optionsFile) {
-		dataSize = SDL_ReadIO(optionsFile, dataBuffer, 65536);
+		dataSize = SDL_ReadIO(optionsFile, dataBuffer, sizeof(dataBuffer) - 1);
 		SDL_CloseIO(optionsFile);
 	}
 	if (dataSize == 0) return;
+	dataBuffer[dataSize] = '\0';
 	if (document.Parse(dataBuffer).HasParseError()) return;
 	if (!document.IsObject()) return;
 
@@ -2119,6 +2175,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	context.menuCallback = &menuCallback;
 	context.offset = { 0.0, 0.0 };
 	context.displayScale = 1.0;
+	context.mouse = { mouseValueNull, mouseValueNull };
 	context.mouseVisibility = 1.0;
 	context.infoVisibility = 0.0;
 	context.loadingRotation = 0.0;
@@ -2902,16 +2959,18 @@ static int nativeDepthRun(void* ptr) {
 			depthGenAlive = false;
 			return 0;
 		}
-	#ifdef RENDEPTH_ENABLE_ROCM
+	#ifdef RENDEPTH_ENABLE_CUDA
+		config.provider = DepthEstimator::Provider::CUDA;
+	#elif defined(RENDEPTH_ENABLE_ROCM)
 		config.provider = DepthEstimator::Provider::ROCM;
 	#endif
 		config.processSize = depthProcessSizes[modelOption];
 		nativeDepthEstimatorLoaded = nativeDepthEstimator.load(
 			config, nativeDepthEstimatorError);
 		if (nativeDepthEstimatorLoaded) {
-			std::cout << "Native depth model loaded: " << config.modelPath << " at "
-				<< config.processSize << "x" << config.processSize << " using "
-				<< nativeDepthEstimator.providerName() << " provider.\n";
+			SDL_Log("Native depth model loaded: %s at %dx%d using %s provider.",
+				config.modelPath.string().c_str(), config.processSize, config.processSize,
+				nativeDepthEstimator.providerName().c_str());
 		}
 	}
 	if (!nativeDepthEstimatorLoaded) {
@@ -3347,7 +3406,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		pixelMotion.y += event->motion.yrel * Image::mouseScale;
 
 		mouseLastActive = getTimeNow();
-		checkMouseState();
+		if (!mouseStateInitialized) {
+			mouseStateInitialized = true;
+			hideUI(false);
+		} else {
+			checkMouseState();
+		}
 
 		if (currentSlider != nullptr &&
 			(event->motion.state & SDL_BUTTON_LMASK)) {

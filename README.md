@@ -35,8 +35,13 @@ Build Instructions
 - App will be built in `Binary` folder.
 - Folders `Assets` `Binary` `Library` `Shaders` must remain together.
 
-- Linux/macOS can use g++/clang, Windows may require MinGW.
-- `RENDEPTH_DLL_DIR` points to MinGW shared library folder on Windows.
+- Linux/macOS can use g++/clang. Windows builds use MSVC.
+- To enable Windows video playback, install an MSVC-compatible FFmpeg SDK (for
+  example with vcpkg) and configure with
+  `-DRENDEPTH_ENABLE_FFMPEG=ON -DRENDEPTH_FFMPEG_ROOT=<vcpkg>/installed/x64-windows`.
+  FFmpeg's runtime DLLs are copied next to `Rendepth.exe` automatically.
+- `RENDEPTH_DLL_DIR` points to the MinGW shared library folder for legacy
+  MinGW builds.
 - `RENDEPTH_MAC_BUNDLE` set `ON` to create macOS bundle after building.
 
 ### Made by Outmode.

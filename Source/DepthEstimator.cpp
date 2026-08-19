@@ -82,7 +82,16 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 
 	std::string sessionStage = "creating ONNX Runtime session";
 	try {
-		if (config.provider == Provider::ROCM) {
+		if (config.provider == Provider::CUDA) {
+#ifdef RENDEPTH_ENABLE_CUDA
+			OrtCUDAProviderOptions cudaOptions{};
+			nextState->sessionOptions.AppendExecutionProvider_CUDA(cudaOptions);
+#else
+			error = "CUDA support is not enabled. Configure with "
+				"RENDEPTH_ENABLE_CUDA=ON and rebuild against a CUDA-enabled ONNX Runtime.";
+			return false;
+#endif
+		} else if (config.provider == Provider::ROCM) {
 #ifdef RENDEPTH_ENABLE_ROCM
 			OrtROCMProviderOptions rocmOptions{};
 			nextState->sessionOptions.AppendExecutionProvider_ROCM(rocmOptions);
@@ -124,7 +133,11 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 		return false;
 	}
 
-	activeProvider = config.provider == Provider::ROCM ? "ROCm" : "CPU";
+	switch (config.provider) {
+		case Provider::CUDA: activeProvider = "CUDA"; break;
+		case Provider::ROCM: activeProvider = "ROCm"; break;
+		default: activeProvider = "CPU"; break;
+	}
 	state = nextState.release();
 	return true;
 #endif
