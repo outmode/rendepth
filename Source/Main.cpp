@@ -208,7 +208,9 @@ static void serviceVideo() {
 	bool previewFrame = false;
 	if (auto frame = videoPlayer.takeFrame(&previewFrame)) {
 		if (!videoFrameLoaded) {
-			context.imageType = Color_Only;
+			context.imageType = fileList[fileIndex].type;
+			if (context.imageType == Light_Field_LKG)
+				context.gridSize = Core::getGridInfo(fileList[fileIndex].base);
 			context.fileName = fileList[fileIndex].base;
 			context.loading = false;
 			Image::displayHelp = false;
@@ -428,7 +430,8 @@ void gotoPreviousImage(bool seekActiveVideo = true) {
 		return;
 	}
 	if (display3D) {
-		if (fileList[previousIndex].type == Color_Only) {
+		if (fileList[previousIndex].type == Color_Only &&
+			!isSupportedVideo(fileList[previousIndex].link)) {
 			lastSwitchTime = getTimeNow();
 			fileIndex = previousIndex;
 			SDL_DestroySurface(fileList[fileIndex].preload);
@@ -473,7 +476,8 @@ void gotoNextImage(bool seekActiveVideo = true) {
 		return;
 	}
 	if (display3D) {
-		if (fileList[nextIndex].type == Color_Only) {
+		if (fileList[nextIndex].type == Color_Only &&
+			!isSupportedVideo(fileList[nextIndex].link)) {
 			lastSwitchTime = getTimeNow();
 			fileIndex = nextIndex;
 			SDL_DestroySurface(fileList[fileIndex].preload);
@@ -2054,7 +2058,7 @@ static void toggleFullscreen() {
 void toggleStereo() {
 	if (isConverting) return;
 	if (fileList.empty()) return;
-	if (!display3D && fileList[fileIndex].type == Color_Only)
+	if (!display3D && fileList[fileIndex].type == Color_Only && !activeVideo)
 		callDepthGen(fileIndex);
 	if (display3D && fileList[fileIndex].type == Color_Plus_Depth &&
 		preferredStereoMode == Mono) {
@@ -2168,7 +2172,6 @@ static void pushFileInfo(const std::filesystem::path& filePath) {
 		info.preload = nullptr;
 		info.type = Core::getImageType(info.name);
 		if (info.type == Unknown_Format) info.type = Core::defaultImportFormat;
-		if (isSupportedVideo(fileName)) info.type = Color_Only;
 		fileList.push_back(info);
 	}
 }
@@ -3467,7 +3470,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
 		if (event->key.key == SDLK_SPACE || event->key.key == SDLK_KP_5) {
 			if (!isConverting && !doingPreload && !fileList.empty()) {
-				if (fileList[fileIndex].type == Color_Only) callDepthGen(fileIndex);
+				if (fileList[fileIndex].type == Color_Only && !activeVideo)
+					callDepthGen(fileIndex);
 				setDisplay3D(!display3D);
 				refreshDisplay3D(fileList[fileIndex].type);
 			}

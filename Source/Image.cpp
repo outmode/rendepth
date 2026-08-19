@@ -40,6 +40,18 @@ namespace {
 	glm::ivec2 videoYUVChromaSize{};
 	VideoFrame::Format videoYUVFormat = VideoFrame::Format::RGBA;
 
+	glm::vec2 getStereoImageSize(glm::vec2 packedSize, StereoFormat type,
+		glm::vec3 gridSize = glm::vec3(1.0f)) {
+		if (type == Color_Plus_Depth || type == Side_By_Side_Full ||
+			type == Side_By_Side_Swap) {
+			packedSize.x *= 0.5f;
+		} else if (type == Light_Field_LKG && gridSize.x > 0.0f && gridSize.y > 0.0f) {
+			packedSize.x /= gridSize.x;
+			packedSize.y /= gridSize.y;
+		}
+		return packedSize;
+	}
+
 	bool readCalibrationNumber(const rapidjson::Value& object, const char* name, float& result) {
 		if (!object.IsObject() || !object.HasMember(name)) return false;
 		const auto& entry = object[name];
@@ -333,17 +345,12 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData) {
 	imageInfo.type = Core::getImageType(imageInfo.path);
 	if (imageInfo.type == Unknown_Format) imageInfo.type = Core::defaultImportFormat;
 	context->imageType = imageInfo.type;
-	context->imageSize = glm::vec2((float)imageData->w, (float)imageData->h);
-
-	if (context->imageType == Color_Plus_Depth || context->imageType == Side_By_Side_Full ||
-		context->imageType == Side_By_Side_Swap) {
-		context->imageSize.x /= 2;
-	} else if (context->imageType == Light_Field_LKG) {
+	if (context->imageType == Light_Field_LKG) {
 		auto gridSize = Core::getGridInfo(imageInfo.base);
 		context->gridSize = gridSize;
-		context->imageSize.x /= gridSize.x;
-		context->imageSize.y /= gridSize.y;
 	}
+	context->imageSize = getStereoImageSize(
+		{(float)imageData->w, (float)imageData->h}, context->imageType, context->gridSize);
 	context->infoText = Core::getFileText(imageInfo, context->imageSize);
 	updateSize(context);
 
@@ -364,9 +371,11 @@ int Image::updateVideoFrame(Context* context, const VideoFrame& frame, bool firs
 		return -1;
 	const glm::ivec2 frameSize{frame.outputWidth, frame.outputHeight};
 	const bool reuseTexture = !firstFrame && frameSize == videoTextureSize;
-	context->imageSize = {
+	const glm::vec2 packedImageSize = {
 		(float)(logicalWidth > 0 ? logicalWidth : frame.width),
 		(float)(logicalHeight > 0 ? logicalHeight : frame.height)};
+	context->imageSize = getStereoImageSize(
+		packedImageSize, context->imageType, context->gridSize);
 	imageSize = context->imageSize;
 	updateSize(context);
 	if (frame.format == VideoFrame::Format::RGBA) {
