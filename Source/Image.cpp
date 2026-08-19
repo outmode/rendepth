@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 
 namespace {
 	using BlurClock = std::chrono::steady_clock;
@@ -787,7 +788,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 
 	SDL_GPUColorTargetDescription colorTargetDescription[1] = {{
 		.format = SDL_GetGPUSwapchainTextureFormat(context->device, context->window),
-		.blend_state = (SDL_GPUColorTargetBlendState) {
+		.blend_state = SDL_GPUColorTargetBlendState{
 			.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
 			.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
 			.color_blend_op = SDL_GPU_BLENDOP_ADD,
@@ -801,7 +802,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	SDL_GPUGraphicsPipelineCreateInfo imagePipelineCreateInfo = {
 		.vertex_shader = imageVertexShader,
 		.fragment_shader = imageFragmentShader,
-		.vertex_input_state = (SDL_GPUVertexInputState){
+		.vertex_input_state = SDL_GPUVertexInputState{
 			.vertex_buffer_descriptions = vertexBufferDescription,
 			.num_vertex_buffers = 1,
 			.vertex_attributes = vertexBufferAttribute,
@@ -827,7 +828,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	SDL_GPUGraphicsPipelineCreateInfo interlacerPipelineInfo = {
 		.vertex_shader = imageVertexShader,
 		.fragment_shader = interlacerFragmentShader,
-		.vertex_input_state = (SDL_GPUVertexInputState){
+		.vertex_input_state = SDL_GPUVertexInputState{
 			.vertex_buffer_descriptions = vertexBufferDescription,
 			.num_vertex_buffers = 1,
 			.vertex_attributes = vertexBufferAttribute,
@@ -847,7 +848,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 
 	SDL_GPUColorTargetDescription iconTargetDescription[1] = {{
 		.format = SDL_GetGPUSwapchainTextureFormat(context->device, context->window),
-		.blend_state = (SDL_GPUColorTargetBlendState) {
+		.blend_state = SDL_GPUColorTargetBlendState{
 			.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
 			.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
 			.color_blend_op = SDL_GPU_BLENDOP_ADD,
@@ -861,7 +862,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	SDL_GPUGraphicsPipelineCreateInfo iconPipelineCreateInfo = {
 		.vertex_shader = iconVertexShader,
 		.fragment_shader = iconFragmentShader,
-		.vertex_input_state = (SDL_GPUVertexInputState){
+		.vertex_input_state = SDL_GPUVertexInputState{
 			.vertex_buffer_descriptions = vertexBufferDescription,
 			.num_vertex_buffers = 1,
 			.vertex_attributes = vertexBufferAttribute,
@@ -882,7 +883,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 
 	SDL_GPUColorTargetDescription spriteTargetDescription[1] = {{
 		.format = SDL_GetGPUSwapchainTextureFormat(context->device, context->window),
-		.blend_state = (SDL_GPUColorTargetBlendState) {
+		.blend_state = SDL_GPUColorTargetBlendState{
 			.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
 			.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
 			.color_blend_op = SDL_GPU_BLENDOP_ADD,
@@ -896,7 +897,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	SDL_GPUGraphicsPipelineCreateInfo spritePipelineCreateInfo = {
 		.vertex_shader = spriteVertexShader,
 		.fragment_shader = spriteFragmentShader,
-		.vertex_input_state = (SDL_GPUVertexInputState){
+		.vertex_input_state = SDL_GPUVertexInputState{
 			.vertex_buffer_descriptions = vertexBufferDescription,
 			.num_vertex_buffers = 1,
 			.vertex_attributes = vertexBufferAttribute,
@@ -1480,6 +1481,10 @@ static SDL_GPUViewport getViewportGrid(glm::vec2 view, glm::vec2 rect) {
 
 int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 		SDL_GPUTexture* sourceTexture) {
+	if (context == nullptr || context->device == nullptr || context->window == nullptr) {
+		SDL_Log("Export render requested without a valid GPU context.");
+		return -1;
+	}
 	if (displayHelp) return -1;
 	if (context->imageType == Color_Only || context->imageType == Color_Anaglyph ||
 		(context->imageType != Color_Plus_Depth &&
@@ -1490,7 +1495,7 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 	auto singleImageSize = context->imageSize;
 	auto viewportSize = singleImageSize;
 	auto viewsX = 1, viewsY = 1;
-	auto quiltViewCount = 1;
+	auto quiltViewCount = viewsX * viewsY;
 	auto stereoStrength = context->stereoStrength;
 	auto stereoDepth = context->stereoDepth;
 	auto stereoOffset = context->stereoOffset;
@@ -1532,9 +1537,8 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 		viewsX = 3;
 		viewsY = 1;
 	} else if (stereoFormat == Light_Field_LKG) {
-		const auto quiltGrid = nativeOutputEnabled ? nativeDisplayConfig.quiltGrid : exportQuiltDimLKG;
-		quiltViewCount = nativeOutputEnabled ? nativeDisplayConfig.viewCount :
-			(int)(exportQuiltDimLKG.x * exportQuiltDimLKG.y);
+		const auto quiltGrid = exportQuiltDimLKG;
+		quiltViewCount = (int)(quiltGrid.x * quiltGrid.y);
 		viewsX = (int)quiltGrid.x;
 		viewsY = (int)quiltGrid.y;
 		startY = viewsY - 1;
@@ -1555,6 +1559,14 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 	const float imageHalfWidth = singleImageSize.x * 0.5f;
 	const float imageHalfHeight = singleImageSize.y * 0.5f;
 
+	if (!std::isfinite(viewportSize.x) || !std::isfinite(viewportSize.y) ||
+		viewportSize.x < 1.0f || viewportSize.y < 1.0f ||
+		viewportSize.x > static_cast<float>(std::numeric_limits<Uint32>::max()) ||
+		viewportSize.y > static_cast<float>(std::numeric_limits<Uint32>::max())) {
+		SDL_Log("Invalid export texture size: %.1fx%.1f", viewportSize.x, viewportSize.y);
+		return -1;
+	}
+
 	SDL_GPUTextureCreateInfo textureCreateInfo {
 		.type = SDL_GPU_TEXTURETYPE_2D,
 		.format = SDL_GetGPUSwapchainTextureFormat(context->device, context->window),
@@ -1565,18 +1577,23 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 		.num_levels = 1
 	};
 
-	if (exportTexture != nullptr) SDL_ReleaseGPUTexture(context->device, exportTexture);
-	exportTexture = SDL_CreateGPUTexture(context->device, &textureCreateInfo);
+	SDL_GPUTexture* renderedTexture = SDL_CreateGPUTexture(context->device, &textureCreateInfo);
+	if (renderedTexture == nullptr) {
+		SDL_Log("Create export texture failed (%ux%u): %s", textureCreateInfo.width,
+			textureCreateInfo.height, SDL_GetError());
+		return -1;
+	}
 
 	SDL_SetGPUTextureName(
 		context->device,
-		exportTexture,
+		renderedTexture,
 		"Export Texture"
 	);
 
 	SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(context->device);
 	if (commandBuffer == nullptr) {
-		SDL_Log("Acquire GPU Command Buffer Failed.");
+		SDL_Log("Acquire export command buffer failed: %s", SDL_GetError());
+		SDL_ReleaseGPUTexture(context->device, renderedTexture);
 		return -1;
 	}
 
@@ -1585,17 +1602,23 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 	else if (context->backgroundStyle == Dark) clearColorCurrent = clearColorDark;
 
 	SDL_GPUColorTargetInfo colorTargetInfo = {};
-	colorTargetInfo.texture = exportTexture;
-	colorTargetInfo.clear_color = (SDL_FColor){ clearColorCurrent.r, clearColorCurrent.g, clearColorCurrent.b, clearColorCurrent.a };
+	colorTargetInfo.texture = renderedTexture;
+	colorTargetInfo.clear_color = SDL_FColor{ clearColorCurrent.r, clearColorCurrent.g, clearColorCurrent.b, clearColorCurrent.a };
 	colorTargetInfo.load_op = SDL_GPU_LOADOP_CLEAR;
 	colorTargetInfo.store_op = SDL_GPU_STOREOP_STORE;
 
 	SDL_GPURenderPass* renderPass = SDL_BeginGPURenderPass(commandBuffer, &colorTargetInfo, 1, nullptr);
+	if (renderPass == nullptr) {
+		SDL_Log("Begin export render pass failed: %s", SDL_GetError());
+		SDL_CancelGPUCommandBuffer(commandBuffer);
+		SDL_ReleaseGPUTexture(context->device, renderedTexture);
+		return -1;
+	}
 
 	for (auto renderY = startY; renderY >= 0 && renderY < viewsY; renderY += stepY) {
 		for (auto renderX = startX; renderX < viewsX; renderX += stepX) {
 			const int quiltView = (viewsY - 1 - renderY) * viewsX + renderX;
-			if (quiltView >= quiltViewCount) continue;
+			if (stereoFormat == Light_Field_LKG && quiltView >= quiltViewCount) continue;
 			auto drawViewport = getViewportGrid(glm::vec2(renderX, renderY), singleImageSize);
 			SDL_SetGPUViewport(renderPass, &drawViewport);
 
@@ -1645,46 +1668,66 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 	SDL_EndGPURenderPass(renderPass);
 
 	SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
-	SDL_WaitForGPUFences(context->device, true, &fence, 1);
+	if (fence == nullptr) {
+		SDL_Log("Submit export render failed: %s", SDL_GetError());
+		SDL_ReleaseGPUTexture(context->device, renderedTexture);
+		return -1;
+	}
+	if (!SDL_WaitForGPUFences(context->device, true, &fence, 1)) {
+		SDL_Log("Wait for export render failed: %s", SDL_GetError());
+		SDL_ReleaseGPUFence(context->device, fence);
+		SDL_ReleaseGPUTexture(context->device, renderedTexture);
+		return -1;
+	}
 	SDL_ReleaseGPUFence(context->device, fence);
+	if (exportTexture != nullptr) SDL_ReleaseGPUTexture(context->device, exportTexture);
+	exportTexture = renderedTexture;
+	exportTextureSize = {textureCreateInfo.width, textureCreateInfo.height};
 
 	return 0;
 }
 
-SDL_Surface* Image::getExportTexture(Context* context, StereoFormat stereoFormat) {
-	SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(context->device);
-	SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(commandBuffer);
+SDL_Surface* Image::getExportTexture(Context* context) {
+	if (context == nullptr || context->device == nullptr || exportTexture == nullptr ||
+		exportTextureSize.x == 0 || exportTextureSize.y == 0) {
+		SDL_Log("Export readback requested without a valid rendered texture.");
+		return nullptr;
+	}
+	const glm::uvec2 readbackSize = exportTextureSize;
 
-	auto stereoImageSize = context->imageSize;
-
-	if (stereoFormat == Color_Anaglyph) {
-		stereoImageSize = context->imageSize;
-	} else if (stereoFormat == Side_By_Side_Full) {
-		stereoImageSize = context->imageSize * glm::vec2(2.0, 1.0);
-	} else if (stereoFormat == Side_By_Side_Half) {
-		stereoImageSize = context->imageSize;
-	} else if (stereoFormat == Color_Plus_Depth) {
-		stereoImageSize = context->imageSize * glm::vec2(2.0, 1.0);
-	} else if (stereoFormat == Stereo_Free_View_Grid) {
-		stereoImageSize = context->imageSize;
-	} else if (stereoFormat == Stereo_Free_View_LRL) {
-		stereoImageSize = context->imageSize * glm::vec2(1.5, 0.5);
-	} else if (stereoFormat == Light_Field_LKG) {
-		auto maxRes = exportQuiltMaxResLKG;
-		auto maxSize = std::max(stereoImageSize.x, stereoImageSize.y);
-		stereoImageSize *= maxRes / maxSize;
-		stereoImageSize.x = roundf(stereoImageSize.x);
-		stereoImageSize.y = roundf(stereoImageSize.y);
-		stereoImageSize = stereoImageSize * exportQuiltDimLKG;
+	const Uint64 pixelBytes = static_cast<Uint64>(readbackSize.x) *
+		readbackSize.y * 4u;
+	if (pixelBytes > std::numeric_limits<Uint32>::max()) {
+		SDL_Log("Export readback is too large: %ux%u", readbackSize.x,
+			readbackSize.y);
+		return nullptr;
 	}
 
 	SDL_GPUTransferBufferCreateInfo transferBufferInfo {
 		.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
-		.size = 4 * (Uint32)stereoImageSize.x * (Uint32)stereoImageSize.y
+		.size = static_cast<Uint32>(pixelBytes)
 	};
 
 	SDL_GPUTransferBuffer* downloadTransferBuffer = SDL_CreateGPUTransferBuffer(
 		context->device, &transferBufferInfo);
+	if (downloadTransferBuffer == nullptr) {
+		SDL_Log("Create export transfer buffer failed: %s", SDL_GetError());
+		return nullptr;
+	}
+
+	SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(context->device);
+	if (commandBuffer == nullptr) {
+		SDL_Log("Acquire export copy command buffer failed: %s", SDL_GetError());
+		SDL_ReleaseGPUTransferBuffer(context->device, downloadTransferBuffer);
+		return nullptr;
+	}
+	SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(commandBuffer);
+	if (copyPass == nullptr) {
+		SDL_Log("Begin export copy pass failed: %s", SDL_GetError());
+		SDL_CancelGPUCommandBuffer(commandBuffer);
+		SDL_ReleaseGPUTransferBuffer(context->device, downloadTransferBuffer);
+		return nullptr;
+	}
 
 	SDL_GPUTextureRegion textureRegion = {
 		.texture = exportTexture,
@@ -1693,16 +1736,16 @@ SDL_Surface* Image::getExportTexture(Context* context, StereoFormat stereoFormat
 		.x = 0,
 		.y = 0,
 		.z = 0,
-		.w = (Uint32)stereoImageSize.x,
-		.h = (Uint32)stereoImageSize.y,
+		.w = readbackSize.x,
+		.h = readbackSize.y,
 		.d = 1
 	};
 
 	SDL_GPUTextureTransferInfo textureTransfer = {
 		.transfer_buffer = downloadTransferBuffer,
 		.offset = 0,
-		.pixels_per_row = (Uint32)stereoImageSize.x,
-		.rows_per_layer = (Uint32)stereoImageSize.y
+		.pixels_per_row = readbackSize.x,
+		.rows_per_layer = readbackSize.y
 	};
 
 	SDL_DownloadFromGPUTexture(
@@ -1713,17 +1756,46 @@ SDL_Surface* Image::getExportTexture(Context* context, StereoFormat stereoFormat
 	SDL_EndGPUCopyPass(copyPass);
 
 	SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
-	SDL_WaitForGPUFences(context->device, true, &fence, 1);
+	if (fence == nullptr) {
+		SDL_Log("Submit export readback failed: %s", SDL_GetError());
+		SDL_ReleaseGPUTransferBuffer(context->device, downloadTransferBuffer);
+		return nullptr;
+	}
+	if (!SDL_WaitForGPUFences(context->device, true, &fence, 1)) {
+		SDL_Log("Wait for export readback failed: %s", SDL_GetError());
+		SDL_ReleaseGPUFence(context->device, fence);
+		SDL_ReleaseGPUTransferBuffer(context->device, downloadTransferBuffer);
+		return nullptr;
+	}
 	SDL_ReleaseGPUFence(context->device, fence);
+	SDL_ReleaseGPUTexture(context->device, exportTexture);
+	exportTexture = nullptr;
+	exportTextureSize = {0, 0};
 
 	auto downloadedData = (Uint8*)SDL_MapGPUTransferBuffer(
 		context->device,
 		downloadTransferBuffer,
 		false
 	);
+	if (downloadedData == nullptr) {
+		SDL_Log("Map export transfer buffer failed: %s", SDL_GetError());
+		SDL_ReleaseGPUTransferBuffer(context->device, downloadTransferBuffer);
+		return nullptr;
+	}
 
-	auto result = SDL_CreateSurfaceFrom((int)stereoImageSize.x, (int)stereoImageSize.y,
-		SDL_PIXELFORMAT_ARGB8888, downloadedData, (int)stereoImageSize.x * 4);
+	SDL_Surface* result = SDL_CreateSurface(static_cast<int>(readbackSize.x),
+		static_cast<int>(readbackSize.y), SDL_PIXELFORMAT_ARGB8888);
+	if (result != nullptr) {
+		const size_t sourcePitch = static_cast<size_t>(readbackSize.x) * 4u;
+		for (Uint32 row = 0; row < readbackSize.y; ++row) {
+			SDL_memcpy(static_cast<Uint8*>(result->pixels) +
+				static_cast<size_t>(row) * result->pitch,
+				static_cast<const Uint8*>(downloadedData) +
+				static_cast<size_t>(row) * sourcePitch, sourcePitch);
+		}
+	} else {
+		SDL_Log("Create owned export surface failed: %s", SDL_GetError());
+	}
 
 	SDL_UnmapGPUTransferBuffer(context->device, downloadTransferBuffer);
 	SDL_ReleaseGPUTransferBuffer(context->device, downloadTransferBuffer);
@@ -1810,7 +1882,7 @@ int Image::draw(Context* context) {
 
 		SDL_GPUColorTargetInfo colorTargetInfo{};
 		colorTargetInfo.texture = swapchainTexture;
-		colorTargetInfo.clear_color = (SDL_FColor){ clearColorCurrent.r, clearColorCurrent.g, clearColorCurrent.b, clearColorCurrent.a };
+		colorTargetInfo.clear_color = SDL_FColor{ clearColorCurrent.r, clearColorCurrent.g, clearColorCurrent.b, clearColorCurrent.a };
 		colorTargetInfo.load_op = SDL_GPU_LOADOP_CLEAR;
 		colorTargetInfo.store_op = SDL_GPU_STOREOP_STORE;
 
@@ -2377,7 +2449,9 @@ void Image::quit(Context* context){
 	if (subtitleTexture != nullptr) SDL_ReleaseGPUTexture(context->device, subtitleTexture);
 	SDL_ReleaseGPUTexture(context->device, menuTexture);
 	SDL_ReleaseGPUTexture(context->device, sliderTexture);
-	SDL_ReleaseGPUTexture(context->device, exportTexture);
+	if (exportTexture != nullptr) SDL_ReleaseGPUTexture(context->device, exportTexture);
+	exportTexture = nullptr;
+	exportTextureSize = {0, 0};
 	SDL_ReleaseGPUSampler(context->device, imageSampler);
 	SDL_DestroySurface(menuTextSurface);
 	SDL_DestroySurface(ssimSurface);

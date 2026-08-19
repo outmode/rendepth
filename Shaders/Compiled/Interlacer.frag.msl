@@ -44,14 +44,6 @@ struct spvUnsafeArray
     }
 };
 
-// Implementation of signed integer mod accurate to SPIR-V specification
-template<typename Tx, typename Ty>
-inline Tx spvSMod(Tx x, Ty y)
-{
-    Tx remainder = x - y * (x / y);
-    return select(Tx(remainder + y), remainder, remainder == 0 || (x >= 0) == (y >= 0));
-}
-
 struct InterlacerData
 {
     float2 outputSize;
@@ -207,7 +199,7 @@ float3 sampleView(thread float2& uv, thread const float& phase, constant Interla
     {
         view = (_75.viewCount - 1) - view;
     }
-    int column = spvSMod(view, _75.gridColumns);
+    int column = view % _75.gridColumns;
     int row = (_75.gridRows - 1) - (view / _75.gridColumns);
     if (_75.flipImageX != 0)
     {
