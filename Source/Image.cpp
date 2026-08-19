@@ -36,6 +36,9 @@ namespace {
 	constexpr Uint32 blurSnapshotMipLevels = 6;
 	BlurClock::time_point blurTransitionStart{};
 	bool videoBlurActive = false;
+	glm::ivec2 videoYUVLumaSize{};
+	glm::ivec2 videoYUVChromaSize{};
+	VideoFrame::Format videoYUVFormat = VideoFrame::Format::RGBA;
 
 	bool readCalibrationNumber(const rapidjson::Value& object, const char* name, float& result) {
 		if (!object.IsObject() || !object.HasMember(name)) return false;
@@ -354,28 +357,174 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData) {
 	return 0;
 }
 
-int Image::updateVideoFrame(Context* context, SDL_Surface* imageData, bool firstFrame,
+int Image::updateVideoFrame(Context* context, const VideoFrame& frame, bool firstFrame,
 		int logicalWidth, int logicalHeight, bool updateBlur) {
-	if (context == nullptr || imageData == nullptr) return -1;
-	const glm::ivec2 frameSize{imageData->w, imageData->h};
+	if (context == nullptr || context->device == nullptr || frame.width <= 0 ||
+		frame.height <= 0 || frame.outputWidth <= 0 || frame.outputHeight <= 0)
+		return -1;
+	const glm::ivec2 frameSize{frame.outputWidth, frame.outputHeight};
 	const bool reuseTexture = !firstFrame && frameSize == videoTextureSize;
 	context->imageSize = {
-		(float)(logicalWidth > 0 ? logicalWidth : imageData->w),
-		(float)(logicalHeight > 0 ? logicalHeight : imageData->h)};
+		(float)(logicalWidth > 0 ? logicalWidth : frame.width),
+		(float)(logicalHeight > 0 ? logicalHeight : frame.height)};
 	imageSize = context->imageSize;
 	updateSize(context);
-	if (uploadTexture(context, imageData, &imageTexture, "Video Texture",
-			reuseTexture, !reuseTexture, false) < 0) return -1;
+	if (frame.format == VideoFrame::Format::RGBA) {
+		if (frame.planes[0].size() < static_cast<size_t>(frame.outputWidth) *
+			frame.outputHeight * 4) return -1;
+		SDL_Surface* surface = SDL_CreateSurfaceFrom(frame.outputWidth, frame.outputHeight,
+			SDL_PIXELFORMAT_RGBA32, const_cast<std::uint8_t*>(frame.planes[0].data()),
+			frame.outputWidth * 4);
+		if (surface == nullptr) return -1;
+		const int result = uploadTexture(context, surface, &imageTexture, "Video Texture",
+			reuseTexture, !reuseTexture, false);
+		SDL_DestroySurface(surface);
+		if (result < 0) return -1;
+	} else {
+		const glm::ivec2 lumaSize{frame.width, frame.height};
+		const glm::ivec2 chromaSize{(frame.width + 1) / 2, (frame.height + 1) / 2};
+		const bool reusePlanes = videoYTexture != nullptr && videoUTexture != nullptr &&
+			videoYUVLumaSize == lumaSize && videoYUVChromaSize == chromaSize &&
+			videoYUVFormat == frame.format &&
+			(frame.format == VideoFrame::Format::NV12 || videoVTexture != nullptr);
+		auto createTexture = [&](SDL_GPUTexture*& texture, SDL_GPUTextureFormat format,
+				glm::ivec2 size, const char* name, SDL_GPUTextureUsageFlags usage) {
+			if (texture != nullptr) SDL_ReleaseGPUTexture(context->device, texture);
+			const SDL_GPUTextureCreateInfo info{
+				.type = SDL_GPU_TEXTURETYPE_2D,
+				.format = format,
+				.usage = usage,
+				.width = static_cast<Uint32>(size.x),
+				.height = static_cast<Uint32>(size.y),
+				.layer_count_or_depth = 1,
+				.num_levels = 1
+			};
+			texture = SDL_CreateGPUTexture(context->device, &info);
+			if (texture != nullptr) SDL_SetGPUTextureName(context->device, texture, name);
+			return texture != nullptr;
+		};
+		if (!reusePlanes) {
+			if (!createTexture(videoYTexture, SDL_GPU_TEXTUREFORMAT_R8_UNORM, lumaSize,
+					"Video Y Plane", SDL_GPU_TEXTUREUSAGE_SAMPLER) ||
+				!createTexture(videoUTexture,
+					frame.format == VideoFrame::Format::NV12
+						? SDL_GPU_TEXTUREFORMAT_R8G8_UNORM : SDL_GPU_TEXTUREFORMAT_R8_UNORM,
+					chromaSize, "Video UV Plane", SDL_GPU_TEXTUREUSAGE_SAMPLER)) return -1;
+			if (frame.format == VideoFrame::Format::YUV420P) {
+				if (!createTexture(videoVTexture, SDL_GPU_TEXTUREFORMAT_R8_UNORM, chromaSize,
+						"Video V Plane", SDL_GPU_TEXTUREUSAGE_SAMPLER)) return -1;
+			} else if (videoVTexture != nullptr) {
+				SDL_ReleaseGPUTexture(context->device, videoVTexture);
+				videoVTexture = nullptr;
+			}
+			videoYUVLumaSize = lumaSize;
+			videoYUVChromaSize = chromaSize;
+			videoYUVFormat = frame.format;
+		}
+		if (!reuseTexture) {
+			if (!createTexture(imageTexture, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+					frameSize, "Video Texture",
+					SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET)) return -1;
+		}
+
+		const size_t yBytes = frame.planes[0].size();
+		const size_t uBytes = frame.planes[1].size();
+		const size_t vBytes = frame.format == VideoFrame::Format::YUV420P
+			? frame.planes[2].size() : 0;
+		if (yBytes < static_cast<size_t>(frame.width) * frame.height ||
+			uBytes < static_cast<size_t>(chromaSize.x) * chromaSize.y *
+				(frame.format == VideoFrame::Format::NV12 ? 2 : 1) ||
+			(frame.format == VideoFrame::Format::YUV420P &&
+				vBytes < static_cast<size_t>(chromaSize.x) * chromaSize.y)) return -1;
+		const size_t transferBytes = yBytes + uBytes + vBytes;
+		if (transferBytes > std::numeric_limits<Uint32>::max()) return -1;
+		const SDL_GPUTransferBufferCreateInfo transferInfo{
+			.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+			.size = static_cast<Uint32>(transferBytes)
+		};
+		SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(context->device, &transferInfo);
+		if (transfer == nullptr) return -1;
+		auto* mapped = static_cast<std::uint8_t*>(
+			SDL_MapGPUTransferBuffer(context->device, transfer, false));
+		if (mapped == nullptr) {
+			SDL_ReleaseGPUTransferBuffer(context->device, transfer);
+			return -1;
+		}
+		SDL_memcpy(mapped, frame.planes[0].data(), yBytes);
+		SDL_memcpy(mapped + yBytes, frame.planes[1].data(), uBytes);
+		if (vBytes > 0) SDL_memcpy(mapped + yBytes + uBytes, frame.planes[2].data(), vBytes);
+		SDL_UnmapGPUTransferBuffer(context->device, transfer);
+
+		SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(context->device);
+		if (commands == nullptr) {
+			SDL_ReleaseGPUTransferBuffer(context->device, transfer);
+			return -1;
+		}
+		SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commands);
+		auto uploadPlane = [&](SDL_GPUTexture* texture, size_t offset, glm::ivec2 size) {
+			const SDL_GPUTextureTransferInfo source{
+				.transfer_buffer = transfer,
+				.offset = static_cast<Uint32>(offset)
+			};
+			const SDL_GPUTextureRegion destination{
+				.texture = texture,
+				.w = static_cast<Uint32>(size.x),
+				.h = static_cast<Uint32>(size.y),
+				.d = 1
+			};
+			SDL_UploadToGPUTexture(copy, &source, &destination, reusePlanes);
+		};
+		uploadPlane(videoYTexture, 0, lumaSize);
+		uploadPlane(videoUTexture, yBytes, chromaSize);
+		if (frame.format == VideoFrame::Format::YUV420P)
+			uploadPlane(videoVTexture, yBytes + uBytes, chromaSize);
+		SDL_EndGPUCopyPass(copy);
+
+		const SDL_GPUColorTargetInfo target{
+			.texture = imageTexture,
+			.load_op = SDL_GPU_LOADOP_DONT_CARE,
+			.store_op = SDL_GPU_STOREOP_STORE,
+			.cycle = reuseTexture
+		};
+		SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(commands, &target, 1, nullptr);
+		if (pass == nullptr) {
+			SDL_CancelGPUCommandBuffer(commands);
+			SDL_ReleaseGPUTransferBuffer(context->device, transfer);
+			return -1;
+		}
+		bindPipeline(pass, videoYUVPipeline);
+		SDL_GPUTextureSamplerBinding bindings[3] = {
+			{.texture = videoYTexture, .sampler = imageSampler},
+			{.texture = videoUTexture, .sampler = imageSampler},
+			{.texture = frame.format == VideoFrame::Format::YUV420P
+				? videoVTexture : videoYTexture, .sampler = imageSampler}
+		};
+		SDL_BindGPUFragmentSamplers(pass, 0, bindings, 3);
+		const VideoYUVDataFrag uniforms{
+			.format = frame.format == VideoFrame::Format::NV12 ? 1 : 2,
+			.colorSpace = static_cast<int>(frame.colorSpace),
+			.fullRange = frame.fullRange ? 1 : 0
+		};
+		SDL_PushGPUFragmentUniformData(commands, 0, &uniforms, sizeof(uniforms));
+		const SDL_GPUViewport viewport{0.0f, 0.0f, static_cast<float>(frame.outputWidth),
+			static_cast<float>(frame.outputHeight), 0.0f, 1.0f};
+		SDL_SetGPUViewport(pass, &viewport);
+		SDL_DrawGPUIndexedPrimitives(pass, 6, 1, 0, 0, 0);
+		SDL_EndGPURenderPass(pass);
+		SDL_SubmitGPUCommandBuffer(commands);
+		SDL_ReleaseGPUTransferBuffer(context->device, transfer);
+	}
 	videoTextureSize = frameSize;
 	if (firstFrame || (updateBlur && (blurTexture == nullptr || blurTextureNext == nullptr))) {
-		blitBlurTexture(context, imageTexture, (Uint32)imageData->w, (Uint32)imageData->h);
+		blitBlurTexture(context, imageTexture, static_cast<Uint32>(frame.outputWidth),
+			static_cast<Uint32>(frame.outputHeight));
 		videoBlurActive = true;
 		blurTransitionStart = BlurClock::now();
 		imageDataFrag.blurMix = 0.0f;
 	} else if (updateBlur && BlurClock::now() - blurTransitionStart >= videoBlurInterval) {
 		std::swap(blurTexture, blurTextureNext);
-		blitBlurTexture(context, imageTexture, (Uint32)imageData->w,
-			(Uint32)imageData->h, true);
+		blitBlurTexture(context, imageTexture, static_cast<Uint32>(frame.outputWidth),
+			static_cast<Uint32>(frame.outputHeight), true);
 		blurTransitionStart = BlurClock::now();
 		imageDataFrag.blurMix = 0.0f;
 	}
@@ -732,6 +881,18 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 		SDL_Log("Failed To Create Image Fragment Shader.");
 		return -1;
 	}
+	SDL_GPUShader* videoYUVVertexShader = Core::loadShader(context->device,
+		"VideoYUV.vert", 0, 0, 0, 0);
+	SDL_GPUShader* videoYUVFragmentShader = Core::loadShader(context->device,
+		"VideoYUV.frag", 3, 1, 0, 0);
+	if (videoYUVVertexShader == nullptr || videoYUVFragmentShader == nullptr) {
+		SDL_Log("Failed To Create Video YUV Shaders.");
+		if (videoYUVVertexShader != nullptr)
+			SDL_ReleaseGPUShader(context->device, videoYUVVertexShader);
+		if (videoYUVFragmentShader != nullptr)
+			SDL_ReleaseGPUShader(context->device, videoYUVFragmentShader);
+		return -1;
+	}
 	SDL_GPUShader* interlacerFragmentShader = Core::loadShader(context->device,
 		"Interlacer.frag", 1, 1, 0, 0);
 	if (interlacerFragmentShader == nullptr) {
@@ -818,6 +979,18 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	imagePipeline = SDL_CreateGPUGraphicsPipeline(context->device, &imagePipelineCreateInfo);
 	if (imagePipeline == nullptr) {
 		SDL_Log("Failed To Create Image Pipeline.");
+		return -1;
+	}
+	SDL_GPUGraphicsPipelineCreateInfo videoYUVPipelineInfo = imagePipelineCreateInfo;
+	videoYUVPipelineInfo.vertex_shader = videoYUVVertexShader;
+	videoYUVPipelineInfo.fragment_shader = videoYUVFragmentShader;
+	SDL_GPUColorTargetDescription videoYUVTargetDescription{
+		.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM
+	};
+	videoYUVPipelineInfo.target_info.color_target_descriptions = &videoYUVTargetDescription;
+	videoYUVPipeline = SDL_CreateGPUGraphicsPipeline(context->device, &videoYUVPipelineInfo);
+	if (videoYUVPipeline == nullptr) {
+		SDL_Log("Failed To Create Video YUV Pipeline.");
 		return -1;
 	}
 
@@ -918,6 +1091,8 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 
 	SDL_ReleaseGPUShader(context->device, imageVertexShader);
 	SDL_ReleaseGPUShader(context->device, imageFragmentShader);
+	SDL_ReleaseGPUShader(context->device, videoYUVVertexShader);
+	SDL_ReleaseGPUShader(context->device, videoYUVFragmentShader);
 	SDL_ReleaseGPUShader(context->device, interlacerFragmentShader);
 
 	SDL_ReleaseGPUShader(context->device, iconVertexShader);
@@ -2220,6 +2395,18 @@ int Image::draw(Context* context) {
 				const auto subtitleMargin = 24.0f * context->displayScale;
 				const auto subtitleCenter = glm::vec3(windowSize.x * 0.5f, windowSize.y, 0.0f) -
 					glm::vec3(0.0f, subtitleTextSize.y + subtitleMargin, 0.0f);
+				const auto subtitleShadowOffset = 1.25f * context->displayScale / aspectScale;
+				const auto subtitleSize = glm::vec3(subtitleTextSize, 1.0f);
+				for (const auto& offset : std::array<glm::vec2, 4>{
+					glm::vec2(-subtitleShadowOffset.x, 0.0f),
+					glm::vec2(subtitleShadowOffset.x, 0.0f),
+					glm::vec2(0.0f, -subtitleShadowOffset.y),
+					glm::vec2(0.0f, subtitleShadowOffset.y)}) {
+					setSpriteUniforms(subtitleCenter + glm::vec3(offset, 0.0f), subtitleSize,
+						viewColorBlackLight, 1.0f, 1, {0.0f, 0.0f}, {1.0f, 1.0f},
+						glm::vec2(0.5f), glm::vec3(aspectScale, 1.0f));
+					drawSprite(commandBuffer, renderPass);
+				}
 				setSpriteUniforms(subtitleCenter, glm::vec3(subtitleTextSize, 1.0f),
 					viewColorWhiteSolid, 1.0f, 1, {0.0f, 0.0f}, {1.0f, 1.0f},
 					glm::vec2(0.5f), glm::vec3(aspectScale, 1.0f));
@@ -2437,11 +2624,15 @@ void Image::quit(Context* context){
 	}
 	SDL_ReleaseGPUGraphicsPipeline(context->device, interlacerPipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, imagePipeline);
+	SDL_ReleaseGPUGraphicsPipeline(context->device, videoYUVPipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, iconPipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, spritePipeline);
 	SDL_ReleaseGPUBuffer(context->device, sharedVertexBuffer);
 	SDL_ReleaseGPUBuffer(context->device, sharedIndexBuffer);
 	SDL_ReleaseGPUTexture(context->device, imageTexture);
+	if (videoYTexture != nullptr) SDL_ReleaseGPUTexture(context->device, videoYTexture);
+	if (videoUTexture != nullptr) SDL_ReleaseGPUTexture(context->device, videoUTexture);
+	if (videoVTexture != nullptr) SDL_ReleaseGPUTexture(context->device, videoVTexture);
 	SDL_ReleaseGPUTexture(context->device, blurTexture);
 	SDL_ReleaseGPUTexture(context->device, blurTextureNext);
 	SDL_ReleaseGPUTexture(context->device, iconTexture);

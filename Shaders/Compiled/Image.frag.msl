@@ -44,6 +44,14 @@ struct spvUnsafeArray
     }
 };
 
+// Implementation of signed integer mod accurate to SPIR-V specification
+template<typename Tx, typename Ty>
+inline Tx spvSMod(Tx x, Ty y)
+{
+    Tx remainder = x - y * (x / y);
+    return select(Tx(remainder + y), remainder, remainder == 0 || (x >= 0) == (y >= 0));
+}
+
 struct ImageDataFrag
 {
     float2 windowSize;
@@ -301,7 +309,7 @@ float3 combineStereoViews(thread float3& leftColor, thread float3& rightColor, c
                 {
                     if (_124.mode == 11)
                     {
-                        if ((currentPixel.y % 2) == 0)
+                        if (spvSMod(currentPixel.y, 2) == 0)
                         {
                             result = leftColor;
                         }
@@ -314,7 +322,7 @@ float3 combineStereoViews(thread float3& leftColor, thread float3& rightColor, c
                     {
                         if (_124.mode == 12)
                         {
-                            if ((currentPixel.x % 2) == 0)
+                            if (spvSMod(currentPixel.x, 2) == 0)
                             {
                                 result = leftColor;
                             }
@@ -327,11 +335,11 @@ float3 combineStereoViews(thread float3& leftColor, thread float3& rightColor, c
                         {
                             if (_124.mode == 13)
                             {
-                                bool _416 = (currentPixel.x % 2) == 0;
+                                bool _416 = spvSMod(currentPixel.x, 2) == 0;
                                 bool _423;
                                 if (_416)
                                 {
-                                    _423 = (currentPixel.y % 2) == 0;
+                                    _423 = spvSMod(currentPixel.y, 2) == 0;
                                 }
                                 else
                                 {
@@ -343,11 +351,11 @@ float3 combineStereoViews(thread float3& leftColor, thread float3& rightColor, c
                                 }
                                 else
                                 {
-                                    bool _431 = (currentPixel.x % 2) == 1;
+                                    bool _431 = spvSMod(currentPixel.x, 2) == 1;
                                     bool _438;
                                     if (_431)
                                     {
-                                        _438 = (currentPixel.y % 2) == 1;
+                                        _438 = spvSMod(currentPixel.y, 2) == 1;
                                     }
                                     else
                                     {
@@ -493,18 +501,18 @@ fragment main0_out main0(main0_in in [[stage_in]], constant ImageDataFrag& _124 
                         int param = gridRow;
                         int param_1 = gridCol;
                         int param_2 = gridLeft;
-                        float2 gridOffset = float2(float(gridLeft % gridCol), float(getQuiltRow(param, param_1, param_2, _124)));
+                        float2 gridOffset = float2(float(spvSMod(gridLeft, gridCol)), float(getQuiltRow(param, param_1, param_2, _124)));
                         gridLeftUV += (gridScale * gridOffset);
                         int gridRight = (gridCenter + gridStereo) + gridSlide;
                         int param_3 = gridRow;
                         int param_4 = gridCol;
                         int param_5 = gridRight;
-                        gridOffset = float2(float(gridRight % gridCol), float(getQuiltRow(param_3, param_4, param_5, _124)));
+                        gridOffset = float2(float(spvSMod(gridRight, gridCol)), float(getQuiltRow(param_3, param_4, param_5, _124)));
                         gridRightUV += (gridScale * gridOffset);
                         int param_6 = gridRow;
                         int param_7 = gridCol;
                         int param_8 = gridCenter;
-                        gridOffset = float2(float(gridCenter % gridCol), float(getQuiltRow(param_6, param_7, param_8, _124)));
+                        gridOffset = float2(float(spvSMod(gridCenter, gridCol)), float(getQuiltRow(param_6, param_7, param_8, _124)));
                         gridCenterUV += (gridScale * gridOffset);
                         monoUV = gridCenterUV;
                     }
@@ -637,7 +645,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant ImageDataFrag& _124 
                         int columns = int(_124.gridSize[0u]);
                         int rows = int(_124.gridSize[1u]);
                         int centerView = (columns * rows) / 2;
-                        float2 tile = float2(float(centerView % columns), float((rows - 1) - (centerView / columns)));
+                        float2 tile = float2(float(spvSMod(centerView, columns)), float((rows - 1) - (centerView / columns)));
                         float2 param_13 = (tile + in.fragUV) / float2(_124.gridSize[0], _124.gridSize[1]);
                         imageColor = getColor(imageTexture, imageTextureSmplr, param_13);
                     }

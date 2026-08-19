@@ -9,6 +9,8 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
@@ -49,6 +51,25 @@ std::string ffmpegError(int code) {
 	av_strerror(code, message, sizeof(message));
 	return message;
 }
+
+
+struct HardwareDecodeState {
+	std::atomic<bool> failed{false};
+	std::atomic<bool> attempted{false};
+};
+
+enum AVPixelFormat selectHardwareFormat(AVCodecContext* context, const enum AVPixelFormat* formats) {
+	auto* state = static_cast<HardwareDecodeState*>(context->opaque);
+	if (state != nullptr && (state->failed.load() || state->attempted.exchange(true))) {
+		for (const auto* format = formats; *format != AV_PIX_FMT_NONE; ++format)
+			if ((av_pix_fmt_desc_get(*format)->flags & AV_PIX_FMT_FLAG_HWACCEL) == 0) return *format;
+	}
+	for (const auto* format = formats; *format != AV_PIX_FMT_NONE; ++format)
+		if (*format == AV_PIX_FMT_VAAPI) return *format;
+	for (const auto* format = formats; *format != AV_PIX_FMT_NONE; ++format)
+		if ((av_pix_fmt_desc_get(*format)->flags & AV_PIX_FMT_FLAG_HWACCEL) == 0) return *format;
+	return formats[0];
+}
 #endif
 }
 
@@ -61,7 +82,7 @@ struct VideoPlayer::Impl {
 	std::thread decodeThread;
 	std::mutex stateMutex;
 	std::condition_variable stateChanged;
-	SDL_Surface* pendingFrame = nullptr;
+	std::unique_ptr<VideoFrame> pendingFrame;
 	bool pendingFrameIsPreview = false;
 	std::optional<SeekRequest> requestedSeek;
 	std::string runtimeError;
@@ -87,17 +108,18 @@ struct VideoPlayer::Impl {
 	mutable std::deque<SubtitleCue> subtitleCues;
 	std::atomic<int> videoWidth{0};
 	std::atomic<int> videoHeight{0};
+	std::atomic<int> outputMaxWidth{0};
+	std::atomic<int> outputMaxHeight{0};
 
 #ifdef RENDEPTH_ENABLE_FFMPEG
+	AVBufferRef* hwDeviceContext = nullptr;
+	HardwareDecodeState hardwareDecodeState{};
+	bool retryVideoPacketAfterHardwareFallback = false;
 	struct AudioState {
 		std::mutex mutex;
 		SDL_AudioStream* output = nullptr;
 		std::deque<std::vector<float>> pending;
 		int pendingBytes = 0;
-		double queuedEnd = 0.0;
-		bool clockValid = false;
-		double lastClockPosition = 0.0;
-		std::chrono::steady_clock::time_point lastClockUpdate{};
 		bool closing = false;
 		bool started = false;
 		std::atomic<bool> playing = false;
@@ -124,6 +146,7 @@ struct VideoPlayer::Impl {
 
 	AVFormatContext* format = nullptr;
 	AVCodecContext* codec = nullptr;
+	const AVCodec* videoDecoder = nullptr;
 	AVStream* stream = nullptr;
 	AVPacket* packet = nullptr;
 	AVFrame* frame = nullptr;
@@ -348,29 +371,7 @@ struct VideoPlayer::Impl {
 		if (state->output != nullptr) SDL_PauseAudioStreamDevice(state->output);
 	}
 
-	bool getAudioClock(double& position) {
-		const auto state = audioState;
-		std::lock_guard lock(state->mutex);
-		if (!state->clockValid || state->output == nullptr || !state->started ||
-			!state->playing || audioVolume.load() == 0.0)
-			return false;
-		const int queuedBytes = SDL_GetAudioStreamQueued(state->output);
-		if (queuedBytes < 0) return false;
-		const auto now = std::chrono::steady_clock::now();
-		const double clock = state->queuedEnd - queuedBytes /
-			static_cast<double>(audioSampleRate * audioBytesPerFrame);
-		if (state->lastClockUpdate.time_since_epoch().count() == 0 ||
-			clock > state->lastClockPosition + 0.0005) {
-			state->lastClockPosition = clock;
-			state->lastClockUpdate = now;
-		}
-		if (now - state->lastClockUpdate > std::chrono::milliseconds(250))
-			return false;
-		position = clock;
-		return true;
-	}
-
-	bool queueAudio(const float* samples, int sampleFrames, double endPosition) {
+	bool queueAudio(const float* samples, int sampleFrames) {
 		const auto state = audioState;
 		if (sampleFrames <= 0 || !isPlaying) return true;
 		const int sampleBytes = sampleFrames * audioBytesPerFrame;
@@ -386,8 +387,6 @@ struct VideoPlayer::Impl {
 						state->pending.emplace_back(samples, samples +
 							static_cast<size_t>(sampleFrames) * audioChannels);
 						state->pendingBytes += sampleBytes;
-						state->queuedEnd = endPosition;
-						state->clockValid = true;
 					}
 					return true;
 				}
@@ -396,8 +395,6 @@ struct VideoPlayer::Impl {
 						setRuntimeError(std::string("Could not queue video audio: ") + SDL_GetError());
 						return false;
 					}
-					state->queuedEnd = endPosition;
-					state->clockValid = true;
 					return true;
 				}
 				waitForSpace = true;
@@ -419,6 +416,39 @@ struct VideoPlayer::Impl {
 		return stopRequested || requestedSeek.has_value();
 	}
 
+	bool disableHardwareDecoding() {
+		if (hwDeviceContext == nullptr || codec == nullptr || videoDecoder == nullptr)
+			return false;
+		hardwareDecodeState.failed = true;
+		av_buffer_unref(&hwDeviceContext);
+
+		// A failed VA-API negotiation cannot reliably be repaired by just
+		// removing hw_device_ctx: the codec context may still be configured for
+		// AV_PIX_FMT_VAAPI. Recreate it from the stream parameters so FFmpeg
+		// starts a genuinely software-only decoder.
+		AVCodecContext* softwareCodec = avcodec_alloc_context3(videoDecoder);
+		if (softwareCodec == nullptr || avcodec_parameters_to_context(
+			softwareCodec, stream->codecpar) < 0) {
+			avcodec_free_context(&softwareCodec);
+			return false;
+		}
+		softwareCodec->thread_count = codec->thread_count;
+		softwareCodec->thread_type = codec->thread_type;
+		softwareCodec->skip_frame = codec->skip_frame;
+		if (avcodec_open2(softwareCodec, videoDecoder, nullptr) < 0) {
+			avcodec_free_context(&softwareCodec);
+			return false;
+		}
+		avcodec_free_context(&codec);
+		codec = softwareCodec;
+		codec->opaque = &hardwareDecodeState;
+		// receiveFrames() tells the packet loop to submit the packet that
+		// triggered the failure to this new software decoder.
+		retryVideoPacketAfterHardwareFallback = true;
+		SDL_Log("Video: VA-API could not decode this stream; falling back to software decoding.");
+		return true;
+	}
+
 	double framePosition(const AVFrame* decodedFrame) const {
 		if (decodedFrame->best_effort_timestamp == AV_NOPTS_VALUE)
 			return currentPosition.load() + fallbackFrameDuration;
@@ -426,10 +456,9 @@ struct VideoPlayer::Impl {
 		return std::max(0.0, timestamp - streamStart);
 	}
 
-	bool waitForPresentation(double position, bool& clockValid, bool& audioClockActive,
+	bool waitForPresentation(double position, bool& clockValid,
 			std::chrono::steady_clock::time_point& clockOrigin, double& mediaOrigin) {
 		std::unique_lock lock(stateMutex);
-		audioClockActive = false;
 		for (;;) {
 			if (stopRequested || requestedSeek.has_value()) return false;
 			if (!isPlaying) {
@@ -439,16 +468,6 @@ struct VideoPlayer::Impl {
 				});
 				continue;
 			}
-			double audioPosition = 0.0;
-			if (getAudioClock(audioPosition)) {
-				audioClockActive = true;
-				if (position <= audioPosition + 0.005) return true;
-				stateChanged.wait_for(lock, std::chrono::milliseconds(10), [&] {
-					return stopRequested || requestedSeek.has_value() || !isPlaying.load();
-				});
-				continue;
-			}
-
 			const auto now = std::chrono::steady_clock::now();
 			if (!clockValid || position < mediaOrigin || position - mediaOrigin > 60.0) {
 				clockOrigin = now;
@@ -473,16 +492,15 @@ struct VideoPlayer::Impl {
 		seekFloor.reset();
 		const bool pausedSeekFrame = seekPreviewPending;
 		const bool fastPreviewFrame = fastPreviewPending;
-		bool audioClockActive = false;
 		if (pausedSeekFrame) {
 			if (interrupted()) return false;
 			clockValid = false;
-		} else if (!waitForPresentation(position, clockValid, audioClockActive,
+		} else if (!waitForPresentation(position, clockValid,
 			clockOrigin, mediaOrigin)) {
 			return false;
 		}
 
-		if (!pausedSeekFrame && !audioClockActive) {
+		if (!pausedSeekFrame) {
 			const auto target = clockOrigin + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
 				std::chrono::duration<double>(position - mediaOrigin));
 			const auto presentationNow = std::chrono::steady_clock::now();
@@ -495,46 +513,154 @@ struct VideoPlayer::Impl {
 				return true;
 			}
 		}
+		struct TransferredFrame {
+			AVFrame* frame = nullptr;
+			~TransferredFrame() { av_frame_free(&frame); }
+		} transferredFrame;
+		if (decodedFrame->format == AV_PIX_FMT_VAAPI) {
+			transferredFrame.frame = av_frame_alloc();
+			if (transferredFrame.frame == nullptr ||
+				av_hwframe_transfer_data(transferredFrame.frame, decodedFrame, 0) < 0) {
+				if (disableHardwareDecoding()) {
+					av_frame_unref(decodedFrame);
+					return true;
+				}
+				setRuntimeError("FFmpeg could not transfer the hardware video frame.");
+				return false;
+			}
+			decodedFrame = transferredFrame.frame;
+		}
 
 		constexpr int previewMaxDimension = 720;
-		const int sourceMaxDimension = std::max(decodedFrame->width, decodedFrame->height);
+		const int sourceWidth = decodedFrame->width;
+		const int sourceHeight = decodedFrame->height;
+		const int sourceMaxDimension = std::max(sourceWidth, sourceHeight);
 		const double previewScale = fastPreviewFrame && sourceMaxDimension > previewMaxDimension
 			? static_cast<double>(previewMaxDimension) / sourceMaxDimension : 1.0;
-		const int outputWidth = std::max(1,
-			static_cast<int>(std::lround(decodedFrame->width * previewScale)));
-		const int outputHeight = std::max(1,
-			static_cast<int>(std::lround(decodedFrame->height * previewScale)));
-		scaler = sws_getCachedContext(scaler,
-			decodedFrame->width, decodedFrame->height,
-			static_cast<AVPixelFormat>(decodedFrame->format),
-			outputWidth, outputHeight, AV_PIX_FMT_RGBA,
-			fastPreviewFrame ? SWS_FAST_BILINEAR : SWS_BILINEAR,
-			nullptr, nullptr, nullptr);
-		if (scaler == nullptr) {
-			setRuntimeError("FFmpeg could not create the video color converter.");
-			return false;
+		const int maxWidth = outputMaxWidth.load();
+		const int maxHeight = outputMaxHeight.load();
+		const double displayScale = maxWidth > 0 && maxHeight > 0
+			? std::min({1.0, static_cast<double>(maxWidth) / sourceWidth,
+				static_cast<double>(maxHeight) / sourceHeight}) : 1.0;
+		double scale = previewScale * displayScale;
+		const int outputWidth = std::max(1, static_cast<int>(std::lround(sourceWidth * scale)));
+		const int outputHeight = std::max(1, static_cast<int>(std::lround(sourceHeight * scale)));
+		auto sourceFormat = static_cast<AVPixelFormat>(decodedFrame->format);
+		int sourceRange = decodedFrame->color_range == AVCOL_RANGE_JPEG ? 1 : 0;
+		switch (sourceFormat) {
+		case AV_PIX_FMT_YUVJ411P:
+			sourceFormat = AV_PIX_FMT_YUV411P;
+			sourceRange = 1;
+			break;
+		case AV_PIX_FMT_YUVJ420P:
+			sourceFormat = AV_PIX_FMT_YUV420P;
+			sourceRange = 1;
+			break;
+		case AV_PIX_FMT_YUVJ422P:
+			sourceFormat = AV_PIX_FMT_YUV422P;
+			sourceRange = 1;
+			break;
+		case AV_PIX_FMT_YUVJ444P:
+			sourceFormat = AV_PIX_FMT_YUV444P;
+			sourceRange = 1;
+			break;
+		case AV_PIX_FMT_YUVJ440P:
+			sourceFormat = AV_PIX_FMT_YUV440P;
+			sourceRange = 1;
+			break;
+		default:
+			break;
 		}
 
-		SDL_Surface* converted = SDL_CreateSurface(
-			outputWidth, outputHeight, SDL_PIXELFORMAT_RGBA32);
-		if (converted == nullptr) {
-			setRuntimeError(std::string("Could not allocate a video frame: ") + SDL_GetError());
-			return false;
+		auto converted = std::make_unique<VideoFrame>();
+		converted->width = sourceWidth;
+		converted->height = sourceHeight;
+		converted->outputWidth = outputWidth;
+		converted->outputHeight = outputHeight;
+		converted->fullRange = sourceRange != 0;
+		switch (decodedFrame->colorspace) {
+		case AVCOL_SPC_BT2020_NCL:
+		case AVCOL_SPC_BT2020_CL:
+			converted->colorSpace = VideoFrame::ColorSpace::BT2020;
+			break;
+		case AVCOL_SPC_BT709:
+			converted->colorSpace = VideoFrame::ColorSpace::BT709;
+			break;
+		default:
+			converted->colorSpace = sourceHeight >= 720
+				? VideoFrame::ColorSpace::BT709 : VideoFrame::ColorSpace::BT601;
+			break;
 		}
-		uint8_t* outputData[] = { static_cast<uint8_t*>(converted->pixels), nullptr, nullptr, nullptr };
-		int outputLines[] = { converted->pitch, 0, 0, 0 };
-		const int convertedRows = sws_scale(scaler, decodedFrame->data,
-			decodedFrame->linesize, 0, decodedFrame->height, outputData, outputLines);
-		if (convertedRows <= 0) {
-			SDL_DestroySurface(converted);
-			setRuntimeError("FFmpeg could not convert the decoded video frame.");
-			return false;
+
+		auto copyPlane = [](std::vector<std::uint8_t>& destination,
+				const std::uint8_t* source, int sourcePitch, int rowBytes, int rows) {
+			destination.resize(static_cast<size_t>(rowBytes) * rows);
+			for (int row = 0; row < rows; ++row)
+				SDL_memcpy(destination.data() + static_cast<size_t>(row) * rowBytes,
+					source + static_cast<ptrdiff_t>(row) * sourcePitch, rowBytes);
+		};
+		const int chromaWidth = (sourceWidth + 1) / 2;
+		const int chromaHeight = (sourceHeight + 1) / 2;
+		if (sourceFormat == AV_PIX_FMT_NV12) {
+			converted->format = VideoFrame::Format::NV12;
+			copyPlane(converted->planes[0], decodedFrame->data[0], decodedFrame->linesize[0],
+				sourceWidth, sourceHeight);
+			copyPlane(converted->planes[1], decodedFrame->data[1], decodedFrame->linesize[1],
+				chromaWidth * 2, chromaHeight);
+		} else if (sourceFormat == AV_PIX_FMT_YUV420P) {
+			converted->format = VideoFrame::Format::YUV420P;
+			copyPlane(converted->planes[0], decodedFrame->data[0], decodedFrame->linesize[0],
+				sourceWidth, sourceHeight);
+			copyPlane(converted->planes[1], decodedFrame->data[1], decodedFrame->linesize[1],
+				chromaWidth, chromaHeight);
+			copyPlane(converted->planes[2], decodedFrame->data[2], decodedFrame->linesize[2],
+				chromaWidth, chromaHeight);
+		} else {
+			// Less common pixel formats retain the general swscale fallback.
+			// The common VA-API NV12 and software YUV420P paths avoid CPU RGB
+			// conversion and are scaled by the GPU instead.
+			constexpr double maxConvertedPixelRate = 1920.0 * 1080.0 * 60.0;
+			const double maxConvertedPixels = maxConvertedPixelRate * fallbackFrameDuration;
+			const double convertedPixels = sourceWidth * static_cast<double>(sourceHeight) * scale * scale;
+			if (convertedPixels > maxConvertedPixels)
+				scale *= std::sqrt(maxConvertedPixels / convertedPixels);
+			converted->outputWidth = std::max(1,
+				static_cast<int>(std::lround(sourceWidth * scale)));
+			converted->outputHeight = std::max(1,
+				static_cast<int>(std::lround(sourceHeight * scale)));
+			converted->format = VideoFrame::Format::RGBA;
+			scaler = sws_getCachedContext(scaler,
+				decodedFrame->width, decodedFrame->height,
+				sourceFormat,
+				converted->outputWidth, converted->outputHeight, AV_PIX_FMT_RGBA,
+				fastPreviewFrame ? SWS_FAST_BILINEAR : SWS_BILINEAR,
+				nullptr, nullptr, nullptr);
+			if (scaler == nullptr) {
+				setRuntimeError("FFmpeg could not create the video color converter.");
+				return false;
+			}
+			const int* colorspace = sws_getCoefficients(SWS_CS_DEFAULT);
+			if (sws_setColorspaceDetails(scaler, colorspace, sourceRange,
+				colorspace, 0, 0, 1 << 16, 1 << 16) < 0) {
+				setRuntimeError("FFmpeg could not configure the video color range.");
+				return false;
+			}
+
+			converted->planes[0].resize(static_cast<size_t>(converted->outputWidth) *
+				converted->outputHeight * 4);
+			uint8_t* outputData[] = { converted->planes[0].data(), nullptr, nullptr, nullptr };
+			int outputLines[] = { converted->outputWidth * 4, 0, 0, 0 };
+			const int convertedRows = sws_scale(scaler, decodedFrame->data,
+				decodedFrame->linesize, 0, decodedFrame->height, outputData, outputLines);
+			if (convertedRows <= 0) {
+				setRuntimeError("FFmpeg could not convert the decoded video frame.");
+				return false;
+			}
 		}
 
 		{
 			std::lock_guard lock(stateMutex);
-			if (pendingFrame != nullptr) SDL_DestroySurface(pendingFrame);
-			pendingFrame = converted;
+			pendingFrame = std::move(converted);
 			pendingFrameIsPreview = fastPreviewFrame;
 		}
 		videoWidth = decodedFrame->width;
@@ -554,6 +680,7 @@ struct VideoPlayer::Impl {
 			const int result = avcodec_receive_frame(codec, frame);
 			if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) return true;
 			if (result < 0) {
+				if (disableHardwareDecoding()) return true;
 				setRuntimeError("FFmpeg video decode failed: " + ffmpegError(result));
 				return false;
 			}
@@ -606,8 +733,7 @@ struct VideoPlayer::Impl {
 						av_frame_unref(audioFrame);
 						return false;
 					}
-					if (!queueAudio(samples.data(), converted,
-						position + converted / static_cast<double>(audioSampleRate))) {
+					if (!queueAudio(samples.data(), converted)) {
 						av_frame_unref(audioFrame);
 						return false;
 					}
@@ -643,9 +769,6 @@ struct VideoPlayer::Impl {
 			std::lock_guard lock(audioState->mutex);
 			audioState->pending.clear();
 			audioState->pendingBytes = 0;
-			audioState->queuedEnd = request.seconds;
-			audioState->clockValid = false;
-			audioState->lastClockUpdate = {};
 			if (audioState->output != nullptr) {
 				SDL_PauseAudioStreamDevice(audioState->output);
 				SDL_ClearAudioStream(audioState->output);
@@ -685,9 +808,6 @@ struct VideoPlayer::Impl {
 				selectedAudioTrack = requestedTrack;
 				std::lock_guard lock(audioState->mutex);
 				if (audioState->output != nullptr) SDL_ClearAudioStream(audioState->output);
-				audioState->queuedEnd = currentPosition.load();
-				audioState->clockValid = false;
-				audioState->lastClockUpdate = {};
 				if (audioCodec != nullptr) avcodec_free_context(&audioCodec);
 				av_frame_free(&audioFrame);
 				swr_free(&audioResampler);
@@ -755,17 +875,26 @@ struct VideoPlayer::Impl {
 			}
 
 			if (packet->stream_index == streamIndex) {
-				const int sendResult = avcodec_send_packet(codec, packet);
+				bool packetHandled = false;
+				for (int attempt = 0; attempt < 2 && !packetHandled; ++attempt) {
+					const int sendResult = avcodec_send_packet(codec, packet);
+					if (sendResult < 0 && sendResult != AVERROR(EAGAIN)) {
+						if (disableHardwareDecoding()) continue;
+						setRuntimeError("FFmpeg could not submit a video packet: " + ffmpegError(sendResult));
+						break;
+					}
+					if (!receiveFrames(clockValid, clockOrigin, mediaOrigin, seekFloor,
+							seekPreviewPending, fastPreviewPending)) {
+						if (interrupted()) continue;
+						break;
+					}
+					if (!retryVideoPacketAfterHardwareFallback) {
+						packetHandled = true;
+					} else {
+						retryVideoPacketAfterHardwareFallback = false;
+					}
+				}
 				av_packet_unref(packet);
-				if (sendResult < 0 && sendResult != AVERROR(EAGAIN)) {
-					setRuntimeError("FFmpeg could not submit a video packet: " + ffmpegError(sendResult));
-					break;
-				}
-				if (!receiveFrames(clockValid, clockOrigin, mediaOrigin, seekFloor,
-						seekPreviewPending, fastPreviewPending)) {
-					if (interrupted()) continue;
-					break;
-				}
 			} else if (packet->stream_index == audioStreamIndex && audioCodec != nullptr) {
 				const int sendResult = avcodec_send_packet(audioCodec, packet);
 				av_packet_unref(packet);
@@ -855,10 +984,27 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 		return false;
 	}
 	result = avcodec_parameters_to_context(impl->codec, impl->stream->codecpar);
+	impl->videoDecoder = decoder;
+	impl->hardwareDecodeState.failed = false;
+	impl->hardwareDecodeState.attempted = false;
+	impl->retryVideoPacketAfterHardwareFallback = false;
+	impl->codec->opaque = &impl->hardwareDecodeState;
 	impl->codec->thread_count = static_cast<int>(
 		std::clamp(std::thread::hardware_concurrency(), 1u, 16u));
 	impl->codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-	if (result < 0 || (result = avcodec_open2(impl->codec, decoder, nullptr)) < 0) {
+	if (av_hwdevice_ctx_create(&impl->hwDeviceContext, AV_HWDEVICE_TYPE_VAAPI,
+		nullptr, nullptr, 0) >= 0) {
+		impl->codec->hw_device_ctx = av_buffer_ref(impl->hwDeviceContext);
+		impl->codec->get_format = selectHardwareFormat;
+		SDL_Log("Video: VA-API hardware decoding enabled.");
+	}
+	if (result >= 0)
+		result = avcodec_open2(impl->codec, decoder, nullptr);
+	if (result < 0 && impl->hwDeviceContext != nullptr &&
+		impl->disableHardwareDecoding()) {
+		result = 0;
+	}
+	if (result < 0) {
 		error = "FFmpeg could not start the video decoder: " + ffmpegError(result);
 		close();
 		return false;
@@ -900,10 +1046,7 @@ void VideoPlayer::close() {
 	if (impl->decodeThread.joinable()) impl->decodeThread.join();
 	{
 		std::lock_guard lock(impl->stateMutex);
-		if (impl->pendingFrame != nullptr) {
-			SDL_DestroySurface(impl->pendingFrame);
-			impl->pendingFrame = nullptr;
-		}
+		impl->pendingFrame.reset();
 		impl->pendingFrameIsPreview = false;
 		impl->requestedSeek.reset();
 		impl->runtimeError.clear();
@@ -920,6 +1063,7 @@ void VideoPlayer::close() {
 	impl->audioStreamStart = 0.0;
 	sws_freeContext(impl->scaler);
 	impl->scaler = nullptr;
+	av_buffer_unref(&impl->hwDeviceContext);
 	av_frame_free(&impl->frame);
 	av_packet_free(&impl->packet);
 	avcodec_free_context(&impl->codec);
@@ -943,6 +1087,8 @@ void VideoPlayer::close() {
 	}
 	impl->streamStart = 0.0;
 	impl->fallbackFrameDuration = 1.0 / 30.0;
+	impl->hardwareDecodeState.failed = false;
+	impl->hardwareDecodeState.attempted = false;
 #endif
 	impl->isPlaying = false;
 	impl->isReady = false;
@@ -977,12 +1123,10 @@ void VideoPlayer::setVolume(double volume) {
 	bool resume = false;
 	{
 		std::lock_guard lock(impl->audioState->mutex);
-		if (volume == 0.0) {
-			impl->audioState->pending.clear();
-			impl->audioState->pendingBytes = 0;
-			impl->audioState->clockValid = false;
-			impl->audioState->lastClockUpdate = {};
-		}
+			if (volume == 0.0) {
+				impl->audioState->pending.clear();
+				impl->audioState->pendingBytes = 0;
+			}
 		if (impl->audioState->output != nullptr) {
 			SDL_SetAudioStreamGain(impl->audioState->output, static_cast<float>(volume));
 			if (volume == 0.0) {
@@ -1034,12 +1178,13 @@ std::string VideoPlayer::subtitleText() const {
 
 namespace {
 #ifdef RENDEPTH_ENABLE_FFMPEG
-std::string streamLanguage(const AVStream* stream) {
+std::string streamLanguage(const AVStream* stream, bool includeHandlerName = true) {
 	if (stream == nullptr) return "Unknown";
 	if (const AVDictionaryEntry* title = av_dict_get(stream->metadata, "title", nullptr, 0))
 		if (title->value != nullptr && title->value[0] != '\0') return title->value;
-	if (const AVDictionaryEntry* handler = av_dict_get(stream->metadata, "handler_name", nullptr, 0))
-		if (handler->value != nullptr && handler->value[0] != '\0') return handler->value;
+	if (includeHandlerName)
+		if (const AVDictionaryEntry* handler = av_dict_get(stream->metadata, "handler_name", nullptr, 0))
+			if (handler->value != nullptr && handler->value[0] != '\0') return handler->value;
 	if (const AVDictionaryEntry* language = av_dict_get(stream->metadata, "language", nullptr, 0)) {
 		std::string code = language->value != nullptr ? language->value : "";
 		std::transform(code.begin(), code.end(), code.begin(),
@@ -1066,15 +1211,18 @@ std::string streamLanguage(const AVStream* stream) {
 
 std::string VideoPlayer::audioLanguage() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
-	if (impl->format != nullptr && !impl->audioStreamIndices.empty()) {
+	if (impl->format != nullptr && impl->audioStreamIndices.size() >= 2) {
 		const auto requested = impl->requestedAudioTrack.load();
 		const auto track = requested >= 0 ? requested : impl->selectedAudioTrack.load();
 		const auto index = impl->audioStreamIndices[std::clamp(track, 0,
 			static_cast<int>(impl->audioStreamIndices.size()) - 1)];
-		return streamLanguage(impl->format->streams[index]);
+		const auto language = streamLanguage(impl->format->streams[index], false);
+		if (language == "Unknown" || language == "unknown" || language == "SoundHandler")
+			return "N/A";
+		return language;
 	}
 #endif
-	return "Unknown";
+	return "N/A";
 }
 
 std::string VideoPlayer::subtitleLanguage() const {
@@ -1107,11 +1255,10 @@ void VideoPlayer::seek(double seconds, bool fastPreview) {
 
 void VideoPlayer::update() {}
 
-SDL_Surface* VideoPlayer::takeFrame(bool* preview) {
+std::unique_ptr<VideoFrame> VideoPlayer::takeFrame(bool* preview) {
 	std::lock_guard lock(impl->stateMutex);
-	SDL_Surface* result = impl->pendingFrame;
+	auto result = std::move(impl->pendingFrame);
 	if (preview != nullptr) *preview = result != nullptr && impl->pendingFrameIsPreview;
-	impl->pendingFrame = nullptr;
 	impl->pendingFrameIsPreview = false;
 	return result;
 }
@@ -1121,6 +1268,11 @@ std::string VideoPlayer::takeError() {
 	std::string result;
 	result.swap(impl->runtimeError);
 	return result;
+}
+
+void VideoPlayer::setOutputSize(int maxWidth, int maxHeight) {
+	impl->outputMaxWidth = std::max(0, maxWidth);
+	impl->outputMaxHeight = std::max(0, maxHeight);
 }
 
 bool VideoPlayer::playing() const { return impl->isPlaying; }

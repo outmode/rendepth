@@ -1,0 +1,66 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct VideoYUVDataFrag
+{
+    int format;
+    int colorSpace;
+    int fullRange;
+    int padding;
+};
+
+struct main0_out
+{
+    float4 outColor [[color(0)]];
+};
+
+struct main0_in
+{
+    float2 fragUV [[user(locn0)]];
+};
+
+fragment main0_out main0(main0_in in [[stage_in]], constant VideoYUVDataFrag& _28 [[buffer(0)]], texture2d<float> yTexture [[texture(0)]], texture2d<float> uTexture [[texture(1)]], texture2d<float> vTexture [[texture(2)]], sampler yTextureSmplr [[sampler(0)]], sampler uTextureSmplr [[sampler(1)]], sampler vTextureSmplr [[sampler(2)]])
+{
+    main0_out out = {};
+    float y = yTexture.sample(yTextureSmplr, in.fragUV).x;
+    float2 _36;
+    if (_28.format == 1)
+    {
+        _36 = uTexture.sample(uTextureSmplr, in.fragUV).xy;
+    }
+    else
+    {
+        _36 = float2(uTexture.sample(uTextureSmplr, in.fragUV).x, vTexture.sample(vTextureSmplr, in.fragUV).x);
+    }
+    float2 chroma = _36;
+    if (_28.fullRange == 0)
+    {
+        y = ((y * 255.0) - 16.0) / 219.0;
+        chroma = ((chroma * 255.0) - float2(128.0)) / float2(224.0);
+    }
+    else
+    {
+        chroma -= float2(0.5);
+    }
+    float2 _86;
+    if (_28.colorSpace == 0)
+    {
+        _86 = float2(0.2989999949932098388671875, 0.114000000059604644775390625);
+    }
+    else
+    {
+        _86 = select(float2(0.2626999914646148681640625, 0.0593000017106533050537109375), float2(0.2125999927520751953125, 0.072200000286102294921875), bool2(_28.colorSpace == 1));
+    }
+    float2 krKb = _86;
+    float kr = krKb.x;
+    float kb = krKb.y;
+    float kg = (1.0 - kr) - kb;
+    float cb = chroma.x;
+    float cr = chroma.y;
+    float3 rgb = float3(y + ((2.0 * (1.0 - kr)) * cr), (y - ((((2.0 * kb) * (1.0 - kb)) / kg) * cb)) - ((((2.0 * kr) * (1.0 - kr)) / kg) * cr), y + ((2.0 * (1.0 - kb)) * cb));
+    out.outColor = float4(fast::clamp(rgb, float3(0.0), float3(1.0)), 1.0);
+    return out;
+}
+

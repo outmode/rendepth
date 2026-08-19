@@ -173,7 +173,8 @@ if(RENDEPTH_COMPILE_SHADERS)
     set(RENDEPTH_SHADER_OUTPUTS)
     set(QUILTTEST_SHADER_OUTPUTS)
     foreach(shader IN ITEMS
-            Image.vert Image.frag Icon.vert Icon.frag Sprite.vert Sprite.frag Interlacer.frag
+            Image.vert Image.frag VideoYUV.vert VideoYUV.frag
+            Icon.vert Icon.frag Sprite.vert Sprite.frag Interlacer.frag
             QuiltTest.vert QuiltTest.frag)
         set(shader_spv "${CMAKE_SOURCE_DIR}/Shaders/Compiled/${shader}.spv")
         set(shader_dxil "${CMAKE_SOURCE_DIR}/Shaders/Compiled/${shader}.dxil")
@@ -240,6 +241,7 @@ elseif(APPLE)
                 ${CMAKE_SOURCE_DIR}/Assets/AppIcons.png ${CMAKE_SOURCE_DIR}/Assets/CircleIcon.png
                 ${CMAKE_SOURCE_DIR}/Assets/Lato.ttf
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Image.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Image.frag.msl
+                ${CMAKE_SOURCE_DIR}/Shaders/Compiled/VideoYUV.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/VideoYUV.frag.msl
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.frag.msl
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.frag.msl
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3.0.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3.dylib
@@ -269,6 +271,7 @@ elseif(APPLE)
                 MACOSX_PACKAGE_LOCATION Assets)
         set_source_files_properties(
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Image.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Image.frag.msl
+                ${CMAKE_SOURCE_DIR}/Shaders/Compiled/VideoYUV.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/VideoYUV.frag.msl
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.frag.msl
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.frag.msl
                 PROPERTIES
@@ -381,19 +384,37 @@ if(RENDEPTH_ENABLE_FFMPEG)
         if(PkgConfig_FOUND)
             pkg_check_modules(DAV1D QUIET IMPORTED_TARGET "dav1d >= 0.5.0")
         endif()
+        set(RENDEPTH_FFMPEG_COMMON_DECODERS
+                cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3,aac,aac_latm,ac3,alac,dca,eac3,flac,mp1,mp2,mp3,opus,pcm_alaw,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_mulaw,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_u8,truehd,vorbis,wavpack,wmalossless,wmapro,wmav1,wmav2,wmavoice,subrip,ass,mov_text,webvtt)
+        set(RENDEPTH_FFMPEG_COMMON_PARSERS
+                aac,aac_latm,ac3,dca,flac,mpegaudio,opus,vorbis)
         if(DAV1D_FOUND)
             set(RENDEPTH_FFMPEG_DAV1D_OPTIONS
                     --enable-libdav1d
-                    --enable-decoder=av1,libdav1d,cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3)
+                    --enable-decoder=av1,libdav1d,${RENDEPTH_FFMPEG_COMMON_DECODERS})
             set(RENDEPTH_FFMPEG_DAV1D_LINK PkgConfig::DAV1D)
             message(STATUS "Rendepth: using system dav1d for FFmpeg AV1 decoding")
         else()
             set(RENDEPTH_FFMPEG_DAV1D_OPTIONS
-                    --enable-decoder=av1,cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3)
+                    --enable-decoder=av1,${RENDEPTH_FFMPEG_COMMON_DECODERS})
             message(STATUS "Rendepth: system dav1d not found; using FFmpeg's native AV1 decoder")
         endif()
         include(ExternalProject)
         find_program(RENDEPTH_FFMPEG_MAKE NAMES gmake make REQUIRED)
+        set(RENDEPTH_FFMPEG_VAAPI_OPTIONS)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(RENDEPTH_VAAPI QUIET libva)
+            if(RENDEPTH_VAAPI_FOUND)
+                pkg_check_modules(RENDEPTH_VAAPI_DRM QUIET libva-drm)
+                list(APPEND RENDEPTH_FFMPEG_VAAPI_OPTIONS
+                        --enable-vaapi
+                        --enable-hwaccel=h264_vaapi
+                        --enable-hwaccel=hevc_vaapi
+                        --enable-hwaccel=vp8_vaapi
+                        --enable-hwaccel=vp9_vaapi)
+                message(STATUS "Rendepth: enabling optional FFmpeg VA-API decoding")
+            endif()
+        endif()
         set(RENDEPTH_FFMPEG_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg")
         set(RENDEPTH_FFMPEG_BUILD "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg-build")
         set(RENDEPTH_FFMPEG_LIBRARY_DIR "${RENDEPTH_FFMPEG_PREFIX}/lib")
@@ -414,7 +435,6 @@ if(RENDEPTH_ENABLE_FFMPEG)
                 --disable-avdevice
                 --disable-avfilter
                 --disable-iconv
-                --disable-x86asm
                 --disable-shared
                 --enable-static
                 --enable-pic
@@ -427,7 +447,9 @@ if(RENDEPTH_ENABLE_FFMPEG)
                 --enable-swscale
                 --enable-protocol=file
                 --enable-demuxer=avi,asf,matroska,mov,mpegps,mpegts,mpegvideo
+                --enable-parser=${RENDEPTH_FFMPEG_COMMON_PARSERS}
                 ${RENDEPTH_FFMPEG_DAV1D_OPTIONS}
+                ${RENDEPTH_FFMPEG_VAAPI_OPTIONS}
             BUILD_COMMAND "${RENDEPTH_FFMPEG_MAKE}"
             INSTALL_COMMAND "${RENDEPTH_FFMPEG_MAKE}" install
             BUILD_BYPRODUCTS
@@ -457,6 +479,14 @@ if(RENDEPTH_ENABLE_FFMPEG)
         ${RENDEPTH_FFMPEG_DAV1D_LINK} ${CMAKE_DL_LIBS})
     if(UNIX)
         target_link_libraries(Rendepth PUBLIC m pthread)
+    endif()
+    if(RENDEPTH_VAAPI_FOUND)
+        target_link_directories(Rendepth PUBLIC ${RENDEPTH_VAAPI_LIBRARY_DIRS})
+        target_link_libraries(Rendepth PUBLIC ${RENDEPTH_VAAPI_LIBRARIES})
+        if(RENDEPTH_VAAPI_DRM_FOUND)
+            target_link_directories(Rendepth PUBLIC ${RENDEPTH_VAAPI_DRM_LIBRARY_DIRS})
+            target_link_libraries(Rendepth PUBLIC ${RENDEPTH_VAAPI_DRM_LIBRARIES})
+        endif()
     endif()
 endif()
 

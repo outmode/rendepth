@@ -5,9 +5,26 @@
 #define RENDEPTH_VIDEO_PLAYER_H
 
 #include "SDL3/SDL.h"
+#include <array>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
+
+struct VideoFrame {
+	enum class Format { RGBA, NV12, YUV420P };
+	enum class ColorSpace { BT601, BT709, BT2020 };
+
+	Format format = Format::RGBA;
+	ColorSpace colorSpace = ColorSpace::BT709;
+	bool fullRange = false;
+	int width = 0;
+	int height = 0;
+	int outputWidth = 0;
+	int outputHeight = 0;
+	std::array<std::vector<std::uint8_t>, 3> planes;
+};
 
 class VideoPlayer {
 public:
@@ -20,8 +37,9 @@ public:
 	bool open(const std::filesystem::path& path, std::string& error);
 	void close();
 	void update();
-	SDL_Surface* takeFrame(bool* preview = nullptr);
+	std::unique_ptr<VideoFrame> takeFrame(bool* preview = nullptr);
 	std::string takeError();
+	void setOutputSize(int maxWidth, int maxHeight);
 	void seek(double seconds, bool fastPreview = false);
 	void setPlaying(bool playing);
 	void setVolume(double volume);

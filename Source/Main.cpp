@@ -82,6 +82,7 @@ static bool isSupportedVideo(const std::string& path) {
 
 static void serviceVideo();
 static void failVideoLoad(const std::string& error);
+static bool skipVideoBy(double seconds);
 
 glm::vec2 windowSize{};
 auto switchedImage = false;
@@ -189,6 +190,8 @@ static void failVideoLoad(const std::string& error) {
 
 static void serviceVideo() {
 	if (!activeVideo) return;
+	videoPlayer.setOutputSize(static_cast<int>(context.windowSize.x),
+		static_cast<int>(context.windowSize.y));
 	videoPlayer.update();
 	if (const std::string error = videoPlayer.takeError(); !error.empty()) {
 		failVideoLoad(error);
@@ -203,7 +206,7 @@ static void serviceVideo() {
 		shownSubtitle = subtitle;
 	}
 	bool previewFrame = false;
-	if (SDL_Surface* frame = videoPlayer.takeFrame(&previewFrame)) {
+	if (auto frame = videoPlayer.takeFrame(&previewFrame)) {
 		if (!videoFrameLoaded) {
 			context.imageType = Color_Only;
 			context.fileName = fileList[fileIndex].base;
@@ -211,17 +214,16 @@ static void serviceVideo() {
 			Image::displayHelp = false;
 			SDL_SetWindowTitle(context.window, fileList[fileIndex].name.c_str());
 			context.fileLink = fileList[fileIndex].link;
-			Image::updateVideoFrame(&context, frame, true,
+			Image::updateVideoFrame(&context, *frame, true,
 				videoPlayer.width(), videoPlayer.height(), true);
 			context.infoText = Core::getFileText(fileList[fileIndex], context.imageSize);
 			videoFrameLoaded = true;
 			doneLoadingImage = true;
 			checkMouseState();
 		} else {
-			Image::updateVideoFrame(&context, frame, false,
+			Image::updateVideoFrame(&context, *frame, false,
 				videoPlayer.width(), videoPlayer.height(), !previewFrame);
 		}
-		SDL_DestroySurface(frame);
 	}
 }
 auto preloadDir = 1;
@@ -394,7 +396,8 @@ static void queueRapidBrowseNavigation(bool previous) {
 	switchedImage = true;
 }
 
-void gotoPreviousImage() {
+void gotoPreviousImage(bool seekActiveVideo = true) {
+	if (seekActiveVideo && skipVideoBy(-15.0)) return;
 	noteRapidBrowseNavigation();
 	if (rapidBrowseMode && isConverting) {
 		isConverting = false;
@@ -438,7 +441,8 @@ void gotoPreviousImage() {
 	switchedImage = true;
 }
 
-void gotoNextImage() {
+void gotoNextImage(bool seekActiveVideo = true) {
+	if (seekActiveVideo && skipVideoBy(15.0)) return;
 	noteRapidBrowseNavigation();
 	if (rapidBrowseMode && isConverting) {
 		isConverting = false;
@@ -636,7 +640,7 @@ Icon IconBack = {
 			sizeStandard,
 			{ positionEdge, 0.0 },
 			alignLeftCenter, areaTopLeftImage, areaLeftSide };},
-	[]() { gotoPreviousImage(); },
+	[]() { gotoPreviousImage(false); },
 	1.0,
 	true,
 	false
@@ -656,7 +660,7 @@ Icon IconForward = {
 			{ -positionEdge, 0.0 },
 			alignRightCenter, areaRightSide, areaBottomRight };
 	},
-	[]() { gotoNextImage(); },
+	[]() { gotoNextImage(false); },
 	1.0,
 	true,
 	false
@@ -1277,6 +1281,12 @@ static void seekVideoFromSlider() {
 		videoPlayer.seek(target, true);
 		videoScrubLastPreviewTime = now;
 	}
+}
+
+static bool skipVideoBy(double seconds) {
+	if (!activeVideo) return false;
+	if (videoPlayer.ready()) videoPlayer.seek(videoPlayer.position() + seconds);
+	return true;
 }
 
 static void updateStrengthSlider() {
@@ -2779,6 +2789,25 @@ glm::vec2 getCoordinates(glm::vec4 positionAlignment, glm::vec2 aspectScale = gl
 	return position * aspectScale * context.displayScale + alignment * windowSize;
 }
 
+static bool isInsideSliderTrack(const Icon& icon, const glm::vec2& aspectScale) {
+	if (icon.mode != IconMode::Slider || icon.slider.size.x <= 0.0f) return false;
+	const auto canvas = icon.canvas();
+	const auto center = getCoordinates(glm::vec4(canvas.position, canvas.alignment), aspectScale);
+	const auto size = icon.slider.size * aspectScale * context.displayScale;
+	return context.mouse.x > center.x - size.x * 0.5f &&
+		context.mouse.x < center.x + size.x * 0.5f &&
+		context.mouse.y > center.y - size.y * 0.5f &&
+		context.mouse.y < center.y + size.y * 0.5f;
+}
+
+static double getSliderPercentAtMouse(const Icon& icon, const glm::vec2& aspectScale) {
+	const auto canvas = icon.canvas();
+	const auto center = getCoordinates(glm::vec4(canvas.position, canvas.alignment), aspectScale);
+	const auto width = icon.slider.size.x * aspectScale.x * context.displayScale;
+	return width > 0.0f ? glm::clamp(
+		(context.mouse.x - (center.x - width * 0.5f)) / width, 0.0f, 1.0f) : 0.0;
+}
+
 void checkMouseState() {
 	isIconCaptured = false;
 	auto aspectScale = glm::vec2(1.0);
@@ -2828,7 +2857,8 @@ void checkMouseState() {
 			auto iconX = (context.mouse.x - iconPosition.x);
 			auto iconY = (context.mouse.y - iconPosition.y) * iconAspect;
 			auto isInsideIcon = iconX * iconX + iconY * iconY <= iconSize.x * iconSize.x;
-			if ((isInsideIcon && icon.active) || &icon == currentSlider) {
+			auto isInsideSlider = isInsideSliderTrack(icon, aspectScale);
+			if (((isInsideIcon || isInsideSlider) && icon.active) || &icon == currentSlider) {
 				if (icon.type != IconType::Loading) {
 					icon.state = IconState::Over;
 					isIconCaptured = true;
@@ -3469,6 +3499,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			context.mouse.y = event->button.y * Image::mouseScale;
 			mouseLastActive = getTimeNow();
 			checkMouseState();
+			auto sliderAspectScale = glm::vec2(1.0);
+			if (preferredStereoMode == SBS_Full && isFullscreen)
+				sliderAspectScale = glm::vec2(2.0, 1.0);
 			mouseIsDown = true;
 			bool languageButtonClicked = false;
 			for (auto& icon : appIcons) {
@@ -3520,6 +3553,10 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 								videoScrubLastPreviewTime =
 									getTimeNow() - videoScrubPreviewInterval;
 								videoPlayer.setPlaying(false);
+							}
+							if (isInsideSliderTrack(icon, sliderAspectScale)) {
+								setSliderPercent(icon, getSliderPercentAtMouse(icon, sliderAspectScale));
+								if (icon.callback) icon.callback();
 							}
 						}
 					}

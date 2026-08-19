@@ -22,6 +22,7 @@
 #define RENDEPTH_IMAGE_H
 
 #include "Core.h"
+#include "VideoPlayer.h"
 #include "Utils.h"
 #include "Style.h"
 #define GLM_ENABLE_EXPERIMENTAL
@@ -36,11 +37,15 @@ public:
 	~Image() = default;
 
 	inline static SDL_GPUGraphicsPipeline* imagePipeline = nullptr;
+	inline static SDL_GPUGraphicsPipeline* videoYUVPipeline = nullptr;
 	inline static SDL_GPUGraphicsPipeline* iconPipeline = nullptr;
 	inline static SDL_GPUGraphicsPipeline* spritePipeline = nullptr;
 	inline static SDL_GPUBuffer* sharedVertexBuffer = nullptr;
 	inline static SDL_GPUBuffer* sharedIndexBuffer = nullptr;
 	inline static SDL_GPUTexture* imageTexture = nullptr;
+	inline static SDL_GPUTexture* videoYTexture = nullptr;
+	inline static SDL_GPUTexture* videoUTexture = nullptr;
+	inline static SDL_GPUTexture* videoVTexture = nullptr;
 	inline static SDL_GPUTexture* blurTexture = nullptr;
 	inline static SDL_GPUTexture* blurTextureNext = nullptr;
 	inline static SDL_GPUTexture* iconTexture = nullptr;
@@ -97,6 +102,13 @@ public:
 		int swapLeftRight;
 		int force;
 		float blurMix;
+	};
+
+	struct VideoYUVDataFrag {
+		int format;
+		int colorSpace;
+		int fullRange;
+		int padding;
 	};
 
 	struct InterlacerDataFrag {
@@ -178,7 +190,7 @@ public:
 	static int init(Context* context, FileInfo& imageInfo);
 	static int reloadShader(Context* context);
 	static int load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData);
-	static int updateVideoFrame(Context* context, SDL_Surface* imageData, bool firstFrame,
+	static int updateVideoFrame(Context* context, const VideoFrame& frame, bool firstFrame,
 		int logicalWidth, int logicalHeight, bool updateBlur = true);
 	static void updateVideoSubtitle(Context* context, const std::string& text);
 	static int draw(Context* context);
