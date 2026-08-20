@@ -152,6 +152,7 @@ auto lastTime = 0.0;
 auto lastClick = 0.0;
 auto lastClickTime = 0.0;
 auto doubleClickTime = 0.25;
+static bool leftClickConsumedByUI = false;
 auto lastSwitchTime = 0.0;
 auto mouseLastActive = 0.0;
 auto mouseMoveWait = 3.0;
@@ -1269,6 +1270,7 @@ static std::array<std::string, 3> videoDepthModelFiles = {
 	"DA3-SMALL-392.onnx"
 };
 static std::array<int, 3> videoDepthProcessSizes = { 280, 336, 392 };
+static constexpr std::array<double, 3> videoDepthRates = { 15.0, 12.0, 10.0 };
 
 static void setVideoDepthFallbackMode() {
 	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
@@ -1305,8 +1307,7 @@ static bool startVideoDepth() {
 		? homePath / "Models" : std::filesystem::path(modelDirectory);
 	config.modelFilename = videoDepthModelFiles[modelOption];
 	config.processSize = videoDepthProcessSizes[modelOption];
-	config.targetFramesPerSecond = 15.0;
-	config.temporalResponse = 0.9f;
+	config.targetFramesPerSecond = videoDepthRates[modelOption];
 	#ifdef RENDEPTH_ENABLE_CUDA
 	config.provider = DepthEstimator::Provider::CUDA;
 	#elif defined(RENDEPTH_ENABLE_ROCM)
@@ -1372,10 +1373,8 @@ static void serviceVideoDepth() {
 
 	std::unique_ptr<VideoDepthFrame> selected;
 	if (lastVideoFrame != nullptr) {
-		// Depth is generated from frames decoded ahead of playback.  Do not use
-		// a future depth map for the currently displayed color frame: moving
-		// objects would appear spatially ahead of their color.  A late result is
-		// handled by retaining the previously displayed depth below.
+		// Only use depth at or immediately before the displayed color frame. A
+		// future depth map can make moving silhouettes visibly misregister.
 		const double selectionTime = lastVideoFrame->presentationTime + 0.001;
 		while (!bufferedVideoDepthFrames.empty() &&
 			bufferedVideoDepthFrames.front()->generation != lastVideoFrame->generation)
@@ -1561,7 +1560,7 @@ static std::string filterInfoFontText(const std::string& text) {
 		if (validRange && TTF_FontHasGlyph(Image::infoFont, codepoint))
 			filtered.append(text, index, codepointLength);
 		else
-			filtered += '-';
+			filtered += '?';
 		index += valid ? codepointLength : 1;
 	}
 	return filtered;
@@ -3867,6 +3866,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			context.mouse.y = event->button.y * Image::mouseScale;
 			mouseLastActive = getTimeNow();
 			checkMouseState();
+			leftClickConsumedByUI = isIconCaptured || context.displayMenu;
 			auto sliderAspectScale = glm::vec2(1.0);
 			if (preferredStereoMode == SBS_Full && isFullscreen)
 				sliderAspectScale = glm::vec2(2.0, 1.0);
@@ -3983,6 +3983,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		if (event->button.button == SDL_BUTTON_LEFT) {
 			finishSliderDrag();
 			auto timeNow = getTimeNow();
+			if (leftClickConsumedByUI) {
+				lastClick = 0.0;
+				leftClickConsumedByUI = false;
+				return SDL_APP_CONTINUE;
+			}
 			auto clickDiff = timeNow - lastClick;
 			lastClick = timeNow;
 			if (!isIconCaptured && !context.displayMenu) {

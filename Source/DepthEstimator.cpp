@@ -17,19 +17,6 @@
 
 namespace {
 
-constexpr int lanczosRadius = 3;
-constexpr float pi = 3.14159265358979323846f;
-
-float lanczosWeight(float distance) {
-	distance = std::abs(distance);
-	if (distance >= static_cast<float>(lanczosRadius)) return 0.0f;
-	if (distance < std::numeric_limits<float>::epsilon()) return 1.0f;
-	const float x = pi * distance;
-	return (std::sin(x) / x) *
-		(std::sin(x / static_cast<float>(lanczosRadius)) /
-			(x / static_cast<float>(lanczosRadius)));
-}
-
 }
 
 struct DepthEstimator::State {
@@ -193,6 +180,13 @@ DepthEstimator::Result DepthEstimator::predict(const SDL_Surface* image, std::st
 		error = "Input image has an unknown SDL pixel format.";
 		return result;
 	}
+	const auto channelValue = [](Uint32 packed, Uint32 mask, Uint8 shift,
+		Uint8 bits) {
+		if (mask == 0 || bits == 0) return 0.0f;
+		const Uint32 value = (packed & mask) >> shift;
+		const Uint32 maximum = (1u << bits) - 1u;
+		return static_cast<float>(value) / static_cast<float>(maximum);
+	};
 	const float scale = std::min(static_cast<float>(processWidth) / image->w,
 		static_cast<float>(processHeight) / image->h);
 	const int contentWidth = std::max(1, static_cast<int>(std::lround(image->w * scale)));
@@ -209,40 +203,46 @@ DepthEstimator::Result DepthEstimator::predict(const SDL_Surface* image, std::st
 			float blue = 0.406f;
 			if (x >= contentOffsetX && x < contentOffsetX + contentWidth &&
 				y >= contentOffsetY && y < contentOffsetY + contentHeight) {
-				const float sourceX = (static_cast<float>(x - contentOffsetX) + 0.5f) / scale - 0.5f;
-				const float sourceY = (static_cast<float>(y - contentOffsetY) + 0.5f) / scale - 0.5f;
-				const int sourceXBase = static_cast<int>(std::floor(sourceX));
-				const int sourceYBase = static_cast<int>(std::floor(sourceY));
-				float totalWeight = 0.0f;
-				float redSum = 0.0f, greenSum = 0.0f, blueSum = 0.0f;
-
-				for (int sampleY = sourceYBase - lanczosRadius + 1;
-					sampleY <= sourceYBase + lanczosRadius; ++sampleY) {
-					const int clampedY = std::clamp(sampleY, 0, image->h - 1);
-					const float yWeight = lanczosWeight(sourceY - sampleY);
-					for (int sampleX = sourceXBase - lanczosRadius + 1;
-						sampleX <= sourceXBase + lanczosRadius; ++sampleX) {
-						const int clampedX = std::clamp(sampleX, 0, image->w - 1);
-						const float weight = yWeight * lanczosWeight(sourceX - sampleX);
-						if (weight == 0.0f) continue;
-						const auto* pixel = static_cast<const Uint8*>(image->pixels) +
-							clampedY * image->pitch + clampedX * bytesPerPixel;
-						Uint8 sampleRed = 0, sampleGreen = 0, sampleBlue = 0, alpha = 0;
-						Uint32 packedPixel = 0;
-						std::memcpy(&packedPixel, pixel, std::min(bytesPerPixel, 4));
-						SDL_GetRGBA(packedPixel, inputFormat, nullptr,
-							&sampleRed, &sampleGreen, &sampleBlue, &alpha);
-						redSum += static_cast<float>(sampleRed) / 255.0f * weight;
-						greenSum += static_cast<float>(sampleGreen) / 255.0f * weight;
-						blueSum += static_cast<float>(sampleBlue) / 255.0f * weight;
-						totalWeight += weight;
-					}
-				}
-				if (std::abs(totalWeight) > std::numeric_limits<float>::epsilon()) {
-					red = redSum / totalWeight;
-					green = greenSum / totalWeight;
-					blue = blueSum / totalWeight;
-				}
+				const float sourceX = std::clamp(
+					(static_cast<float>(x - contentOffsetX) + 0.5f) / scale - 0.5f,
+					0.0f, static_cast<float>(image->w - 1));
+				const float sourceY = std::clamp(
+					(static_cast<float>(y - contentOffsetY) + 0.5f) / scale - 0.5f,
+					0.0f, static_cast<float>(image->h - 1));
+				const int x0 = static_cast<int>(sourceX);
+				const int y0 = static_cast<int>(sourceY);
+				const int x1 = std::min(image->w - 1, x0 + 1);
+				const int y1 = std::min(image->h - 1, y0 + 1);
+				const float fx = sourceX - static_cast<float>(x0);
+				const float fy = sourceY - static_cast<float>(y0);
+				auto readPixel = [&](int pixelX, int pixelY) {
+					std::array<float, 3> sample{};
+					const auto* pixel = static_cast<const Uint8*>(image->pixels) +
+						pixelY * image->pitch + pixelX * bytesPerPixel;
+					Uint32 packedPixel = 0;
+					std::memcpy(&packedPixel, pixel, std::min(bytesPerPixel, 4));
+					sample[0] = channelValue(packedPixel, inputFormat->Rmask,
+						inputFormat->Rshift, inputFormat->Rbits);
+					sample[1] = channelValue(packedPixel, inputFormat->Gmask,
+						inputFormat->Gshift, inputFormat->Gbits);
+					sample[2] = channelValue(packedPixel, inputFormat->Bmask,
+						inputFormat->Bshift, inputFormat->Bbits);
+					return sample;
+				};
+				const auto topLeft = readPixel(x0, y0);
+				const auto topRight = readPixel(x1, y0);
+				const auto bottomLeft = readPixel(x0, y1);
+				const auto bottomRight = readPixel(x1, y1);
+				auto bilinear = [fx, fy](float topLeftValue, float topRightValue,
+					float bottomLeftValue, float bottomRightValue) {
+					const float top = topLeftValue + (topRightValue - topLeftValue) * fx;
+					const float bottom = bottomLeftValue +
+						(bottomRightValue - bottomLeftValue) * fx;
+					return top + (bottom - top) * fy;
+				};
+				red = bilinear(topLeft[0], topRight[0], bottomLeft[0], bottomRight[0]);
+				green = bilinear(topLeft[1], topRight[1], bottomLeft[1], bottomRight[1]);
+				blue = bilinear(topLeft[2], topRight[2], bottomLeft[2], bottomRight[2]);
 			}
 
 			const size_t offset = static_cast<size_t>(y * processWidth + x);
@@ -308,20 +308,45 @@ DepthEstimator::Result DepthEstimator::predict(const SDL_Surface* image, std::st
 			return result;
 		}
 		const float* outputData = outputs[0].GetTensorData<float>();
-		const int cropX0 = std::clamp(static_cast<int>(std::lround(
-			static_cast<double>(contentOffsetX) * result.width / processWidth)), 0, result.width - 1);
-		const int cropY0 = std::clamp(static_cast<int>(std::lround(
-			static_cast<double>(contentOffsetY) * result.height / processHeight)), 0, result.height - 1);
-		const int cropX1 = std::clamp(static_cast<int>(std::lround(
-			static_cast<double>(contentOffsetX + contentWidth) * result.width / processWidth)), cropX0 + 1, result.width);
-		const int cropY1 = std::clamp(static_cast<int>(std::lround(
-			static_cast<double>(contentOffsetY + contentHeight) * result.height / processHeight)), cropY0 + 1, result.height);
+		// Crop by output-pixel centers rather than rounding the rectangle
+		// boundaries. This prevents a letterbox/border row from being included
+		// when the model output and input sizes do not map exactly.
+		const auto firstPixelAtOrInside = [](int boundary, int outputSize,
+			int processSize) {
+			return static_cast<int>(std::ceil(
+				static_cast<double>(boundary) * outputSize / processSize - 0.5));
+		};
+		const int cropX0 = std::clamp(firstPixelAtOrInside(
+			contentOffsetX, result.width, processWidth), 0, result.width - 1);
+		const int cropY0 = std::clamp(firstPixelAtOrInside(
+			contentOffsetY, result.height, processHeight), 0, result.height - 1);
+		const int cropX1 = std::clamp(firstPixelAtOrInside(
+			contentOffsetX + contentWidth, result.width, processWidth), cropX0 + 1, result.width);
+		const int cropY1 = std::clamp(firstPixelAtOrInside(
+			contentOffsetY + contentHeight, result.height, processHeight), cropY0 + 1, result.height);
 		const int croppedWidth = cropX1 - cropX0;
 		const int croppedHeight = cropY1 - cropY0;
 		std::vector<float> croppedValues(static_cast<size_t>(croppedWidth) * croppedHeight);
 		for (int y = 0; y < croppedHeight; ++y) {
 			std::copy_n(outputData + static_cast<size_t>(cropY0 + y) * result.width + cropX0,
 				croppedWidth, croppedValues.data() + static_cast<size_t>(y) * croppedWidth);
+		}
+		// DA3 can emit extreme-valued pixels immediately inside the letterbox
+		// crop. Reuse the nearest interior pixels as a two-pixel gutter on every
+		// side without changing the output dimensions.
+		constexpr int gutter = 2;
+		if (croppedWidth > gutter * 2 && croppedHeight > gutter * 2) {
+			const int lastInteriorX = croppedWidth - gutter - 1;
+			const int lastInteriorY = croppedHeight - gutter - 1;
+			for (int y = 0; y < croppedHeight; ++y) {
+				const int sourceY = std::clamp(y, gutter, lastInteriorY);
+				for (int x = 0; x < croppedWidth; ++x) {
+					const int sourceX = std::clamp(x, gutter, lastInteriorX);
+					if (sourceX != x || sourceY != y)
+						croppedValues[static_cast<size_t>(y) * croppedWidth + x] =
+							croppedValues[static_cast<size_t>(sourceY) * croppedWidth + sourceX];
+				}
+			}
 		}
 		result.width = croppedWidth;
 		result.height = croppedHeight;

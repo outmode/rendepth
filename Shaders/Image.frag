@@ -390,8 +390,15 @@ void main() {
 			imageColor.rgb = getAnaglyphGrayscale(imageColor.rgb);
 		}
 	} else if (mode == RGB_Depth) {
-		imageColor = separateDepth == 1 ? getColor(depthTexture, depthUV) :
-			getColor(imageTexture, depthUV);
+		if (separateDepth == 1) {
+			// Video depth is uploaded as a single-channel R16 texture. Replicate
+			// it across RGB so the depth preview remains grayscale like embedded
+			// image depth.
+			float depthValue = getRawDepth(depthTexture, depthUV);
+			imageColor = vec4(vec3(depthValue), 1.0);
+		} else {
+			imageColor = getColor(imageTexture, depthUV);
+		}
 		if (force == 1) imageColor.rgb = vec3(1.0);
 	} else if (mode == Depth_Zoom) {
 		vec2 zoomFragUV = fragUV * 0.95 + 0.025;

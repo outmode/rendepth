@@ -39,7 +39,6 @@ public:
 		int processSize = 560;
 		unsigned int intraOpThreads = 0;
 		double targetFramesPerSecond = 10.0;
-		float temporalResponse = 0.75f;
 	};
 
 	VideoDepthProcessor() = default;
@@ -83,7 +82,6 @@ private:
 	float smoothedHigh = 1.0f;
 	bool haveRange = false;
 	std::vector<float> previousLuminance;
-	std::vector<float> filteredDepth;
 };
 
 #endif

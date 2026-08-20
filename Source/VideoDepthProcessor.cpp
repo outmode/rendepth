@@ -15,6 +15,7 @@ void applyLightGaussianBlur(std::vector<float>& values, int width, int height) {
 	if (width <= 1 || height <= 1 ||
 		values.size() != static_cast<size_t>(width) * height) return;
 
+	const std::vector<float> original = values;
 	std::vector<float> horizontal(values.size());
 	for (int y = 0; y < height; ++y) {
 		const size_t row = static_cast<size_t>(y) * width;
@@ -33,6 +34,9 @@ void applyLightGaussianBlur(std::vector<float>& values, int width, int height) {
 			values[row + x] = (horizontal[top + x] + horizontal[row + x] * 2.0f +
 				horizontal[bottom + x]) * 0.25f;
 	}
+	constexpr float blurStrength = 0.5f;
+	for (size_t index = 0; index < values.size(); ++index)
+		values[index] = original[index] + (values[index] - original[index]) * blurStrength;
 }
 
 }
@@ -128,7 +132,6 @@ void VideoDepthProcessor::clearTemporalState() {
 	smoothedHigh = 1.0f;
 	haveRange = false;
 	previousLuminance.clear();
-	filteredDepth.clear();
 }
 
 VideoDepthFrame VideoDepthProcessor::stabilize(const DepthEstimator::Result& depth,
@@ -182,7 +185,7 @@ VideoDepthFrame VideoDepthProcessor::stabilize(const DepthEstimator::Result& dep
 		smoothedHigh = currentHigh;
 		haveRange = true;
 	} else {
-		constexpr float rangeResponse = 0.2f;
+		constexpr float rangeResponse = 0.25f;
 		smoothedLow += (currentLow - smoothedLow) * rangeResponse;
 		smoothedHigh += (currentHigh - smoothedHigh) * rangeResponse;
 	}
@@ -194,22 +197,14 @@ VideoDepthFrame VideoDepthProcessor::stabilize(const DepthEstimator::Result& dep
 		normalized[index] = 1.0f - std::clamp((value - smoothedLow) / range, 0.0f, 1.0f);
 	}
 	applyLightGaussianBlur(normalized, depth.width, depth.height);
-
 	result.width = depth.width;
 	result.height = depth.height;
 	result.presentationTime = source.presentationTime;
 	result.generation = source.generation;
-	if (sceneCut || filteredDepth.size() != normalized.size()) {
-		filteredDepth = std::move(normalized);
-	} else {
-		const float depthResponse = std::clamp(activeConfig.temporalResponse, 0.0f, 1.0f);
-		for (size_t index = 0; index < normalized.size(); ++index)
-			filteredDepth[index] += (normalized[index] - filteredDepth[index]) * depthResponse;
-	}
-	result.values.resize(filteredDepth.size());
-	for (size_t index = 0; index < filteredDepth.size(); ++index)
+	result.values.resize(normalized.size());
+	for (size_t index = 0; index < normalized.size(); ++index)
 		result.values[index] = static_cast<std::uint16_t>(
-			std::lround(std::clamp(filteredDepth[index], 0.0f, 1.0f) * 65535.0f));
+			std::lround(std::clamp(normalized[index], 0.0f, 1.0f) * 65535.0f));
 	temporalGeneration = source.generation;
 	temporalWidth = depth.width;
 	temporalHeight = depth.height;
