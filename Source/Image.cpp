@@ -30,12 +30,19 @@
 #include <limits>
 
 namespace {
+	static_assert(sizeof(Image::ImageDataFrag) % 16 == 0,
+		"Image shader uniform data must remain 16-byte aligned.");
 	using BlurClock = std::chrono::steady_clock;
 	constexpr auto videoBlurInterval = std::chrono::milliseconds(670);
 	constexpr Uint32 blurSnapshotSize = 32;
 	constexpr Uint32 blurSnapshotMipLevels = 6;
 	BlurClock::time_point blurTransitionStart{};
 	bool videoBlurActive = false;
+	BlurClock::time_point videoSolidTransitionStart{};
+	glm::vec4 videoSolidTransitionSource{};
+	glm::vec4 videoSolidTransitionTarget{};
+	bool videoSolidTransitionActive = false;
+	bool videoSolidColorValid = false;
 	glm::ivec2 videoYUVLumaSize{};
 	glm::ivec2 videoYUVChromaSize{};
 	VideoFrame::Format videoYUVFormat = VideoFrame::Format::RGBA;
@@ -50,6 +57,40 @@ namespace {
 			packedSize.y /= gridSize.y;
 		}
 		return packedSize;
+	}
+
+	glm::vec4 getVideoBackgroundColor(const VideoFrame& frame) {
+		if (frame.inferenceWidth <= 0 || frame.inferenceHeight <= 0 ||
+			frame.inferenceRGBA.size() < static_cast<size_t>(frame.inferenceWidth) *
+				frame.inferenceHeight * 4) return Image::clearColorSolid;
+		glm::vec4 result{};
+		constexpr int sampleSize = 4;
+		for (int y = 0; y < sampleSize; ++y) {
+			const int sampleY = std::min(frame.inferenceHeight - 1,
+				y * frame.inferenceHeight / sampleSize);
+			for (int x = 0; x < sampleSize; ++x) {
+				const int sampleX = std::min(frame.inferenceWidth - 1,
+					x * frame.inferenceWidth / sampleSize);
+				const size_t offset = static_cast<size_t>(sampleY * frame.inferenceWidth +
+					sampleX) * 4;
+				result += glm::vec4(frame.inferenceRGBA[offset],
+					frame.inferenceRGBA[offset + 1], frame.inferenceRGBA[offset + 2], 255.0f);
+			}
+		}
+		result /= static_cast<float>(sampleSize * sampleSize * 255);
+		result.a = 1.0f;
+		return glm::mix(glm::vec4(0.1f, 0.1f, 0.1f, 1.0f), result, 0.9f);
+	}
+
+	void updateVideoSolidColor() {
+		if (!videoSolidTransitionActive) return;
+		const auto elapsed = BlurClock::now() - videoSolidTransitionStart;
+		const float blend = glm::clamp(
+			std::chrono::duration<float>(elapsed).count() /
+			std::chrono::duration<float>(videoBlurInterval).count(), 0.0f, 1.0f);
+		Image::clearColorSolid = glm::mix(videoSolidTransitionSource,
+			videoSolidTransitionTarget, blend);
+		if (blend >= 1.0f) videoSolidTransitionActive = false;
 	}
 
 	bool readCalibrationNumber(const rapidjson::Value& object, const char* name, float& result) {
@@ -374,8 +415,8 @@ int Image::updateVideoFrame(Context* context, const VideoFrame& frame, bool firs
 	const glm::vec2 packedImageSize = {
 		(float)(logicalWidth > 0 ? logicalWidth : frame.width),
 		(float)(logicalHeight > 0 ? logicalHeight : frame.height)};
-	context->imageSize = getStereoImageSize(
-		packedImageSize, context->imageType, context->gridSize);
+	context->imageSize = getStereoImageSize(packedImageSize,
+		videoDepthTexture != nullptr ? Color_Only : context->imageType, context->gridSize);
 	imageSize = context->imageSize;
 	updateSize(context);
 	if (frame.format == VideoFrame::Format::RGBA) {
@@ -524,20 +565,104 @@ int Image::updateVideoFrame(Context* context, const VideoFrame& frame, bool firs
 		SDL_ReleaseGPUTransferBuffer(context->device, transfer);
 	}
 	videoTextureSize = frameSize;
+	bool refreshedVideoBackground = false;
+	if (firstFrame) videoSolidColorValid = false;
 	if (firstFrame || (updateBlur && (blurTexture == nullptr || blurTextureNext == nullptr))) {
 		blitBlurTexture(context, imageTexture, static_cast<Uint32>(frame.outputWidth),
 			static_cast<Uint32>(frame.outputHeight));
 		videoBlurActive = true;
 		blurTransitionStart = BlurClock::now();
 		imageDataFrag.blurMix = 0.0f;
+		refreshedVideoBackground = true;
 	} else if (updateBlur && BlurClock::now() - blurTransitionStart >= videoBlurInterval) {
 		std::swap(blurTexture, blurTextureNext);
 		blitBlurTexture(context, imageTexture, static_cast<Uint32>(frame.outputWidth),
 			static_cast<Uint32>(frame.outputHeight), true);
 		blurTransitionStart = BlurClock::now();
 		imageDataFrag.blurMix = 0.0f;
+		refreshedVideoBackground = true;
+	}
+	if (refreshedVideoBackground && !frame.inferenceRGBA.empty()) {
+		const glm::vec4 nextColor = getVideoBackgroundColor(frame);
+		if (!videoSolidColorValid) {
+			clearColorSolid = nextColor;
+			videoSolidColorValid = true;
+			videoSolidTransitionActive = false;
+		} else {
+			updateVideoSolidColor();
+			videoSolidTransitionSource = clearColorSolid;
+			videoSolidTransitionTarget = nextColor;
+			videoSolidTransitionStart = BlurClock::now();
+			videoSolidTransitionActive = true;
+		}
 	}
 	return 0;
+}
+
+int Image::updateVideoDepth(Context* context, const std::vector<std::uint16_t>& values,
+		int width, int height) {
+	if (context == nullptr || context->device == nullptr || width <= 0 || height <= 0 ||
+		values.size() != static_cast<size_t>(width) * height) return -1;
+	const glm::ivec2 size{width, height};
+	const bool reuseTexture = videoDepthTexture != nullptr && videoDepthTextureSize == size;
+	if (!reuseTexture) {
+		if (videoDepthTexture != nullptr)
+			SDL_ReleaseGPUTexture(context->device, videoDepthTexture);
+		const SDL_GPUTextureCreateInfo textureInfo{
+			.type = SDL_GPU_TEXTURETYPE_2D,
+			.format = SDL_GPU_TEXTUREFORMAT_R16_UNORM,
+			.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER,
+			.width = static_cast<Uint32>(width),
+			.height = static_cast<Uint32>(height),
+			.layer_count_or_depth = 1,
+			.num_levels = 1
+		};
+		videoDepthTexture = SDL_CreateGPUTexture(context->device, &textureInfo);
+		if (videoDepthTexture == nullptr) return -1;
+		SDL_SetGPUTextureName(context->device, videoDepthTexture, "Video Depth Texture");
+		videoDepthTextureSize = size;
+	}
+
+	const size_t uploadBytes = values.size() * sizeof(std::uint16_t);
+	if (uploadBytes > std::numeric_limits<Uint32>::max()) return -1;
+	const SDL_GPUTransferBufferCreateInfo transferInfo{
+		.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+		.size = static_cast<Uint32>(uploadBytes)
+	};
+	SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(context->device, &transferInfo);
+	if (transfer == nullptr) return -1;
+	void* mapped = SDL_MapGPUTransferBuffer(context->device, transfer, false);
+	if (mapped == nullptr) {
+		SDL_ReleaseGPUTransferBuffer(context->device, transfer);
+		return -1;
+	}
+	SDL_memcpy(mapped, values.data(), uploadBytes);
+	SDL_UnmapGPUTransferBuffer(context->device, transfer);
+	SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(context->device);
+	if (commands == nullptr) {
+		SDL_ReleaseGPUTransferBuffer(context->device, transfer);
+		return -1;
+	}
+	SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commands);
+	const SDL_GPUTextureTransferInfo source{.transfer_buffer = transfer};
+	const SDL_GPUTextureRegion destination{
+		.texture = videoDepthTexture,
+		.w = static_cast<Uint32>(width),
+		.h = static_cast<Uint32>(height),
+		.d = 1
+	};
+	SDL_UploadToGPUTexture(copy, &source, &destination, reuseTexture);
+	SDL_EndGPUCopyPass(copy);
+	SDL_SubmitGPUCommandBuffer(commands);
+	SDL_ReleaseGPUTransferBuffer(context->device, transfer);
+	return 0;
+}
+
+void Image::clearVideoDepth(Context* context) {
+	if (context != nullptr && context->device != nullptr && videoDepthTexture != nullptr)
+		SDL_ReleaseGPUTexture(context->device, videoDepthTexture);
+	videoDepthTexture = nullptr;
+	videoDepthTextureSize = {};
 }
 
 void Image::updateVideoSubtitle(Context* context, const std::string& text) {
@@ -885,7 +1010,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	}
 
 	SDL_GPUShader* imageFragmentShader = Core::loadShader(context->device,
-		"Image.frag", 3, 1, 0, 0);
+		"Image.frag", 4, 1, 0, 0);
 	if (imageFragmentShader == nullptr) {
 		SDL_Log("Failed To Create Image Fragment Shader.");
 		return -1;
@@ -903,7 +1028,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 		return -1;
 	}
 	SDL_GPUShader* interlacerFragmentShader = Core::loadShader(context->device,
-		"Interlacer.frag", 1, 1, 0, 0);
+		"Interlacer.frag", 2, 1, 0, 0);
 	if (interlacerFragmentShader == nullptr) {
 		SDL_Log("Failed To Create Interlacer Fragment Shader.");
 		return -1;
@@ -1234,7 +1359,7 @@ int Image::reloadShader(Context* context) {
 	SDL_GPUShader* vertexShader = Core::loadShader(context->device,
 		"Image.vert", 0, 1, 0, 0);
 	SDL_GPUShader* fragmentShader = Core::loadShader(context->device,
-		"Image.frag", 3, 1, 0, 0);
+		"Image.frag", 4, 1, 0, 0);
 	if (vertexShader == nullptr || fragmentShader == nullptr) {
 		if (vertexShader != nullptr) SDL_ReleaseGPUShader(context->device, vertexShader);
 		if (fragmentShader != nullptr) SDL_ReleaseGPUShader(context->device, fragmentShader);
@@ -1309,7 +1434,7 @@ int Image::reloadInterlacerShader(Context* context) {
 	SDL_GPUShader* vertexShader = Core::loadShader(context->device,
 		"Image.vert", 0, 1, 0, 0);
 	SDL_GPUShader* fragmentShader = Core::loadShader(context->device,
-		"Interlacer.frag", 1, 1, 0, 0);
+		"Interlacer.frag", 2, 1, 0, 0);
 	if (vertexShader == nullptr || fragmentShader == nullptr) {
 		if (vertexShader != nullptr) SDL_ReleaseGPUShader(context->device, vertexShader);
 		if (fragmentShader != nullptr) SDL_ReleaseGPUShader(context->device, fragmentShader);
@@ -1811,13 +1936,15 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 			SDL_BindGPUGraphicsPipeline(renderPass, imagePipeline);
 			SDL_BindGPUVertexBuffers(renderPass, 0, &vertexBinding, 1);
 			SDL_BindGPUIndexBuffer(renderPass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
-			SDL_GPUTextureSamplerBinding sampleBindings[3] = {
+			SDL_GPUTextureSamplerBinding sampleBindings[4] = {
 				{ .texture = sourceTexture != nullptr ? sourceTexture : imageTexture,
 					.sampler = imageSampler },
 				{ .texture = blurTexture, .sampler = imageSampler },
 				{ .texture = blurTextureNext != nullptr ? blurTextureNext : blurTexture,
-					.sampler = imageSampler }};
-			SDL_BindGPUFragmentSamplers(renderPass, 0, &sampleBindings[0], 3);
+					.sampler = imageSampler },
+				{ .texture = videoDepthTexture != nullptr ? videoDepthTexture :
+					(sourceTexture != nullptr ? sourceTexture : imageTexture), .sampler = imageSampler }};
+			SDL_BindGPUFragmentSamplers(renderPass, 0, &sampleBindings[0], 4);
 
 			if (stereoFormat == Side_By_Side_Full || stereoFormat == Side_By_Side_Half ||
 				stereoFormat == Stereo_Free_View_Grid || stereoFormat == Stereo_Free_View_LRL) {
@@ -1830,6 +1957,7 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 			imageDataFrag.windowSize = context->imageSize;
 			imageDataFrag.imageSize = context->imageSize;
 			imageDataFrag.type = context->imageType;
+			imageDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;
 			imageDataFrag.gridSize = context->gridSize;
 			auto singleImageAspect = singleImageSize.x / singleImageSize.y;
 			imageDataVert.displayImageAspect = glm::vec3(singleImageAspect, singleImageAspect, 1.0);
@@ -2033,6 +2161,7 @@ void Image::setSpriteUniforms(glm::vec3 position, glm::vec3 size, glm::vec4 colo
 }
 
 int Image::draw(Context* context) {
+	updateVideoSolidColor();
 	if (videoBlurActive) {
 		const auto elapsed = BlurClock::now() - blurTransitionStart;
 		imageDataFrag.blurMix = glm::clamp(
@@ -2116,11 +2245,13 @@ int Image::draw(Context* context) {
 				if (imageTexture != nullptr && blurTexture != nullptr &&
 					blurTextureNext != nullptr) {
 					bindPipeline(renderPass, imagePipeline);
-					SDL_GPUTextureSamplerBinding sampleBindings[3] = {
+					SDL_GPUTextureSamplerBinding sampleBindings[4] = {
 						{ .texture = imageTexture, .sampler = imageSampler },
 						{ .texture = blurTexture, .sampler = imageSampler },
-						{ .texture = blurTextureNext, .sampler = imageSampler }};
-					SDL_BindGPUFragmentSamplers(renderPass, 0, &sampleBindings[0], 3);
+						{ .texture = blurTextureNext, .sampler = imageSampler },
+						{ .texture = videoDepthTexture != nullptr ? videoDepthTexture : imageTexture,
+							.sampler = imageSampler }};
+					SDL_BindGPUFragmentSamplers(renderPass, 0, &sampleBindings[0], 4);
 
 					imageDataVert.fillScreen = 1;
 					imageDataVert.projection = glm::mat4(1.0f);
@@ -2131,6 +2262,7 @@ int Image::draw(Context* context) {
 					imageDataFrag.gridSize = context->gridSize;
 					imageDataFrag.mode = context->mode;
 					imageDataFrag.type = context->imageType;
+					imageDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;
 					imageDataFrag.swapLeftRight = context->swapLeftRight;
 
 					imageDataVert.displayImageAspect = glm::vec3(context->displayAspect, 1.0);
@@ -2550,7 +2682,7 @@ int Image::drawNativeOutput(Context* context) {
 	interlacerDataFrag.invertView = nativeDisplayConfig.invertView ? 1 : 0;
 	interlacerDataFrag.flipImageX = nativeDisplayConfig.flipImageX ? 1 : 0;
 	interlacerDataFrag.flipImageY = nativeDisplayConfig.flipImageY ? 1 : 0;
-	interlacerDataFrag.reserved2 = 0;
+	interlacerDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;
 	interlacerDataFrag.swapLeftRight = context->swapLeftRight;
 	interlacerDataFrag.sourceRgbd = context->imageType == Color_Plus_Depth ? 1 : 0;
 	interlacerDataFrag.stereoStrength = (float)context->stereoStrength;
@@ -2587,12 +2719,14 @@ int Image::drawNativeOutput(Context* context) {
 	if (context->backgroundStyle == Blur && blurTexture != nullptr &&
 		blurTextureNext != nullptr) {
 		bindPipeline(renderPass, imagePipeline);
-		SDL_GPUTextureSamplerBinding backgroundBindings[3] = {
+		SDL_GPUTextureSamplerBinding backgroundBindings[4] = {
 			{.texture = imageTexture, .sampler = imageSampler},
 			{.texture = blurTexture, .sampler = imageSampler},
-			{.texture = blurTextureNext, .sampler = imageSampler}
+			{.texture = blurTextureNext, .sampler = imageSampler},
+			{.texture = videoDepthTexture != nullptr ? videoDepthTexture : imageTexture,
+				.sampler = imageSampler}
 		};
-		SDL_BindGPUFragmentSamplers(renderPass, 0, &backgroundBindings[0], 3);
+		SDL_BindGPUFragmentSamplers(renderPass, 0, &backgroundBindings[0], 4);
 		imageDataVert.displayImageAspect = {1.0f, 1.0f, 1.0f};
 		imageDataVert.fillScreen = 1;
 		imageDataVert.projection = glm::mat4(1.0f);
@@ -2603,6 +2737,7 @@ int Image::drawNativeOutput(Context* context) {
 		imageDataFrag.visibility = 1.0f;
 		imageDataFrag.mode = context->mode;
 		imageDataFrag.type = context->imageType;
+		imageDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;
 		imageDataFrag.blur = 1;
 		drawImage(commandBuffer, renderPass);
 	}
@@ -2615,8 +2750,12 @@ int Image::drawNativeOutput(Context* context) {
 	imageDataVert.projection = glm::mat4(1.0f);
 	imageDataVert.transform = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f));
 	SDL_PushGPUVertexUniformData(commandBuffer, 0, &imageDataVert, sizeof(imageDataVert));
-	SDL_GPUTextureSamplerBinding binding{.texture = quiltTexture, .sampler = imageSampler};
-	SDL_BindGPUFragmentSamplers(renderPass, 0, &binding, 1);
+	SDL_GPUTextureSamplerBinding bindings[2] = {
+		{.texture = quiltTexture, .sampler = imageSampler},
+		{.texture = videoDepthTexture != nullptr ? videoDepthTexture : quiltTexture,
+			.sampler = imageSampler}
+	};
+	SDL_BindGPUFragmentSamplers(renderPass, 0, bindings, 2);
 	SDL_PushGPUFragmentUniformData(commandBuffer, 0, &interlacerDataFrag,
 		sizeof(interlacerDataFrag));
 	SDL_DrawGPUIndexedPrimitives(renderPass, 6, 1, 0, 0, 0);
@@ -2642,6 +2781,7 @@ void Image::quit(Context* context){
 	if (videoYTexture != nullptr) SDL_ReleaseGPUTexture(context->device, videoYTexture);
 	if (videoUTexture != nullptr) SDL_ReleaseGPUTexture(context->device, videoUTexture);
 	if (videoVTexture != nullptr) SDL_ReleaseGPUTexture(context->device, videoVTexture);
+	if (videoDepthTexture != nullptr) SDL_ReleaseGPUTexture(context->device, videoDepthTexture);
 	SDL_ReleaseGPUTexture(context->device, blurTexture);
 	SDL_ReleaseGPUTexture(context->device, blurTextureNext);
 	SDL_ReleaseGPUTexture(context->device, iconTexture);

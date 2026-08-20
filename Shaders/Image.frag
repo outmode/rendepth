@@ -25,6 +25,7 @@ layout (location = 0) out vec4 outColor;
 layout (set = 2, binding = 0) uniform sampler2D imageTexture;
 layout (set = 2, binding = 1) uniform sampler2D blurTexture;
 layout (set = 2, binding = 2) uniform sampler2D blurTextureNext;
+layout (set = 2, binding = 3) uniform sampler2D depthTexture;
 layout (set = 3, binding = 0) uniform ImageDataFrag {
 	vec2 windowSize;
 	vec2 imageSize;
@@ -42,6 +43,10 @@ layout (set = 3, binding = 0) uniform ImageDataFrag {
 	int swapLeftRight;
 	int force;
 	float blurMix;
+	int separateDepth;
+	int depthPadding0;
+	int depthPadding1;
+	int depthPadding2;
 };
 
 #define Disabled 0
@@ -127,8 +132,14 @@ vec4 getColor(sampler2D tex, vec2 uv) {
 	return color;
 }
 
+float getRawDepth(sampler2D tex, vec2 uv) {
+	if (separateDepth == 1)
+		return texture(depthTexture, clamp(uv, vec2(0.0), vec2(1.0))).r;
+	return texture(tex, clamp(uv, vec2(0.0), vec2(1.0))).r;
+}
+
 float getDepth(sampler2D tex, vec2 uv) {
-	float depthSample = 1.0 - texture(tex, clamp(uv, vec2(0.0), vec2(1.0))).r;
+	float depthSample = 1.0 - getRawDepth(tex, uv);
 	float ndc = depthSample * 2.0 - 1.0;
 	float linearDepth = (2.0 * zNear * zFar) / (zFar + zNear - ndc * (zFar - zNear));
 	linearDepth /= zFar - zNear;
@@ -216,10 +227,14 @@ vec2 clampEdge(vec2 inUV, vec2 minUV, vec2 maxUV) {
 vec3 generateStereoImage(vec2 inUV) {
 	vec2 uv = vec2(0.0);
 	vec2 screenUV = inUV;
-	vec2 colorUV = vec2(screenUV.x * 0.5, screenUV.y);
-	vec2 depthUV = vec2(screenUV.x * 0.5 + 0.5, screenUV.y);
+	vec2 colorUV = separateDepth == 1 ? screenUV : vec2(screenUV.x * 0.5, screenUV.y);
+	vec2 depthUV = separateDepth == 1 ? screenUV : vec2(screenUV.x * 0.5 + 0.5, screenUV.y);
+	vec2 colorMin = separateDepth == 1 ? minGutterUV : minUVColor;
+	vec2 colorMax = separateDepth == 1 ? maxGutterUV : maxUVColor;
+	vec2 depthMin = separateDepth == 1 ? minGutterUV : minUVDepth;
+	vec2 depthMax = separateDepth == 1 ? maxGutterUV : maxUVDepth;
 
-	float centerDepth = getDepth(imageTexture, clampEdge(depthUV, minUVDepth, maxUVDepth));
+	float centerDepth = getDepth(imageTexture, clampEdge(depthUV, depthMin, depthMax));
 	float minDepthLeft = centerDepth;
 	float minDepthRight = centerDepth;
 
@@ -227,49 +242,49 @@ vec3 generateStereoImage(vec2 inUV) {
 
 	for (int i = 0; i < sampleCount; ++i) {
 		uv.x = (depthSamples[i] * stereoStrength / aspect) / stereoScale + stereoOffset / aspect;
-		minDepthLeft = min(minDepthLeft, getDepth(imageTexture, clampEdge(depthUV + uv, minUVDepth, maxUVDepth)));
-		minDepthRight = min(minDepthRight, getDepth(imageTexture, clampEdge(depthUV - uv, minUVDepth, maxUVDepth)));
+		minDepthLeft = min(minDepthLeft, getDepth(imageTexture, clampEdge(depthUV + uv, depthMin, depthMax)));
+		minDepthRight = min(minDepthRight, getDepth(imageTexture, clampEdge(depthUV - uv, depthMin, depthMax)));
 	}
 
 	float parallaxLeft = (stereoStrength / aspect * getParallax(minDepthLeft)) / stereoScale + stereoOffset / aspect;
 	float parallaxRight = (stereoStrength / aspect * getParallax(minDepthRight)) / stereoScale + stereoOffset / aspect;
 
 	vec3 colorLeft = getColor(imageTexture,
-		clampEdge(colorUV + vec2(parallaxLeft, 0.0), minUVColor, maxUVColor)).rgb;
+		clampEdge(colorUV + vec2(parallaxLeft, 0.0), colorMin, colorMax)).rgb;
 	vec3 colorRight = getColor(imageTexture,
-		clampEdge(colorUV - vec2(parallaxRight, 0.0), minUVColor, maxUVColor)).rgb;
+		clampEdge(colorUV - vec2(parallaxRight, 0.0), colorMin, colorMax)).rgb;
 
 	return combineStereoViews(colorLeft, colorRight);
 }
 
 vec2 effectZoom(vec2 uv, vec2 depthUV) {
 	float parallax = (depthEffect * 1.2 - 0.8) * 0.1;
-	float depth = getColor(imageTexture, depthUV).r;
+	float depth = getRawDepth(imageTexture, depthUV);
 	vec2 dir = uv - 0.5;
 	dir.x *= 0.5;
 	int samples = 3;
 	vec2 offset = (dir * parallax) / samples;
 	vec2 result = depthUV;
 	while (samples-- > 0) {
-		depth = min(depth, getColor(imageTexture, result).r);
+		depth = min(depth, getRawDepth(imageTexture, result));
 		result -= depth * offset;
 	}
-	return result * vec2(2.0, 1.0) - vec2(1.0, 0.0);
+	return separateDepth == 1 ? result : result * vec2(2.0, 1.0) - vec2(1.0, 0.0);
 }
 
 vec2 effectDolly(vec2 uv, vec2 depthUV) {
 	float parallax = (depthEffect * 1.2 - 0.8) * 0.1;
-	float depth = 1.0 - getColor(imageTexture, depthUV).r;
+	float depth = 1.0 - getRawDepth(imageTexture, depthUV);
 	vec2 dir = uv - 0.5;
 	dir.x *= 0.5;
 	int samples = 3;
 	vec2 offset = (dir * parallax) / samples;
 	vec2 result = depthUV;
 	while (samples-- > 0) {
-		depth = min(depth, 1.0 - getColor(imageTexture, result).r);
+		depth = min(depth, 1.0 - getRawDepth(imageTexture, result));
 		result += depth * offset;
 	}
-	return result * vec2(2.0, 1.0) - vec2(1.0, 0.0);
+	return separateDepth == 1 ? result : result * vec2(2.0, 1.0) - vec2(1.0, 0.0);
 }
 
 float luminance(vec3 color) {
@@ -336,6 +351,10 @@ void main() {
 		gridCenterUV += gridScale * gridOffset;
 		monoUV = gridCenterUV;
 	}
+	if (separateDepth == 1) {
+		monoUV = fragUV;
+		depthUV = fragUV;
+	}
 	if (blur == Enabled) {
 		imageColor.rgb = blurImage(monoUV);
 		imageColor.rgb = mix(clearColor, imageColor.rgb, 0.9);
@@ -354,7 +373,8 @@ void main() {
 		imageColor = getColor(imageTexture, fragUV);
 	} else if (mode == Light_Field) {
 		if (type == Color_Plus_Depth) {
-			imageColor = getColor(imageTexture, vec2(fragUV.x * 0.5, fragUV.y));
+			imageColor = getColor(imageTexture, separateDepth == 1 ? fragUV :
+				vec2(fragUV.x * 0.5, fragUV.y));
 		} else if (type == Light_Field_LKG && gridSize.x > 0.0 && gridSize.y > 0.0) {
 			int columns = int(gridSize.x);
 			int rows = int(gridSize.y);
@@ -370,17 +390,19 @@ void main() {
 			imageColor.rgb = getAnaglyphGrayscale(imageColor.rgb);
 		}
 	} else if (mode == RGB_Depth) {
-		imageColor = getColor(imageTexture, depthUV);
+		imageColor = separateDepth == 1 ? getColor(depthTexture, depthUV) :
+			getColor(imageTexture, depthUV);
 		if (force == 1) imageColor.rgb = vec3(1.0);
 	} else if (mode == Depth_Zoom) {
 		vec2 zoomFragUV = fragUV * 0.95 + 0.025;
-		vec2 zoomMonoUV = vec2(zoomFragUV.x * 0.5, zoomFragUV.y);
-		vec2 zoomDepthUV = vec2(zoomMonoUV.x + 0.5, zoomMonoUV.y);
+		vec2 zoomMonoUV = separateDepth == 1 ? zoomFragUV : vec2(zoomFragUV.x * 0.5, zoomFragUV.y);
+		vec2 zoomDepthUV = separateDepth == 1 ? zoomFragUV : vec2(zoomMonoUV.x + 0.5, zoomMonoUV.y);
 		vec2 zoomUV = vec2(0.0);
 		if (effectRandom == 0) zoomUV = effectZoom(zoomFragUV, zoomDepthUV);
 		else zoomUV = effectDolly(zoomFragUV, zoomDepthUV);
-		zoomUV.x *= 0.5;
-		zoomUV = clamp(zoomUV, vec2(0.0, 0.0), vec2(0.495, 1.0));
+		if (separateDepth != 1) zoomUV.x *= 0.5;
+		zoomUV = clamp(zoomUV, vec2(0.0, 0.0),
+			separateDepth == 1 ? vec2(1.0) : vec2(0.495, 1.0));
 		imageColor.rgb = getColor(imageTexture, zoomUV).rgb;
 	} else {
 		if (type == Color_Plus_Depth) {

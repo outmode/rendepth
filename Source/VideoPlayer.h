@@ -23,7 +23,12 @@ struct VideoFrame {
 	int height = 0;
 	int outputWidth = 0;
 	int outputHeight = 0;
+	int inferenceWidth = 0;
+	int inferenceHeight = 0;
+	double presentationTime = 0.0;
+	std::uint64_t generation = 0;
 	std::array<std::vector<std::uint8_t>, 3> planes;
+	std::vector<std::uint8_t> inferenceRGBA;
 };
 
 class VideoPlayer {
@@ -37,9 +42,17 @@ public:
 	bool open(const std::filesystem::path& path, std::string& error);
 	void close();
 	void update();
-	std::unique_ptr<VideoFrame> takeFrame(bool* preview = nullptr);
+	std::shared_ptr<VideoFrame> takeFrame(bool* preview = nullptr);
 	std::string takeError();
+	void setAudioBuffering(bool buffering);
+	bool hasAudio() const;
+	bool audioReady() const;
+	double bufferedAudioDuration() const;
+	double audioDeviceLatency() const;
+	double audioPlaybackPosition() const;
+	void setPresentedPosition(double seconds);
 	void setOutputSize(int maxWidth, int maxHeight);
+	void setInferenceSize(int maxDimension, double framesPerSecond = 10.0);
 	void seek(double seconds, bool fastPreview = false);
 	void setPlaying(bool playing);
 	void setVolume(double volume);
@@ -52,6 +65,7 @@ public:
 	bool ready() const;
 	double position() const;
 	double duration() const;
+	std::uint64_t generation() const;
 	int width() const;
 	int height() const;
 

@@ -46,6 +46,7 @@ public:
 	inline static SDL_GPUTexture* videoYTexture = nullptr;
 	inline static SDL_GPUTexture* videoUTexture = nullptr;
 	inline static SDL_GPUTexture* videoVTexture = nullptr;
+	inline static SDL_GPUTexture* videoDepthTexture = nullptr;
 	inline static SDL_GPUTexture* blurTexture = nullptr;
 	inline static SDL_GPUTexture* blurTextureNext = nullptr;
 	inline static SDL_GPUTexture* iconTexture = nullptr;
@@ -102,6 +103,10 @@ public:
 		int swapLeftRight;
 		int force;
 		float blurMix;
+		int separateDepth;
+		int depthPadding0;
+		int depthPadding1;
+		int depthPadding2;
 	};
 
 	struct VideoYUVDataFrag {
@@ -127,7 +132,7 @@ public:
 		int invertView;
 		int flipImageX;
 		int flipImageY;
-		int reserved2;
+		int separateDepth;
 		int swapLeftRight;
 		int sourceRgbd;
 		float stereoStrength;
@@ -160,6 +165,7 @@ public:
 	inline static SpriteDataFrag spriteDataFrag{};
 	inline static glm::vec2 imageSize;
 	inline static glm::ivec2 videoTextureSize{};
+	inline static glm::ivec2 videoDepthTextureSize{};
 	inline static glm::vec2 safeImageSize;
 	inline static double safePercent = 0.8f;
 	inline static glm::vec4 clearColorLight{ 0.99, 0.99, 0.99, 1.0f };
@@ -192,6 +198,9 @@ public:
 	static int load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData);
 	static int updateVideoFrame(Context* context, const VideoFrame& frame, bool firstFrame,
 		int logicalWidth, int logicalHeight, bool updateBlur = true);
+	static int updateVideoDepth(Context* context, const std::vector<std::uint16_t>& values,
+		int width, int height);
+	static void clearVideoDepth(Context* context);
 	static void updateVideoSubtitle(Context* context, const std::string& text);
 	static int draw(Context* context);
 	static int initNativeOutput(Context* context);

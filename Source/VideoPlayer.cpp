@@ -82,7 +82,7 @@ struct VideoPlayer::Impl {
 	std::thread decodeThread;
 	std::mutex stateMutex;
 	std::condition_variable stateChanged;
-	std::unique_ptr<VideoFrame> pendingFrame;
+	std::shared_ptr<VideoFrame> pendingFrame;
 	bool pendingFrameIsPreview = false;
 	std::optional<SeekRequest> requestedSeek;
 	std::string runtimeError;
@@ -91,6 +91,7 @@ struct VideoPlayer::Impl {
 	std::atomic<bool> isReady{false};
 	std::atomic<bool> atEnd{false};
 	std::atomic<double> currentPosition{0.0};
+	std::atomic<double> presentedPosition{0.0};
 	std::atomic<double> totalDuration{0.0};
 	std::atomic<double> audioVolume{1.0};
 	std::atomic<int> selectedAudioTrack{0};
@@ -110,6 +111,12 @@ struct VideoPlayer::Impl {
 	std::atomic<int> videoHeight{0};
 	std::atomic<int> outputMaxWidth{0};
 	std::atomic<int> outputMaxHeight{0};
+	std::atomic<int> inferenceMaxDimension{0};
+	std::atomic<double> inferenceFramesPerSecond{10.0};
+	std::atomic<std::uint64_t> playbackGeneration{1};
+	double lastInferencePosition = -1.0;
+	double nextInferencePosition = -1.0;
+	std::uint64_t lastInferenceGeneration = 0;
 
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	AVBufferRef* hwDeviceContext = nullptr;
@@ -122,6 +129,7 @@ struct VideoPlayer::Impl {
 		int pendingBytes = 0;
 		bool closing = false;
 		bool started = false;
+		std::atomic<bool> buffering{true};
 		std::atomic<bool> playing = false;
 		std::atomic<float> volume = 1.0f;
 
@@ -151,6 +159,7 @@ struct VideoPlayer::Impl {
 	AVPacket* packet = nullptr;
 	AVFrame* frame = nullptr;
 	SwsContext* scaler = nullptr;
+	SwsContext* inferenceScaler = nullptr;
 	int streamIndex = -1;
 	double streamStart = 0.0;
 	double fallbackFrameDuration = 1.0 / 30.0;
@@ -160,10 +169,10 @@ struct VideoPlayer::Impl {
 	AVFrame* audioFrame = nullptr;
 	SwrContext* audioResampler = nullptr;
 	int audioStreamIndex = -1;
+	std::atomic<double> audioQueuePosition{0.0};
+	bool audioQueuePositionValid = false;
 	AVCodecContext* subtitleCodec = nullptr;
 	int subtitleStreamIndex = -1;
-	double subtitleStreamStart = 0.0;
-	double audioStreamStart = 0.0;
 	static constexpr int audioSampleRate = 48000;
 	static constexpr int audioChannels = 2;
 	static constexpr int audioBytesPerFrame = audioChannels * static_cast<int>(sizeof(float));
@@ -216,23 +225,18 @@ struct VideoPlayer::Impl {
 			audioStreamIndex = -1;
 			return false;
 		}
-		if (audioStream->start_time != AV_NOPTS_VALUE)
-			audioStreamStart = audioStream->start_time * av_q2d(audioStream->time_base);
 		return true;
 	}
 
 	bool prepareSubtitleDecoder() {
 		if (selectedSubtitleTrack.load() == noSubtitleTrack || subtitleStreamIndices.empty()) {
 			subtitleStreamIndex = -1;
-			subtitleStreamStart = 0.0;
 			return false;
 		}
 		const int track = std::clamp(selectedSubtitleTrack.load(), 0,
 			static_cast<int>(subtitleStreamIndices.size()) - 1);
 		subtitleStreamIndex = subtitleStreamIndices[track];
 		const auto* streamInfo = format->streams[subtitleStreamIndex];
-		subtitleStreamStart = streamInfo->start_time != AV_NOPTS_VALUE
-			? streamInfo->start_time * av_q2d(streamInfo->time_base) : 0.0;
 		const AVCodec* decoder = avcodec_find_decoder(streamInfo->codecpar->codec_id);
 		if (decoder == nullptr) {
 			subtitleStreamIndex = -1;
@@ -294,7 +298,7 @@ struct VideoPlayer::Impl {
 			}
 			const auto* streamInfo = format->streams[subtitleStreamIndex];
 			const double packetStart = subtitlePacket->pts == AV_NOPTS_VALUE ? currentPosition.load() :
-				subtitlePacket->pts * av_q2d(streamInfo->time_base) - subtitleStreamStart;
+				subtitlePacket->pts * av_q2d(streamInfo->time_base) - streamStart;
 			const double start = packetStart + subtitle.start_display_time / 1000.0;
 			double duration = (subtitle.end_display_time - subtitle.start_display_time) / 1000.0;
 			if (duration <= 0.0 && subtitlePacket->duration > 0)
@@ -305,7 +309,7 @@ struct VideoPlayer::Impl {
 			}
 			{
 				std::lock_guard lock(subtitleMutex);
-				while (!subtitleCues.empty() && subtitleCues.front().end <= currentPosition.load())
+				while (!subtitleCues.empty() && subtitleCues.front().end <= presentedPosition.load())
 					subtitleCues.pop_front();
 				subtitleCues.push_back({ start, start + duration, text });
 				while (subtitleCues.size() > 256) subtitleCues.pop_front();
@@ -357,7 +361,8 @@ struct VideoPlayer::Impl {
 
 	static void startAudio(const std::shared_ptr<AudioState>& state) {
 		std::lock_guard lock(state->mutex);
-		if (state->closing || state->output == nullptr || state->started || !state->playing)
+		if (state->closing || state->output == nullptr || state->started ||
+			!state->playing || state->buffering)
 			return;
 		if (!SDL_ResumeAudioStreamDevice(state->output)) {
 			SDL_Log("Could not start video audio: %s", SDL_GetError());
@@ -369,6 +374,7 @@ struct VideoPlayer::Impl {
 	static void pauseAudio(const std::shared_ptr<AudioState>& state) {
 		std::lock_guard lock(state->mutex);
 		if (state->output != nullptr) SDL_PauseAudioStreamDevice(state->output);
+		state->started = false;
 	}
 
 	bool queueAudio(const float* samples, int sampleFrames) {
@@ -381,7 +387,6 @@ struct VideoPlayer::Impl {
 			{
 				std::lock_guard lock(state->mutex);
 				if (state->closing || !isPlaying) return false;
-				if (state->volume.load() == 0.0f) return true;
 				if (state->output == nullptr) {
 					if (state->pendingBytes + sampleBytes <= maxQueuedAudioBytes) {
 						state->pending.emplace_back(samples, samples +
@@ -488,6 +493,7 @@ struct VideoPlayer::Impl {
 			std::optional<double>& seekFloor, bool& seekPreviewPending,
 		bool& fastPreviewPending) {
 		const double position = framePosition(decodedFrame);
+		const auto frameGeneration = playbackGeneration.load();
 		if (seekFloor.has_value() && position + fallbackFrameDuration < *seekFloor) return true;
 		seekFloor.reset();
 		const bool pausedSeekFrame = seekPreviewPending;
@@ -572,11 +578,13 @@ struct VideoPlayer::Impl {
 			break;
 		}
 
-		auto converted = std::make_unique<VideoFrame>();
+		auto converted = std::make_shared<VideoFrame>();
 		converted->width = sourceWidth;
 		converted->height = sourceHeight;
 		converted->outputWidth = outputWidth;
 		converted->outputHeight = outputHeight;
+		converted->presentationTime = position;
+		converted->generation = frameGeneration;
 		converted->fullRange = sourceRange != 0;
 		switch (decodedFrame->colorspace) {
 		case AVCOL_SPC_BT2020_NCL:
@@ -590,6 +598,57 @@ struct VideoPlayer::Impl {
 			converted->colorSpace = sourceHeight >= 720
 				? VideoFrame::ColorSpace::BT709 : VideoFrame::ColorSpace::BT601;
 			break;
+		}
+
+		const int inferenceMaximum = inferenceMaxDimension.load();
+		const double inferenceRate = inferenceFramesPerSecond.load();
+		const double inferenceInterval = inferenceRate > 0.0 ? 1.0 / inferenceRate : 0.0;
+		const bool resetInferenceSchedule = frameGeneration != lastInferenceGeneration ||
+			lastInferencePosition < 0.0 || position < lastInferencePosition ||
+			nextInferencePosition < 0.0 ||
+			(inferenceInterval > 0.0 && position - nextInferencePosition > inferenceInterval);
+		const bool prepareInference = inferenceMaximum > 0 && inferenceInterval > 0.0 &&
+			(resetInferenceSchedule ||
+			 position + fallbackFrameDuration * 0.5 >= nextInferencePosition);
+		if (prepareInference) {
+			const double inferenceScale = std::min(1.0,
+				static_cast<double>(inferenceMaximum) / std::max(sourceWidth, sourceHeight));
+			converted->inferenceWidth = std::max(1,
+				static_cast<int>(std::lround(sourceWidth * inferenceScale)));
+			converted->inferenceHeight = std::max(1,
+				static_cast<int>(std::lround(sourceHeight * inferenceScale)));
+			inferenceScaler = sws_getCachedContext(inferenceScaler,
+				decodedFrame->width, decodedFrame->height, sourceFormat,
+				converted->inferenceWidth, converted->inferenceHeight, AV_PIX_FMT_RGBA,
+				SWS_BILINEAR, nullptr, nullptr, nullptr);
+			if (inferenceScaler == nullptr) {
+				setRuntimeError("FFmpeg could not create the depth-inference color converter.");
+				return false;
+			}
+			const int* colorspace = sws_getCoefficients(SWS_CS_DEFAULT);
+			if (sws_setColorspaceDetails(inferenceScaler, colorspace, sourceRange,
+					colorspace, 0, 0, 1 << 16, 1 << 16) < 0) {
+				setRuntimeError("FFmpeg could not configure depth-inference video color.");
+				return false;
+			}
+			converted->inferenceRGBA.resize(
+				static_cast<size_t>(converted->inferenceWidth) * converted->inferenceHeight * 4);
+			uint8_t* inferenceData[] = {
+				converted->inferenceRGBA.data(), nullptr, nullptr, nullptr };
+			int inferenceLines[] = { converted->inferenceWidth * 4, 0, 0, 0 };
+			if (sws_scale(inferenceScaler, decodedFrame->data, decodedFrame->linesize,
+					0, decodedFrame->height, inferenceData, inferenceLines) <= 0) {
+				setRuntimeError("FFmpeg could not prepare a video frame for depth inference.");
+				return false;
+			}
+			lastInferencePosition = position;
+			lastInferenceGeneration = frameGeneration;
+			if (resetInferenceSchedule) {
+				nextInferencePosition = position + inferenceInterval;
+			} else {
+				do nextInferencePosition += inferenceInterval;
+				while (nextInferencePosition <= position);
+			}
 		}
 
 		auto copyPlane = [](std::vector<std::uint8_t>& destination,
@@ -658,6 +717,7 @@ struct VideoPlayer::Impl {
 			}
 		}
 
+		if (frameGeneration != playbackGeneration.load()) return true;
 		{
 			std::lock_guard lock(stateMutex);
 			pendingFrame = std::move(converted);
@@ -704,8 +764,8 @@ struct VideoPlayer::Impl {
 
 			const double position = audioFrame->best_effort_timestamp == AV_NOPTS_VALUE
 				? currentPosition.load()
-				: std::max(0.0, audioFrame->best_effort_timestamp *
-					av_q2d(audioStream->time_base) - audioStreamStart);
+				: audioFrame->best_effort_timestamp *
+					av_q2d(audioStream->time_base) - streamStart;
 			const double frameDuration = audioFrame->sample_rate > 0
 				? audioFrame->nb_samples / static_cast<double>(audioFrame->sample_rate)
 				: 0.0;
@@ -733,10 +793,35 @@ struct VideoPlayer::Impl {
 						av_frame_unref(audioFrame);
 						return false;
 					}
-					if (!queueAudio(samples.data(), converted)) {
+					int firstFrame = 0;
+					if (!audioQueuePositionValid) {
+						constexpr int syncToleranceFrames = audioSampleRate / 1000;
+						const int syncFrames = static_cast<int>(std::clamp<long long>(
+							std::llround((position - audioQueuePosition.load()) * audioSampleRate),
+							-audioSampleRate * 2LL, audioSampleRate * 2LL));
+						if (syncFrames > syncToleranceFrames) {
+							std::vector<float> silence(
+								static_cast<size_t>(syncFrames) * audioChannels, 0.0f);
+							if (!queueAudio(silence.data(), syncFrames)) {
+								av_frame_unref(audioFrame);
+								return false;
+							}
+							audioQueuePosition.fetch_add(
+								syncFrames / static_cast<double>(audioSampleRate));
+						} else if (syncFrames < -syncToleranceFrames) {
+							firstFrame = std::min(converted, -syncFrames);
+						}
+						audioQueuePositionValid = true;
+					}
+					const int queuedFrames = converted - firstFrame;
+					if (queuedFrames > 0 && !queueAudio(
+						samples.data() + static_cast<size_t>(firstFrame) * audioChannels,
+						queuedFrames)) {
 						av_frame_unref(audioFrame);
 						return false;
 					}
+					audioQueuePosition.fetch_add(
+						queuedFrames / static_cast<double>(audioSampleRate));
 				}
 			}
 			av_frame_unref(audioFrame);
@@ -780,7 +865,11 @@ struct VideoPlayer::Impl {
 			subtitleCues.clear();
 		}
 		currentPosition = request.seconds;
+		presentedPosition = request.seconds;
+		audioQueuePosition = request.seconds;
+		audioQueuePositionValid = false;
 		atEnd = false;
+		audioState->buffering = true;
 		seekFloor = request.seconds;
 		audioSeekFloor = audioCodec != nullptr ? std::optional(request.seconds) : std::nullopt;
 		return true;
@@ -812,6 +901,8 @@ struct VideoPlayer::Impl {
 				av_frame_free(&audioFrame);
 				swr_free(&audioResampler);
 				audioStreamIndex = -1;
+				audioQueuePosition = presentedPosition.load();
+				audioQueuePositionValid = false;
 				prepareAudioDecoder();
 			}
 			const int requestedSubtitle = requestedSubtitleTrack.exchange(noSubtitleRequest);
@@ -857,6 +948,7 @@ struct VideoPlayer::Impl {
 				}
 				if (totalDuration > 0.0) {
 					if (!applySeek({0.0, false}, seekFloor, audioSeekFloor)) break;
+					playbackGeneration.fetch_add(1);
 					clockValid = false;
 					seekPreviewPending = false;
 					fastPreviewPending = false;
@@ -1041,6 +1133,7 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 }
 
 void VideoPlayer::close() {
+	impl->playbackGeneration.fetch_add(1);
 	impl->stopRequested = true;
 	impl->stateChanged.notify_all();
 	if (impl->decodeThread.joinable()) impl->decodeThread.join();
@@ -1060,9 +1153,12 @@ void VideoPlayer::close() {
 	avcodec_free_context(&impl->audioCodec);
 	impl->audioStream = nullptr;
 	impl->audioStreamIndex = -1;
-	impl->audioStreamStart = 0.0;
+	impl->audioQueuePosition = 0.0;
+	impl->audioQueuePositionValid = false;
 	sws_freeContext(impl->scaler);
 	impl->scaler = nullptr;
+	sws_freeContext(impl->inferenceScaler);
+	impl->inferenceScaler = nullptr;
 	av_buffer_unref(&impl->hwDeviceContext);
 	av_frame_free(&impl->frame);
 	av_packet_free(&impl->packet);
@@ -1079,7 +1175,6 @@ void VideoPlayer::close() {
 	#ifdef RENDEPTH_ENABLE_FFMPEG
 	avcodec_free_context(&impl->subtitleCodec);
 	impl->subtitleStreamIndex = -1;
-	impl->subtitleStreamStart = 0.0;
 	#endif
 	{
 		std::lock_guard lock(impl->subtitleMutex);
@@ -1094,6 +1189,7 @@ void VideoPlayer::close() {
 	impl->isReady = false;
 	impl->atEnd = false;
 	impl->currentPosition = 0.0;
+	impl->presentedPosition = 0.0;
 	impl->totalDuration = 0.0;
 	impl->videoWidth = 0;
 	impl->videoHeight = 0;
@@ -1114,6 +1210,87 @@ void VideoPlayer::setPlaying(bool playing) {
 	impl->stateChanged.notify_all();
 }
 
+void VideoPlayer::setAudioBuffering(bool buffering) {
+#ifdef RENDEPTH_ENABLE_FFMPEG
+	impl->audioState->buffering = buffering;
+	if (buffering) Impl::pauseAudio(impl->audioState);
+	else if (impl->audioState->playing) Impl::startAudio(impl->audioState);
+#else
+	(void)buffering;
+#endif
+}
+
+bool VideoPlayer::hasAudio() const {
+#ifdef RENDEPTH_ENABLE_FFMPEG
+	return !impl->audioStreamIndices.empty();
+#else
+	return false;
+#endif
+}
+
+bool VideoPlayer::audioReady() const {
+#ifdef RENDEPTH_ENABLE_FFMPEG
+	std::lock_guard lock(impl->audioState->mutex);
+	return impl->audioState->output != nullptr;
+#else
+	return false;
+#endif
+}
+
+double VideoPlayer::bufferedAudioDuration() const {
+#ifdef RENDEPTH_ENABLE_FFMPEG
+	std::lock_guard lock(impl->audioState->mutex);
+	int bytes = impl->audioState->pendingBytes;
+	if (impl->audioState->output != nullptr)
+		bytes = std::max(0, SDL_GetAudioStreamQueued(impl->audioState->output));
+	return bytes / static_cast<double>(Impl::audioSampleRate * Impl::audioBytesPerFrame);
+#else
+	return 0.0;
+#endif
+}
+
+double VideoPlayer::audioDeviceLatency() const {
+#ifdef RENDEPTH_ENABLE_FFMPEG
+	std::lock_guard lock(impl->audioState->mutex);
+	if (impl->audioState->output == nullptr) return 0.0;
+	SDL_AudioSpec spec{};
+	int sampleFrames = 0;
+	const SDL_AudioDeviceID device = SDL_GetAudioStreamDevice(impl->audioState->output);
+	if (device == 0 || !SDL_GetAudioDeviceFormat(device, &spec, &sampleFrames) ||
+		spec.freq <= 0 || sampleFrames <= 0) return 0.0;
+	return sampleFrames / static_cast<double>(spec.freq);
+#else
+	return 0.0;
+#endif
+}
+
+double VideoPlayer::audioPlaybackPosition() const {
+#ifdef RENDEPTH_ENABLE_FFMPEG
+	std::lock_guard lock(impl->audioState->mutex);
+	if (impl->audioState->output == nullptr || !impl->audioState->started ||
+		impl->audioState->buffering) return -1.0;
+	const int queuedBytes = SDL_GetAudioStreamQueued(impl->audioState->output);
+	if (queuedBytes < 0) return -1.0;
+	double deviceLatency = 0.0;
+	SDL_AudioSpec spec{};
+	int sampleFrames = 0;
+	const SDL_AudioDeviceID device = SDL_GetAudioStreamDevice(impl->audioState->output);
+	if (device != 0 && SDL_GetAudioDeviceFormat(device, &spec, &sampleFrames) &&
+		spec.freq > 0 && sampleFrames > 0)
+		deviceLatency = sampleFrames / static_cast<double>(spec.freq);
+	const double queuedDuration = queuedBytes /
+		static_cast<double>(Impl::audioSampleRate * Impl::audioBytesPerFrame);
+	return std::max(0.0,
+		impl->audioQueuePosition.load() - queuedDuration - deviceLatency);
+#else
+	return -1.0;
+#endif
+}
+
+void VideoPlayer::setPresentedPosition(double seconds) {
+	impl->presentedPosition = std::max(0.0, seconds);
+}
+
 void VideoPlayer::setVolume(double volume) {
 	volume = std::clamp(volume, 0.0, 1.0);
 	if (volume < 0.01) volume = 0.0;
@@ -1123,17 +1300,9 @@ void VideoPlayer::setVolume(double volume) {
 	bool resume = false;
 	{
 		std::lock_guard lock(impl->audioState->mutex);
-			if (volume == 0.0) {
-				impl->audioState->pending.clear();
-				impl->audioState->pendingBytes = 0;
-			}
 		if (impl->audioState->output != nullptr) {
 			SDL_SetAudioStreamGain(impl->audioState->output, static_cast<float>(volume));
-			if (volume == 0.0) {
-				SDL_ClearAudioStream(impl->audioState->output);
-				SDL_PauseAudioStreamDevice(impl->audioState->output);
-				impl->audioState->started = false;
-			} else if (impl->audioState->playing && !impl->audioState->started) {
+			if (impl->audioState->playing && !impl->audioState->started) {
 				resume = true;
 			}
 		}
@@ -1165,7 +1334,7 @@ void VideoPlayer::cycleSubtitleTrack() {
 }
 
 std::string VideoPlayer::subtitleText() const {
-	const double position = impl->currentPosition.load();
+	const double position = impl->presentedPosition.load();
 	std::lock_guard lock(impl->subtitleMutex);
 	while (!impl->subtitleCues.empty() && impl->subtitleCues.front().end <= position)
 		impl->subtitleCues.pop_front();
@@ -1246,8 +1415,10 @@ void VideoPlayer::seek(double seconds, bool fastPreview) {
 		impl->totalDuration > 0.0 ? impl->totalDuration.load() : seconds);
 	{
 		std::lock_guard lock(impl->stateMutex);
+		impl->playbackGeneration.fetch_add(1);
 		impl->requestedSeek = Impl::SeekRequest{seconds, fastPreview};
 		impl->currentPosition = seconds;
+		impl->presentedPosition = seconds;
 		impl->atEnd = false;
 	}
 	impl->stateChanged.notify_all();
@@ -1255,7 +1426,7 @@ void VideoPlayer::seek(double seconds, bool fastPreview) {
 
 void VideoPlayer::update() {}
 
-std::unique_ptr<VideoFrame> VideoPlayer::takeFrame(bool* preview) {
+std::shared_ptr<VideoFrame> VideoPlayer::takeFrame(bool* preview) {
 	std::lock_guard lock(impl->stateMutex);
 	auto result = std::move(impl->pendingFrame);
 	if (preview != nullptr) *preview = result != nullptr && impl->pendingFrameIsPreview;
@@ -1275,9 +1446,15 @@ void VideoPlayer::setOutputSize(int maxWidth, int maxHeight) {
 	impl->outputMaxHeight = std::max(0, maxHeight);
 }
 
+void VideoPlayer::setInferenceSize(int maxDimension, double framesPerSecond) {
+	impl->inferenceMaxDimension = std::max(0, maxDimension);
+	impl->inferenceFramesPerSecond = std::max(0.0, framesPerSecond);
+}
+
 bool VideoPlayer::playing() const { return impl->isPlaying; }
 bool VideoPlayer::ready() const { return impl->isReady; }
-double VideoPlayer::position() const { return impl->currentPosition; }
+double VideoPlayer::position() const { return impl->presentedPosition; }
 double VideoPlayer::duration() const { return impl->totalDuration; }
+std::uint64_t VideoPlayer::generation() const { return impl->playbackGeneration; }
 int VideoPlayer::width() const { return impl->videoWidth; }
 int VideoPlayer::height() const { return impl->videoHeight; }

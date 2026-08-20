@@ -44,6 +44,7 @@
 #include <cctype>
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <limits>
 #include <mutex>
 #include <cstdlib>
@@ -63,12 +64,57 @@
 #include "DepthEstimator.h"
 #include "ModelDownloader.h"
 #include "VideoPlayer.h"
+#include "VideoDepthProcessor.h"
 
 Context context{};
 Image imageView{};
 static VideoPlayer videoPlayer;
+static VideoDepthProcessor videoDepthProcessor;
+static std::shared_ptr<VideoFrame> lastVideoFrame;
+struct BufferedVideoFrame {
+	std::shared_ptr<VideoFrame> frame;
+	bool preview = false;
+};
+static std::deque<BufferedVideoFrame> bufferedVideoFrames;
+static std::deque<std::unique_ptr<VideoDepthFrame>> bufferedVideoDepthFrames;
+static bool videoPlaybackBufferReady = false;
+static bool videoPresentationClockValid = false;
+static double videoBufferStartedAt = -1.0;
+static double videoPresentationWallOrigin = 0.0;
+static double videoPresentationMediaOrigin = 0.0;
+static std::uint64_t videoPlaybackGeneration = 0;
+// Keep enough decoded media ahead of the audio clock for depth inference to
+// finish without making color or audio wait on the depth worker.
+static constexpr double videoDepthLookaheadDuration = 0.1;
+struct VideoDepthBlendState {
+	std::vector<std::uint16_t> displayed;
+	std::vector<std::uint16_t> source;
+	std::vector<std::uint16_t> target;
+	int width = 0;
+	int height = 0;
+	double startTime = -1.0;
+	double lastUploadTime = -1.0;
+	double presentationTime = -1.0;
+	bool active = false;
+
+	void clear() {
+		displayed.clear();
+		source.clear();
+		target.clear();
+		width = 0;
+		height = 0;
+		startTime = -1.0;
+		lastUploadTime = -1.0;
+		presentationTime = -1.0;
+		active = false;
+	}
+};
+static VideoDepthBlendState videoDepthBlend;
 static bool activeVideo = false;
 static bool videoFrameLoaded = false;
+static bool videoDepthFrameLoaded = false;
+static int activeVideoDepthModelOption = -1;
+static bool videoDepthRestartPending = false;
 static double getTimeNow();
 static void updateVideoSlider();
 static void setVideoControlsVisible(bool visible);
@@ -81,6 +127,11 @@ static bool isSupportedVideo(const std::string& path) {
 }
 
 static void serviceVideo();
+static void serviceVideoDepth();
+static void resetVideoPlaybackBuffer(bool holdAudio = true);
+static bool startVideoDepth();
+static void stopVideoDepth(bool disable3D = true);
+static void seekVideo(double seconds, bool fastPreview = false);
 static void failVideoLoad(const std::string& error);
 static bool skipVideoBy(double seconds);
 
@@ -132,6 +183,7 @@ static bool videoSliderScrubbing = false;
 static bool videoSliderWasPlaying = false;
 static double videoScrubLastPreviewTime = 0.0;
 static constexpr double videoScrubPreviewInterval = 0.075;
+static bool videoControlsVisible = false;
 auto currentSliderValue = 0.0;
 auto showingStereoSettings = false;
 auto isPlayingSlideshow = false;
@@ -174,7 +226,10 @@ static void failVideoLoad(const std::string& error) {
 		const char* path = fileList.empty() ? "" : fileList[fileIndex].link.c_str();
 		SDL_Log("Could not load video %s: %s", path, error.c_str());
 	}
+	stopVideoDepth();
 	videoPlayer.close();
+	resetVideoPlaybackBuffer(false);
+	lastVideoFrame.reset();
 	activeVideo = false;
 	videoFrameLoaded = false;
 	context.loading = false;
@@ -188,6 +243,47 @@ static void failVideoLoad(const std::string& error) {
 	Image::displayInfo = false;
 }
 
+static void resetVideoPlaybackBuffer(bool holdAudio) {
+	bufferedVideoFrames.clear();
+	bufferedVideoDepthFrames.clear();
+	videoDepthBlend.clear();
+	videoPlaybackBufferReady = false;
+	videoPresentationClockValid = false;
+	videoBufferStartedAt = -1.0;
+	videoPlaybackGeneration = videoPlayer.generation();
+	if (videoDepthProcessor.running()) {
+		Image::clearVideoDepth(&context);
+		videoDepthFrameLoaded = false;
+		if (!fileList.empty()) context.imageType = fileList[fileIndex].type;
+	}
+	if (holdAudio && videoPlayer.ready()) videoPlayer.setAudioBuffering(true);
+}
+
+static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool preview) {
+	if (frame == nullptr) return;
+	lastVideoFrame = frame;
+	videoPlayer.setPresentedPosition(frame->presentationTime);
+	if (!videoFrameLoaded) {
+		context.imageType = fileList[fileIndex].type;
+		if (context.imageType == Light_Field_LKG)
+			context.gridSize = Core::getGridInfo(fileList[fileIndex].base);
+		context.fileName = fileList[fileIndex].base;
+		context.loading = false;
+		Image::displayHelp = false;
+		SDL_SetWindowTitle(context.window, fileList[fileIndex].name.c_str());
+		context.fileLink = fileList[fileIndex].link;
+		Image::updateVideoFrame(&context, *frame, true,
+			videoPlayer.width(), videoPlayer.height(), true);
+		context.infoText = Core::getFileText(fileList[fileIndex], context.imageSize);
+		videoFrameLoaded = true;
+		doneLoadingImage = true;
+		checkMouseState();
+	} else {
+		Image::updateVideoFrame(&context, *frame, false,
+			videoPlayer.width(), videoPlayer.height(), !preview);
+	}
+}
+
 static void serviceVideo() {
 	if (!activeVideo) return;
 	videoPlayer.setOutputSize(static_cast<int>(context.windowSize.x),
@@ -198,6 +294,68 @@ static void serviceVideo() {
 		return;
 	}
 	getIcon(IconType::Play).image = videoPlayer.playing() ? IconType::Pause : IconType::Play;
+	const double now = getTimeNow();
+	bool previewFrame = false;
+	if (auto frame = videoPlayer.takeFrame(&previewFrame)) {
+		if (previewFrame || !videoPlayer.playing()) {
+			resetVideoPlaybackBuffer();
+			videoPlaybackGeneration = frame->generation;
+			presentVideoFrame(frame, true);
+		} else {
+			if (frame->generation != videoPlaybackGeneration) {
+				resetVideoPlaybackBuffer();
+				videoPlaybackGeneration = frame->generation;
+			}
+			if (videoBufferStartedAt < 0.0) videoBufferStartedAt = now;
+			bufferedVideoFrames.push_back({frame, false});
+			constexpr double maximumBufferDuration = 1.0;
+			while (bufferedVideoFrames.size() > 1 &&
+				bufferedVideoFrames.back().frame->presentationTime -
+				bufferedVideoFrames.front().frame->presentationTime > maximumBufferDuration)
+				bufferedVideoFrames.pop_front();
+			if (display3D && videoDepthProcessor.running())
+				videoDepthProcessor.submit(frame);
+		}
+	}
+
+	constexpr double targetBufferDuration = videoDepthLookaheadDuration;
+	if (!videoPlaybackBufferReady && !bufferedVideoFrames.empty()) {
+		const double bufferedDuration = bufferedVideoFrames.back().frame->presentationTime -
+			bufferedVideoFrames.front().frame->presentationTime;
+		const bool audioBuffered = !videoPlayer.hasAudio() ||
+			(videoPlayer.audioReady() && videoPlayer.bufferedAudioDuration() >= 0.12);
+		const bool startupTimeout = now - videoBufferStartedAt >= 1.0;
+		if ((bufferedDuration >= targetBufferDuration && audioBuffered) || startupTimeout) {
+			videoPlaybackBufferReady = true;
+			videoPresentationMediaOrigin = bufferedVideoFrames.front().frame->presentationTime;
+			videoPresentationWallOrigin = now + videoPlayer.audioDeviceLatency();
+			videoPresentationClockValid = true;
+			videoPlayer.setAudioBuffering(false);
+		}
+	}
+
+	const bool playing = videoPlayer.playing();
+	if (!playing) {
+		videoPresentationClockValid = false;
+	} else if (videoPlaybackBufferReady && !videoPresentationClockValid &&
+		!bufferedVideoFrames.empty()) {
+		videoPresentationMediaOrigin = bufferedVideoFrames.front().frame->presentationTime;
+		videoPresentationWallOrigin = now + videoPlayer.audioDeviceLatency();
+		videoPresentationClockValid = true;
+	}
+	if (playing && videoPlaybackBufferReady && videoPresentationClockValid &&
+		now >= videoPresentationWallOrigin) {
+		const double audioPosition = videoPlayer.audioPlaybackPosition();
+		const double presentationTime = audioPosition >= 0.0 ? audioPosition :
+			videoPresentationMediaOrigin + (now - videoPresentationWallOrigin);
+		BufferedVideoFrame selected;
+		while (!bufferedVideoFrames.empty() &&
+			bufferedVideoFrames.front().frame->presentationTime <= presentationTime + 0.001) {
+			selected = std::move(bufferedVideoFrames.front());
+			bufferedVideoFrames.pop_front();
+		}
+		if (selected.frame != nullptr) presentVideoFrame(selected.frame, selected.preview);
+	}
 	updateVideoSlider();
 	static std::string shownSubtitle;
 	const auto subtitle = videoPlayer.subtitleText();
@@ -205,28 +363,7 @@ static void serviceVideo() {
 		Image::updateVideoSubtitle(&context, subtitle);
 		shownSubtitle = subtitle;
 	}
-	bool previewFrame = false;
-	if (auto frame = videoPlayer.takeFrame(&previewFrame)) {
-		if (!videoFrameLoaded) {
-			context.imageType = fileList[fileIndex].type;
-			if (context.imageType == Light_Field_LKG)
-				context.gridSize = Core::getGridInfo(fileList[fileIndex].base);
-			context.fileName = fileList[fileIndex].base;
-			context.loading = false;
-			Image::displayHelp = false;
-			SDL_SetWindowTitle(context.window, fileList[fileIndex].name.c_str());
-			context.fileLink = fileList[fileIndex].link;
-			Image::updateVideoFrame(&context, *frame, true,
-				videoPlayer.width(), videoPlayer.height(), true);
-			context.infoText = Core::getFileText(fileList[fileIndex], context.imageSize);
-			videoFrameLoaded = true;
-			doneLoadingImage = true;
-			checkMouseState();
-		} else {
-			Image::updateVideoFrame(&context, *frame, false,
-				videoPlayer.width(), videoPlayer.height(), !previewFrame);
-		}
-	}
+	serviceVideoDepth();
 }
 auto preloadDir = 1;
 std::atomic doingPreload = false;
@@ -1126,7 +1263,181 @@ static std::array<std::string, 3> depthModelFiles = {
 	"DA3MONO-LARGE-714.onnx"
 };
 static std::array<int, 3> depthProcessSizes = { 560, 644, 714 };
+static std::array<std::string, 3> videoDepthModelFiles = {
+	"DA3-SMALL-280.onnx",
+	"DA3-SMALL-336.onnx",
+	"DA3-SMALL-392.onnx"
+};
+static std::array<int, 3> videoDepthProcessSizes = { 280, 336, 392 };
+
+static void setVideoDepthFallbackMode() {
+	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
+		preferredStereoMode == Anaglyph_Accurate || preferredStereoMode == Anaglyph_Vivid)
+		setStereoMode(preferredStereoMode);
+	else
+		setStereoMode(Native);
+}
+
+static void stopVideoDepth(bool disable3D) {
+	videoPlayer.setInferenceSize(0);
+	videoDepthProcessor.stop();
+	bufferedVideoDepthFrames.clear();
+	videoDepthBlend.clear();
+	Image::clearVideoDepth(&context);
+	videoDepthFrameLoaded = false;
+	activeVideoDepthModelOption = -1;
+	videoDepthRestartPending = false;
+	if (activeVideo && !fileList.empty())
+		context.imageType = fileList[fileIndex].type;
+	if (disable3D) {
+		setDisplay3D(false);
+		if (activeVideo) setStereoMode(Native);
+	}
+}
+
+static bool startVideoDepth() {
+	if (!activeVideo || !videoPlayer.ready() || fileList.empty()) return false;
+	stopVideoDepth(false);
+	const int modelOption = std::clamp(menuSelection[ChoiceModel.label], 0,
+		static_cast<int>(videoDepthModelFiles.size()) - 1);
+	VideoDepthProcessor::Config config;
+	config.modelDirectory = modelDirectory.empty()
+		? homePath / "Models" : std::filesystem::path(modelDirectory);
+	config.modelFilename = videoDepthModelFiles[modelOption];
+	config.processSize = videoDepthProcessSizes[modelOption];
+	config.targetFramesPerSecond = 15.0;
+	config.temporalResponse = 0.9f;
+	#ifdef RENDEPTH_ENABLE_CUDA
+	config.provider = DepthEstimator::Provider::CUDA;
+	#elif defined(RENDEPTH_ENABLE_ROCM)
+	config.provider = DepthEstimator::Provider::ROCM;
+	#endif
+	videoPlayer.setInferenceSize(config.processSize, config.targetFramesPerSecond);
+	if (!videoDepthProcessor.start(config)) {
+		videoPlayer.setInferenceSize(0);
+		return false;
+	}
+	activeVideoDepthModelOption = modelOption;
+	context.imageType = fileList[fileIndex].type;
+	setDisplay3D(true);
+	setVideoDepthFallbackMode();
+	Core::drawText(&context, "Loading Video Depth Model", Image::helpFont,
+		Image::helpTexture, Image::helpTextSize, "Help Texture");
+	Image::displayTip = true;
+	displayTipTime = getTimeNow();
+	if (lastVideoFrame != nullptr &&
+		lastVideoFrame->generation == videoPlayer.generation())
+		videoDepthProcessor.submit(lastVideoFrame);
+	if (!videoPlayer.playing()) videoPlayer.seek(videoPlayer.position(), false);
+	return true;
+}
+
+static void sampleVideoDepthBlend(double now) {
+	if (!videoDepthBlend.active) return;
+	constexpr double blendDuration = 0.05;
+	const float blend = static_cast<float>(std::clamp(
+		(now - videoDepthBlend.startTime) / blendDuration, 0.0, 1.0));
+	if (blend >= 1.0f) {
+		videoDepthBlend.displayed = std::move(videoDepthBlend.target);
+		videoDepthBlend.source.clear();
+		videoDepthBlend.active = false;
+		return;
+	}
+	for (size_t index = 0; index < videoDepthBlend.displayed.size(); ++index) {
+		const float source = videoDepthBlend.source[index];
+		const float target = videoDepthBlend.target[index];
+		videoDepthBlend.displayed[index] = static_cast<std::uint16_t>(
+			std::lround(source + (target - source) * blend));
+	}
+}
+
+static void serviceVideoDepth() {
+	if (!activeVideo) return;
+	if (const auto error = videoDepthProcessor.takeError(); !error.empty()) {
+		SDL_Log("Video depth inference failed: %s", error.c_str());
+		stopVideoDepth();
+		Core::drawText(&context, "Could Not Generate Video Depth", Image::helpFont,
+			Image::helpTexture, Image::helpTextSize, "Help Texture");
+		Image::displayTip = true;
+		displayTipTime = getTimeNow();
+		return;
+	}
+	auto completed = videoDepthProcessor.takeFrame();
+	if (completed != nullptr && completed->valid() &&
+		completed->generation == videoPlayer.generation()) {
+		bufferedVideoDepthFrames.push_back(std::move(completed));
+		while (bufferedVideoDepthFrames.size() > 24)
+			bufferedVideoDepthFrames.pop_front();
+	}
+
+	std::unique_ptr<VideoDepthFrame> selected;
+	if (lastVideoFrame != nullptr) {
+		// Depth is generated from frames decoded ahead of playback.  Do not use
+		// a future depth map for the currently displayed color frame: moving
+		// objects would appear spatially ahead of their color.  A late result is
+		// handled by retaining the previously displayed depth below.
+		const double selectionTime = lastVideoFrame->presentationTime + 0.001;
+		while (!bufferedVideoDepthFrames.empty() &&
+			bufferedVideoDepthFrames.front()->generation != lastVideoFrame->generation)
+			bufferedVideoDepthFrames.pop_front();
+		while (!bufferedVideoDepthFrames.empty() &&
+			bufferedVideoDepthFrames.front()->presentationTime <= selectionTime) {
+			selected = std::move(bufferedVideoDepthFrames.front());
+			bufferedVideoDepthFrames.pop_front();
+		}
+	}
+
+	constexpr double uploadInterval = 1.0 / 60.0;
+	const double now = getTimeNow();
+	bool upload = false;
+	if (selected != nullptr) {
+		const double selectedPresentationTime = selected->presentationTime;
+		const bool compatible = !videoDepthBlend.displayed.empty() &&
+			videoDepthBlend.width == selected->width &&
+			videoDepthBlend.height == selected->height &&
+			videoDepthBlend.displayed.size() == selected->values.size();
+		if (!compatible) {
+			videoDepthBlend.clear();
+			videoDepthBlend.displayed = std::move(selected->values);
+			videoDepthBlend.width = selected->width;
+			videoDepthBlend.height = selected->height;
+		} else {
+			sampleVideoDepthBlend(now);
+			videoDepthBlend.source = videoDepthBlend.displayed;
+			videoDepthBlend.target = std::move(selected->values);
+			videoDepthBlend.startTime = now - uploadInterval;
+			videoDepthBlend.active = true;
+			sampleVideoDepthBlend(now);
+		}
+		videoDepthBlend.presentationTime = selectedPresentationTime;
+		upload = true;
+	} else if (videoDepthBlend.active &&
+		(now - videoDepthBlend.lastUploadTime >= uploadInterval)) {
+		sampleVideoDepthBlend(now);
+		upload = true;
+	}
+	if (!upload) return;
+	if (Image::updateVideoDepth(&context, videoDepthBlend.displayed,
+			videoDepthBlend.width, videoDepthBlend.height) != 0) {
+		SDL_Log("Could not upload inferred video depth: %s", SDL_GetError());
+		return;
+	}
+	videoDepthBlend.lastUploadTime = now;
+	if (!videoDepthFrameLoaded) {
+		SDL_Log("Video depth stream ready: %dx%d at %.3f seconds.",
+			videoDepthBlend.width, videoDepthBlend.height,
+			videoDepthBlend.presentationTime);
+		videoDepthFrameLoaded = true;
+		checkMouseState();
+		context.imageType = Color_Plus_Depth;
+		if (display3D) refreshDisplay3D(Color_Plus_Depth);
+	}
+	context.imageType = Color_Plus_Depth;
+}
+
 static void changeModel(int option, bool init) {
+	if (!init && activeVideo && display3D)
+		videoDepthRestartPending = option != activeVideoDepthModelOption;
 	qualityMode = depthQuality[option];
 	depthSize = depthSizes[option];
 	if (!init) {
@@ -1277,19 +1588,32 @@ static void seekVideoFromSlider() {
 	if (!activeVideo || currentSlider == nullptr) return;
 	const double target = getSliderPercent(*currentSlider) * videoPlayer.duration();
 	if (!videoSliderScrubbing) {
-		videoPlayer.seek(target);
+		seekVideo(target);
 		return;
 	}
 	const double now = getTimeNow();
 	if (now - videoScrubLastPreviewTime >= videoScrubPreviewInterval) {
-		videoPlayer.seek(target, true);
+		seekVideo(target, true);
 		videoScrubLastPreviewTime = now;
 	}
 }
 
+static void seekVideo(double seconds, bool fastPreview) {
+	if (videoDepthProcessor.running()) {
+		videoDepthProcessor.reset();
+		videoDepthBlend.clear();
+		Image::clearVideoDepth(&context);
+		if (!fileList.empty()) context.imageType = fileList[fileIndex].type;
+		setVideoDepthFallbackMode();
+	}
+	resetVideoPlaybackBuffer();
+	lastVideoFrame.reset();
+	videoPlayer.seek(seconds, fastPreview);
+}
+
 static bool skipVideoBy(double seconds) {
 	if (!activeVideo) return false;
-	if (videoPlayer.ready()) videoPlayer.seek(videoPlayer.position() + seconds);
+	if (videoPlayer.ready()) seekVideo(videoPlayer.position() + seconds);
 	return true;
 }
 
@@ -1478,8 +1802,8 @@ static void finishSliderDrag() {
 	}
 	if (videoSliderScrubbing) {
 		if (activeVideo && videoPlayer.ready()) {
-	auto& timeline = getIcon(IconType::VideoSeek);
-			videoPlayer.seek(getSliderPercent(timeline) * videoPlayer.duration(), false);
+			auto& timeline = getIcon(IconType::VideoSeek);
+			seekVideo(getSliderPercent(timeline) * videoPlayer.duration(), false);
 			videoPlayer.setPlaying(videoSliderWasPlaying);
 		}
 		videoSliderScrubbing = false;
@@ -1494,20 +1818,22 @@ static void finishSliderDrag() {
 }
 
 static void setVideoControlsVisible(bool visible) {
-			auto& timeline = getIcon(IconType::VideoSeek);
-	timeline.active = visible;
-	if (!visible) {
-		if (currentSlider == &timeline || videoSliderScrubbing)
+	videoControlsVisible = activeVideo && visible;
+	auto& timeline = getIcon(IconType::VideoSeek);
+	auto& volume = getIcon(IconType::VideoVolume);
+	timeline.active = videoControlsVisible;
+	if (!videoControlsVisible) {
+		if (currentSlider == &timeline || currentSlider == &volume || videoSliderScrubbing)
 			finishSliderDrag();
-		getIcon(IconType::VideoVolume).active = false;
+		if (activeVideo) getIcon(IconType::Play).active = false;
+		volume.active = false;
 		getIcon(IconType::VideoAudio).active = false;
 		getIcon(IconType::VideoCaption).active = false;
-	}
-	if (visible) {
+	} else {
 		getIcon(IconType::Play).active = true;
-		getIcon(IconType::VideoVolume).active = activeVideo;
-		getIcon(IconType::VideoAudio).active = activeVideo;
-		getIcon(IconType::VideoCaption).active = activeVideo;
+		volume.active = true;
+		getIcon(IconType::VideoAudio).active = true;
+		getIcon(IconType::VideoCaption).active = true;
 	}
 }
 
@@ -1865,6 +2191,7 @@ static void setShowStereoSettings(bool show) {
 	showingStereoSettings = show;
 	auto& icon = getIcon(IconType::Settings);
 	icon.image = show ? IconType::Close : IconType::Settings;
+	if (activeVideo) setVideoControlsVisible(!show && !context.displayMenu);
 }
 
 static void toggleStereoSettings() {
@@ -1878,9 +2205,15 @@ static void toggleOptions() {
 	icon.image = context.displayMenu ? IconType::Close : IconType::Options;
 	setShowStereoSettings(showingStereoSettings && !context.displayMenu);
 	if (!context.displayMenu) {
+		if (videoDepthRestartPending) {
+			const bool restartVideoDepth = activeVideo && display3D;
+			videoDepthRestartPending = false;
+			if (restartVideoDepth) startVideoDepth();
+		}
 		if (depthRegenerated) {
 			depthRegenerated = false;
-			if (!isConverting && !context.loading && !doingPreload && !fileList.empty()) {
+			if (!activeVideo && !isConverting && !context.loading &&
+				!doingPreload && !fileList.empty()) {
 				parseFileList({ fileList[fileIndex].link });
 				loadImage(nullptr);
 			}
@@ -1943,7 +2276,10 @@ static void setPreferredStereo(ViewMode mode, bool saveMode) {
 		Image::setNativeOutputActive(&context, false);
 	updateStereoIcon();
 	if (!fileList.empty()) {
-		refreshDisplay3D(fileList[fileIndex].type);
+		const auto sourceType = activeVideo &&
+			(videoDepthFrameLoaded || videoDepthProcessor.running())
+			? Color_Plus_Depth : fileList[fileIndex].type;
+		refreshDisplay3D(sourceType);
 		Image::updateSize(&context);
 		Image::updateRatio(&context, windowSize);
 	}
@@ -2058,6 +2394,17 @@ static void toggleFullscreen() {
 void toggleStereo() {
 	if (isConverting) return;
 	if (fileList.empty()) return;
+	if (activeVideo) {
+		if (fileList[fileIndex].type != Color_Only) {
+			setDisplay3D(!display3D);
+			context.imageType = fileList[fileIndex].type;
+			refreshDisplay3D(context.imageType);
+			return;
+		}
+		if (display3D) stopVideoDepth();
+		else startVideoDepth();
+		return;
+	}
 	if (!display3D && fileList[fileIndex].type == Color_Only && !activeVideo)
 		callDepthGen(fileIndex);
 	if (display3D && fileList[fileIndex].type == Color_Plus_Depth &&
@@ -2431,7 +2778,10 @@ static int loadImage(void* ptr) {
 	targetVisibility = 0.0;
 	if (isSupportedVideo(fileList[fileIndex].link)) {
 		std::string error;
+		stopVideoDepth();
 		videoPlayer.close();
+		resetVideoPlaybackBuffer(false);
+		lastVideoFrame.reset();
 		videoPlayer.setVolume(currentVideoVolume);
 		activeVideo = videoPlayer.open(fileList[fileIndex].link, error);
 		videoFrameLoaded = false;
@@ -2439,6 +2789,7 @@ static int loadImage(void* ptr) {
 			failVideoLoad(error);
 			return 1;
 		}
+		resetVideoPlaybackBuffer(false);
 		setVideoControlsVisible(true);
 		getIcon(IconType::Play).image = IconType::Pause;
 		SDL_SetWindowTitle(context.window, fileList[fileIndex].name.c_str());
@@ -2448,7 +2799,10 @@ static int loadImage(void* ptr) {
 		return 0;
 	}
 	if (activeVideo) {
+		stopVideoDepth();
 		videoPlayer.close();
+		resetVideoPlaybackBuffer(false);
+		lastVideoFrame.reset();
 		activeVideo = false;
 		videoFrameLoaded = false;
 		setVideoControlsVisible(false);
@@ -2816,12 +3170,15 @@ void checkMouseState() {
 	auto aspectScale = glm::vec2(1.0);
 	if (preferredStereoMode == SBS_Full && isFullscreen)
 		aspectScale = glm::vec2(2.0, 1.0);
+	const bool currentSourceHasDepth = !fileList.empty() &&
+		(fileList[fileIndex].type == Color_Plus_Depth ||
+			fileList[fileIndex].type == Light_Field_LKG ||
+			(activeVideo && videoDepthFrameLoaded));
 	for (auto& icon : appIcons) {
 		auto displayLoading = !(icon.type == IconType::Loading && (!isConverting || isPlayingSlideshow));
 		auto displaySettings = !(icon.type == IconType::Settings &&
 			(!display3D || currentStereoMode == Depth_Zoom || preferredStereoMode == RGB_Depth ||
-				(!fileList.empty() && fileList[fileIndex].type != Color_Plus_Depth &&
-					fileList[fileIndex].type != Light_Field_LKG)));
+				!currentSourceHasDepth));
 		auto displayStereo = !((icon.type == IconType::Glasses || icon.type == IconType::Focus ||
 			icon.type == IconType::Layers) && (!showingStereoSettings || !display3D));
 		auto displayParallax = !(icon.type == IconType::Focus &&
@@ -2844,9 +3201,14 @@ void checkMouseState() {
 		if (withinArea(context.mouse, getCoordinates(icon.canvas().topLeft, aspectScale),
 			getCoordinates(icon.canvas().bottomRight, aspectScale))) {
 			icon.state = IconState::Near;
-			const bool displayVideo = (icon.type == IconType::VideoSeek ||
+			const bool videoOnlyControl = icon.type == IconType::VideoSeek ||
 				icon.type == IconType::VideoVolume || icon.type == IconType::VideoAudio ||
-				icon.type == IconType::VideoCaption) ? activeVideo : true;
+				icon.type == IconType::VideoCaption;
+			const bool videoPlayControl = activeVideo &&
+				(icon.type == IconType::Play || icon.type == IconType::Pause);
+			const bool displayVideo = videoOnlyControl
+				? activeVideo && videoControlsVisible
+				: (!videoPlayControl || videoControlsVisible);
 			icon.active = displayLoading && displaySettings && displayStereo && displayParallax &&
 				displayOpen && displaySave && displayMenu && displayXD && displayVideo;
 			if (icon.type == IconType::Loading) icon.active = true;
@@ -3408,11 +3770,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		finishSliderDrag();
 	} else if (event->type == SDL_EVENT_WINDOW_HIT_TEST) {
 		} else if (event->type == SDL_EVENT_KEY_DOWN) {
-			if (event->key.key == SDLK_ESCAPE) {
+		if (event->key.key == SDLK_ESCAPE) {
 			if(context.displayMenu) {
-				context.displayMenu = false;
-				auto& icon = getIcon(IconType::Options);
-				icon.image = IconType::Options;
+				toggleOptions();
 			} else if (isFullscreen) {
 				isFullscreen = false;
 				setFullscreen(isFullscreen);
@@ -3468,13 +3828,16 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			menuSelection[ChoiceEyes.label] = 1;
 		}
 
-		if (event->key.key == SDLK_SPACE || event->key.key == SDLK_KP_5) {
+		if (event->key.key == SDLK_SPACE) {
 			if (!isConverting && !doingPreload && !fileList.empty()) {
-				if (fileList[fileIndex].type == Color_Only && !activeVideo)
-					callDepthGen(fileIndex);
-				setDisplay3D(!display3D);
-				refreshDisplay3D(fileList[fileIndex].type);
+				if (activeVideo) {
+					if (!event->key.repeat) toggleSlideshow();
+				} else {
+					toggleStereo();
+				}
 			}
+		} else if (event->key.key == SDLK_KP_5) {
+			if (!isConverting && !doingPreload && !fileList.empty()) toggleStereo();
 		}
 
 		if (event->key.key == SDLK_RETURN && event->key.mod == SDL_KMOD_LALT) {
@@ -3499,6 +3862,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
 	} else if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
 		if (event->button.button == SDL_BUTTON_LEFT) {
+			const bool menuWasOpen = context.displayMenu;
 			context.mouse.x = event->button.x * Image::mouseScale;
 			context.mouse.y = event->button.y * Image::mouseScale;
 			mouseLastActive = getTimeNow();
@@ -3508,6 +3872,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 				sliderAspectScale = glm::vec2(2.0, 1.0);
 			mouseIsDown = true;
 			bool languageButtonClicked = false;
+			bool refreshMouseStateAfterClick = false;
 			for (auto& icon : appIcons) {
 				if (icon.state == IconState::Over && icon.active) {
 					auto allowCallback = true;
@@ -3548,6 +3913,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 								if (icon.callback) callbackQueue.push_back(icon.callback);
 							} else if (icon.callback && allowCallback) {
 								icon.callback();
+								if (icon.type == IconType::Settings)
+									refreshMouseStateAfterClick = true;
 							}
 						} else if (icon.mode == IconMode::Slider) {
 							currentSlider = &icon;
@@ -3564,8 +3931,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 							}
 						}
 					}
-				}
+					}
 			}
+			if (refreshMouseStateAfterClick) checkMouseState();
 			if (languageButtonClicked) {
 				// Rebuild the hover label after the track change so the selected
 				// language remains visible instead of being cleared by the click.
@@ -3575,7 +3943,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			}
 			if (currentSlider != nullptr) SDL_CaptureMouse(true);
 
-			if (context.displayMenu) {
+			if (menuWasOpen && context.displayMenu) {
 				for (const auto& choice : *context.menuChoices) {
 					auto optionIndex = (*context.menuRollover)[choice.label];
 					if (optionIndex >= 0) {
@@ -3680,7 +4048,10 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 }
 
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
+	stopVideoDepth();
 	videoPlayer.close();
+	resetVideoPlaybackBuffer(false);
+	lastVideoFrame.reset();
 	activeVideo = false;
 	saveOptions();
 	resetDepthGeneration();

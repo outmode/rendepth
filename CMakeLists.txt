@@ -292,6 +292,7 @@ endif()
 target_compile_definitions(Rendepth PUBLIC SDL_MAIN_USE_CALLBACKS)
 
 target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp
+		Source/VideoDepthProcessor.cpp
         Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
         Source/ModelDownloader.cpp)
 
