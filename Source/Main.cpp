@@ -2546,8 +2546,17 @@ void toggleStereo() {
 			refreshDisplay3D(context.imageType);
 			return;
 		}
-		if (display3D) stopVideoDepth();
-		else startVideoDepth();
+		if (display3D) {
+			// Keep the running depth processor and its latest frame cached while
+			// viewing the video in 2D, so returning to 3D does not reload the model.
+			setDisplay3D(false);
+			setStereoMode(Native);
+		} else if (videoDepthProcessor.running() || videoDepthFrameLoaded) {
+			setDisplay3D(true);
+			refreshDisplay3D(Color_Plus_Depth);
+		} else {
+			startVideoDepth();
+		}
 		return;
 	}
 	if (!display3D && fileList[fileIndex].type == Color_Only && !activeVideo)
@@ -2996,6 +3005,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	}
 	serviceNativeGpuUpscale();
 	serviceVideo();
+	Image::updateVideoBackgroundAnimation();
 	serviceScreenCapture();
 	// Screen capture shares the depth processor with video, but does not enter
 	// serviceVideo()'s activeVideo path where depth completion is normally

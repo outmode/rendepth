@@ -60,21 +60,28 @@ namespace {
 	}
 
 	glm::vec4 getVideoBackgroundColor(const VideoFrame& frame) {
-		if (frame.inferenceWidth <= 0 || frame.inferenceHeight <= 0 ||
-			frame.inferenceRGBA.size() < static_cast<size_t>(frame.inferenceWidth) *
-				frame.inferenceHeight * 4) return Image::clearColorSolid;
+		const auto* pixels = frame.inferenceRGBA.data();
+		int width = frame.inferenceWidth;
+		int height = frame.inferenceHeight;
+		if (width <= 0 || height <= 0 || frame.inferenceRGBA.size() <
+			static_cast<size_t>(width) * height * 4) {
+			if (frame.format != VideoFrame::Format::RGBA || frame.outputWidth <= 0 ||
+				frame.outputHeight <= 0 || frame.planes[0].size() <
+				static_cast<size_t>(frame.outputWidth) * frame.outputHeight * 4)
+				return Image::clearColorSolid;
+			pixels = frame.planes[0].data();
+			width = frame.outputWidth;
+			height = frame.outputHeight;
+		}
 		glm::vec4 result{};
 		constexpr int sampleSize = 4;
 		for (int y = 0; y < sampleSize; ++y) {
-			const int sampleY = std::min(frame.inferenceHeight - 1,
-				y * frame.inferenceHeight / sampleSize);
+			const int sampleY = std::min(height - 1, y * height / sampleSize);
 			for (int x = 0; x < sampleSize; ++x) {
-				const int sampleX = std::min(frame.inferenceWidth - 1,
-					x * frame.inferenceWidth / sampleSize);
-				const size_t offset = static_cast<size_t>(sampleY * frame.inferenceWidth +
+				const int sampleX = std::min(width - 1, x * width / sampleSize);
+				const size_t offset = static_cast<size_t>(sampleY * width +
 					sampleX) * 4;
-				result += glm::vec4(frame.inferenceRGBA[offset],
-					frame.inferenceRGBA[offset + 1], frame.inferenceRGBA[offset + 2], 255.0f);
+				result += glm::vec4(pixels[offset], pixels[offset + 1], pixels[offset + 2], 255.0f);
 			}
 		}
 		result /= static_cast<float>(sampleSize * sampleSize * 255);
@@ -82,7 +89,7 @@ namespace {
 		return glm::mix(glm::vec4(0.1f, 0.1f, 0.1f, 1.0f), result, 0.9f);
 	}
 
-	void updateVideoSolidColor() {
+void updateVideoSolidColor() {
 		if (!videoSolidTransitionActive) return;
 		const auto elapsed = BlurClock::now() - videoSolidTransitionStart;
 		const float blend = glm::clamp(
@@ -202,6 +209,10 @@ namespace {
 		reloaded.displayName = displayName;
 		config = reloaded;
 	}
+}
+
+void updateVideoBackgroundAnimationImpl() {
+	updateVideoSolidColor();
 }
 
 glm::vec2 Image::getIconCoordinates(IconType iconType) {
@@ -582,7 +593,7 @@ int Image::updateVideoFrame(Context* context, const VideoFrame& frame, bool firs
 		imageDataFrag.blurMix = 0.0f;
 		refreshedVideoBackground = true;
 	}
-	if (refreshedVideoBackground && !frame.inferenceRGBA.empty()) {
+	if (refreshedVideoBackground) {
 		const glm::vec4 nextColor = getVideoBackgroundColor(frame);
 		if (!videoSolidColorValid) {
 			clearColorSolid = nextColor;
@@ -597,6 +608,17 @@ int Image::updateVideoFrame(Context* context, const VideoFrame& frame, bool firs
 		}
 	}
 	return 0;
+}
+
+void Image::updateVideoBackgroundAnimation() {
+	updateVideoBackgroundAnimationImpl();
+	if (!videoBlurActive) {
+		imageDataFrag.blurMix = 0.0f;
+		return;
+	}
+	imageDataFrag.blurMix = glm::clamp(
+		std::chrono::duration<float>(BlurClock::now() - blurTransitionStart).count() /
+		std::chrono::duration<float>(videoBlurInterval).count(), 0.0f, 1.0f);
 }
 
 int Image::updateVideoDepth(Context* context, const std::vector<std::uint16_t>& values,
@@ -682,29 +704,71 @@ void Image::updateVideoSubtitle(Context* context, const std::string& text) {
 			SDL_ReleaseGPUTexture(context->device, subtitleTexture);
 			subtitleTexture = nullptr;
 		}
+		if (subtitleShadowTexture != nullptr) {
+			SDL_ReleaseGPUTexture(context->device, subtitleShadowTexture);
+			subtitleShadowTexture = nullptr;
+		}
 		subtitleTextSize = {};
 		return;
 	}
 	if (subtitleFont == nullptr) return;
 	const auto wrapWidth = std::max(256.0f, context->windowSize.x * 0.95f);
-	SDL_Color textColor = { 255, 255, 255, 255 };
-	SDL_Surface* subtitleData = TTF_RenderText_Blended_Wrapped(subtitleFont,
+	const auto outlineSize = std::max(1, static_cast<int>(std::lround(2.0f * context->displayScale)));
+	const SDL_Color outlineColor = { 96, 96, 96, 255 };
+	const SDL_Color textColor = { 255, 255, 255, 255 };
+
+	TTF_SetFontOutline(subtitleFont, outlineSize);
+	SDL_Surface* outlinedText = TTF_RenderText_Blended_Wrapped(subtitleFont,
+		text.c_str(), text.size(), outlineColor, static_cast<int>(wrapWidth));
+	TTF_SetFontOutline(subtitleFont, 0);
+	SDL_Surface* plainText = TTF_RenderText_Blended_Wrapped(subtitleFont,
 		text.c_str(), text.size(), textColor, static_cast<int>(wrapWidth));
-	if (subtitleData == nullptr) {
+	if (outlinedText == nullptr || plainText == nullptr) {
 		SDL_Log("Could Not Render Subtitle Font.");
+		if (outlinedText != nullptr) SDL_DestroySurface(outlinedText);
+		if (plainText != nullptr) SDL_DestroySurface(plainText);
 		return;
 	}
+	SDL_Surface* subtitleData = SDL_CreateSurface(outlinedText->w, outlinedText->h,
+		SDL_PIXELFORMAT_ABGR8888);
+	if (subtitleData == nullptr) {
+		SDL_DestroySurface(outlinedText);
+		SDL_DestroySurface(plainText);
+		return;
+	}
+	SDL_BlitSurface(outlinedText, nullptr, subtitleData, nullptr);
+	const SDL_Rect textDestination = { outlineSize, outlineSize, plainText->w, plainText->h };
+	SDL_Surface* whiteText = SDL_CreateSurface(outlinedText->w, outlinedText->h,
+		SDL_PIXELFORMAT_ABGR8888);
+	if (whiteText == nullptr) {
+		SDL_DestroySurface(outlinedText);
+		SDL_DestroySurface(plainText);
+		SDL_DestroySurface(subtitleData);
+		return;
+	}
+	SDL_BlitSurface(plainText, nullptr, whiteText, &textDestination);
+	SDL_Surface* rgbaShadowData = SDL_ConvertSurface(subtitleData, SDL_PIXELFORMAT_ABGR8888);
+	SDL_BlitSurface(plainText, nullptr, subtitleData, &textDestination);
+	SDL_DestroySurface(outlinedText);
+	SDL_DestroySurface(plainText);
 	subtitleTextSize = { subtitleData->w, subtitleData->h };
 	if (subtitleTexture != nullptr) {
 		SDL_ReleaseGPUTexture(context->device, subtitleTexture);
 		subtitleTexture = nullptr;
 	}
-	SDL_Surface* rgbaSubtitleData = SDL_ConvertSurface(subtitleData, SDL_PIXELFORMAT_ABGR8888);
-	if (rgbaSubtitleData != nullptr) {
-		uploadTexture(context, rgbaSubtitleData, &subtitleTexture, "Subtitle Texture");
-		SDL_DestroySurface(rgbaSubtitleData);
+	if (subtitleShadowTexture != nullptr) {
+		SDL_ReleaseGPUTexture(context->device, subtitleShadowTexture);
+		subtitleShadowTexture = nullptr;
 	}
+	SDL_Surface* rgbaSubtitleData = SDL_ConvertSurface(subtitleData, SDL_PIXELFORMAT_ABGR8888);
+	if (rgbaShadowData != nullptr && rgbaSubtitleData != nullptr) {
+		uploadTexture(context, rgbaShadowData, &subtitleShadowTexture, "Subtitle Shadow Texture");
+		uploadTexture(context, rgbaSubtitleData, &subtitleTexture, "Subtitle Texture");
+	}
+	if (rgbaShadowData != nullptr) SDL_DestroySurface(rgbaShadowData);
+	if (rgbaSubtitleData != nullptr) SDL_DestroySurface(rgbaSubtitleData);
 	SDL_DestroySurface(subtitleData);
+	SDL_DestroySurface(whiteText);
 }
 
 void Image::initMenuTexture() {
@@ -2389,15 +2453,7 @@ void Image::setSpriteUniforms(glm::vec3 position, glm::vec3 size, glm::vec4 colo
 }
 
 int Image::draw(Context* context) {
-	updateVideoSolidColor();
-	if (videoBlurActive) {
-		const auto elapsed = BlurClock::now() - blurTransitionStart;
-		imageDataFrag.blurMix = glm::clamp(
-			std::chrono::duration<float>(elapsed).count() /
-			std::chrono::duration<float>(videoBlurInterval).count(), 0.0f, 1.0f);
-	} else {
-		imageDataFrag.blurMix = 0.0f;
-	}
+	updateVideoBackgroundAnimation();
 	if (nativeOutputEnabled) {
 		nativeOutputSourceReady = imageTexture != nullptr;
 		if (nativeOutputSourceReady) drawNativeOutput(context);
@@ -2566,7 +2622,6 @@ int Image::draw(Context* context) {
 			auto viewColorGrayLight = style.getColor(Style::Color::Gray, Style::Alpha::Weak);
 			auto viewColorBlack = style.getColor(Style::Color::Black, Style::Alpha::Strong);
 			auto viewColorBlackSolid = style.getColor(Style::Color::Black, Style::Alpha::Solid);
-			auto viewColorBlackLight = style.getColor(Style::Color::Black, Style::Alpha::Weak);
 			auto viewColorBlueSolid = style.getColor(Style::Color::Black, Style::Alpha::Solid);
 			if (context->mode == Anaglyph_Accurate || context->mode == Anaglyph_Vivid) {
 				viewColorPink = style.toAnaglyph(viewColorPink);
@@ -2586,7 +2641,8 @@ int Image::draw(Context* context) {
 					auto iconCanvas = icon.canvas();
 					auto sliderPosition = Utils::getCanvasPosition(context, &iconCanvas, nullptr, aspectScale * context->displayScale);
 					auto slideEnd = icon.slider.size.y / icon.slider.size.x * 0.5;
-					auto spriteColor = viewColorGrayLight;
+					auto spriteColor = context->backgroundStyle == Light
+					? glm::vec4(0.18f, 0.18f, 0.18f, 0.33f) : viewColorGrayLight;
 					if (context->mode == RGB_Depth && view > 0) spriteColor = uiColorDepth;
 					setSpriteUniforms(glm::vec3(sliderPosition, 1.0), glm::vec3(icon.slider.size * context->displayScale, 1.0),
 						spriteColor, (float)icon.visibility, 1, { 0, 0 },
@@ -2757,10 +2813,8 @@ int Image::draw(Context* context) {
 				}
 			}
 
-			if (!context->displayMenu && subtitleTexture != nullptr) {
+			if (!context->displayMenu && subtitleTexture != nullptr && subtitleShadowTexture != nullptr) {
 				bindPipeline(renderPass, spritePipeline);
-				SDL_GPUTextureSamplerBinding subtitleBindings[1] = {{ .texture = subtitleTexture, .sampler = imageSampler }};
-				SDL_BindGPUFragmentSamplers(renderPass, 0, &subtitleBindings[0], 1);
 				const auto subtitleMargin = 24.0f * context->displayScale;
 				const auto subtitleCenter = glm::vec3(windowSize.x * 0.5f, windowSize.y, 0.0f) -
 					glm::vec3(0.0f, subtitleTextSize.y + subtitleMargin, 0.0f);
@@ -2771,11 +2825,15 @@ int Image::draw(Context* context) {
 					glm::vec2(subtitleShadowOffset.x, 0.0f),
 					glm::vec2(0.0f, -subtitleShadowOffset.y),
 					glm::vec2(0.0f, subtitleShadowOffset.y)}) {
+					SDL_GPUTextureSamplerBinding shadowBindings[1] = {{ .texture = subtitleShadowTexture, .sampler = imageSampler }};
+					SDL_BindGPUFragmentSamplers(renderPass, 0, &shadowBindings[0], 1);
 					setSpriteUniforms(subtitleCenter + glm::vec3(offset, 0.0f), subtitleSize,
-						viewColorBlackLight, 1.0f, 1, {0.0f, 0.0f}, {1.0f, 1.0f},
+						glm::vec4(0.0f, 0.0f, 0.0f, 0.33f), 1.0f, 1, {0.0f, 0.0f}, {1.0f, 1.0f},
 						glm::vec2(0.5f), glm::vec3(aspectScale, 1.0f));
 					drawSprite(commandBuffer, renderPass);
 				}
+				SDL_GPUTextureSamplerBinding subtitleBindings[1] = {{ .texture = subtitleTexture, .sampler = imageSampler }};
+				SDL_BindGPUFragmentSamplers(renderPass, 0, &subtitleBindings[0], 1);
 				setSpriteUniforms(subtitleCenter, glm::vec3(subtitleTextSize, 1.0f),
 					viewColorWhiteSolid, 1.0f, 1, {0.0f, 0.0f}, {1.0f, 1.0f},
 					glm::vec2(0.5f), glm::vec3(aspectScale, 1.0f));
@@ -3017,6 +3075,7 @@ void Image::quit(Context* context){
 	SDL_ReleaseGPUTexture(context->device, iconTexture);
 	SDL_ReleaseGPUTexture(context->device, helpTexture);
 	if (subtitleTexture != nullptr) SDL_ReleaseGPUTexture(context->device, subtitleTexture);
+	if (subtitleShadowTexture != nullptr) SDL_ReleaseGPUTexture(context->device, subtitleShadowTexture);
 	SDL_ReleaseGPUTexture(context->device, menuTexture);
 	SDL_ReleaseGPUTexture(context->device, sliderTexture);
 	if (exportTexture != nullptr) SDL_ReleaseGPUTexture(context->device, exportTexture);

@@ -1058,6 +1058,39 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 			impl->subtitleStreamIndices.push_back(static_cast<int>(i));
 	}
 	impl->selectedAudioTrack = 0;
+	if (impl->audioStreamIndices.size() > 1) {
+		int englishTrack = -1;
+		for (int track = 0; track < static_cast<int>(impl->audioStreamIndices.size()); ++track) {
+			const auto* audioStream = impl->format->streams[impl->audioStreamIndices[track]];
+			const auto* language = av_dict_get(audioStream->metadata, "language", nullptr, 0);
+			std::string code = language != nullptr && language->value != nullptr ? language->value : "";
+			std::transform(code.begin(), code.end(), code.begin(),
+				[](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+			if (code == "eng" || code == "en") {
+				englishTrack = track;
+				break;
+			}
+		}
+		if (englishTrack < 0) {
+			for (int track = 0; track < static_cast<int>(impl->audioStreamIndices.size()); ++track) {
+				const auto* audioStream = impl->format->streams[impl->audioStreamIndices[track]];
+				for (const char* key : {"title", "handler_name"}) {
+					const auto* label = av_dict_get(audioStream->metadata, key, nullptr, 0);
+					if (label != nullptr && label->value != nullptr) {
+						std::string name = label->value;
+						std::transform(name.begin(), name.end(), name.begin(),
+							[](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+						if (name.find("english") != std::string::npos) {
+							englishTrack = track;
+							break;
+						}
+					}
+				}
+				if (englishTrack >= 0) break;
+			}
+		}
+		if (englishTrack >= 0) impl->selectedAudioTrack = englishTrack;
+	}
 	impl->requestedAudioTrack = -1;
 	impl->selectedSubtitleTrack = noSubtitleTrack;
 	impl->requestedSubtitleTrack = noSubtitleRequest;

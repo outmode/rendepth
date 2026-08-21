@@ -55,6 +55,7 @@ public:
 	inline static SDL_GPUTexture* helpTexture = nullptr;
 	inline static SDL_GPUTexture* infoTexture = nullptr;
 	inline static SDL_GPUTexture* subtitleTexture = nullptr;
+	inline static SDL_GPUTexture* subtitleShadowTexture = nullptr;
 	inline static SDL_GPUTexture* menuTexture = nullptr;
 	inline static SDL_GPUTexture* sliderTexture = nullptr;
 	inline static SDL_GPUTexture* exportTexture = nullptr;
@@ -200,6 +201,7 @@ public:
 	static int load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData);
 	static int updateVideoFrame(Context* context, const VideoFrame& frame, bool firstFrame,
 		int logicalWidth, int logicalHeight, bool updateBlur = true);
+	static void updateVideoBackgroundAnimation();
 	static int updateVideoDepth(Context* context, const std::vector<std::uint16_t>& values,
 		int width, int height);
 	static void clearVideoDepth(Context* context);
