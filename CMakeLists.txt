@@ -173,7 +173,7 @@ if(RENDEPTH_COMPILE_SHADERS)
     set(RENDEPTH_SHADER_OUTPUTS)
     set(QUILTTEST_SHADER_OUTPUTS)
     foreach(shader IN ITEMS
-            Image.vert Image.frag VideoYUV.vert VideoYUV.frag
+            Image.vert Image.frag DepthRefine.frag VideoYUV.vert VideoYUV.frag
             Icon.vert Icon.frag Sprite.vert Sprite.frag Interlacer.frag
             QuiltTest.vert QuiltTest.frag)
         set(shader_spv "${CMAKE_SOURCE_DIR}/Shaders/Compiled/${shader}.spv")
@@ -293,6 +293,7 @@ target_compile_definitions(Rendepth PUBLIC SDL_MAIN_USE_CALLBACKS)
 
 target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp
 		Source/VideoDepthProcessor.cpp
+		Source/ScreenCapture.cpp
         Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
         Source/ModelDownloader.cpp)
 
@@ -718,5 +719,16 @@ target_include_directories(QuiltTest PRIVATE
         ThirdParty/SDL/include ThirdParty/rapidjson/include)
 target_link_libraries(QuiltTest PRIVATE SDL3::SDL3)
 if(RENDEPTH_COMPILE_SHADERS)
-    add_dependencies(QuiltTest QuiltTestShaders)
+	add_dependencies(QuiltTest QuiltTestShaders)
+endif()
+
+if(UNIX AND NOT APPLE)
+	find_package(PkgConfig REQUIRED)
+	pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
+	pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-1.0 gstreamer-app-1.0)
+	target_link_libraries(Rendepth PUBLIC PkgConfig::GIO PkgConfig::GSTREAMER)
+	add_executable(ScreenCaptureTest Source/ScreenCaptureTest.cpp)
+	target_include_directories(ScreenCaptureTest PRIVATE ThirdParty/SDL/include)
+	target_link_libraries(ScreenCaptureTest PRIVATE
+		SDL3::SDL3 PkgConfig::GIO PkgConfig::GSTREAMER)
 endif()

@@ -65,10 +65,12 @@
 #include "ModelDownloader.h"
 #include "VideoPlayer.h"
 #include "VideoDepthProcessor.h"
+#include "ScreenCapture.h"
 
 Context context{};
 Image imageView{};
 static VideoPlayer videoPlayer;
+static ScreenCapture screenCapture;
 static VideoDepthProcessor videoDepthProcessor;
 static std::shared_ptr<VideoFrame> lastVideoFrame;
 struct BufferedVideoFrame {
@@ -111,6 +113,7 @@ struct VideoDepthBlendState {
 };
 static VideoDepthBlendState videoDepthBlend;
 static bool activeVideo = false;
+static bool activeScreenCapture = false;
 static bool videoFrameLoaded = false;
 static bool videoDepthFrameLoaded = false;
 static int activeVideoDepthModelOption = -1;
@@ -127,8 +130,9 @@ static bool isSupportedVideo(const std::string& path) {
 }
 
 static void serviceVideo();
+static void serviceScreenCapture();
 static void serviceVideoDepth();
-static void resetVideoPlaybackBuffer(bool holdAudio = true);
+static void resetVideoPlaybackBuffer(bool holdAudio = true, bool clearDepth = true);
 static bool startVideoDepth();
 static void stopVideoDepth(bool disable3D = true);
 static void seekVideo(double seconds, bool fastPreview = false);
@@ -244,7 +248,7 @@ static void failVideoLoad(const std::string& error) {
 	Image::displayInfo = false;
 }
 
-static void resetVideoPlaybackBuffer(bool holdAudio) {
+static void resetVideoPlaybackBuffer(bool holdAudio, bool clearDepth) {
 	bufferedVideoFrames.clear();
 	bufferedVideoDepthFrames.clear();
 	videoDepthBlend.clear();
@@ -252,7 +256,7 @@ static void resetVideoPlaybackBuffer(bool holdAudio) {
 	videoPresentationClockValid = false;
 	videoBufferStartedAt = -1.0;
 	videoPlaybackGeneration = videoPlayer.generation();
-	if (videoDepthProcessor.running()) {
+	if (clearDepth && videoDepthProcessor.running()) {
 		Image::clearVideoDepth(&context);
 		videoDepthFrameLoaded = false;
 		if (!fileList.empty()) context.imageType = fileList[fileIndex].type;
@@ -263,25 +267,41 @@ static void resetVideoPlaybackBuffer(bool holdAudio) {
 static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool preview) {
 	if (frame == nullptr) return;
 	lastVideoFrame = frame;
-	videoPlayer.setPresentedPosition(frame->presentationTime);
+	if (activeVideo) videoPlayer.setPresentedPosition(frame->presentationTime);
 	if (!videoFrameLoaded) {
-		context.imageType = fileList[fileIndex].type;
+		context.imageType = activeScreenCapture ? Color_Only : fileList[fileIndex].type;
 		if (context.imageType == Light_Field_LKG)
 			context.gridSize = Core::getGridInfo(fileList[fileIndex].base);
-		context.fileName = fileList[fileIndex].base;
+		context.fileName = activeScreenCapture ? "Screen Capture" : fileList[fileIndex].base;
 		context.loading = false;
 		Image::displayHelp = false;
-		SDL_SetWindowTitle(context.window, fileList[fileIndex].name.c_str());
-		context.fileLink = fileList[fileIndex].link;
+		SDL_SetWindowTitle(context.window, activeScreenCapture ? "Rendepth - Screen Capture" : fileList[fileIndex].name.c_str());
+		context.fileLink = activeScreenCapture ? "screen-capture" : fileList[fileIndex].link;
 		Image::updateVideoFrame(&context, *frame, true,
-			videoPlayer.width(), videoPlayer.height(), true);
-		context.infoText = Core::getFileText(fileList[fileIndex], context.imageSize);
+			activeScreenCapture ? frame->width : videoPlayer.width(),
+			activeScreenCapture ? frame->height : videoPlayer.height(), true);
+		context.infoText = activeScreenCapture ? "Live screen capture" : Core::getFileText(fileList[fileIndex], context.imageSize);
 		videoFrameLoaded = true;
-		doneLoadingImage = true;
+		if (activeScreenCapture) {
+			Image::updateSize(&context);
+			doneLoadingImage = false;
+		} else {
+			doneLoadingImage = true;
+		}
 		checkMouseState();
 	} else {
 		Image::updateVideoFrame(&context, *frame, false,
 			videoPlayer.width(), videoPlayer.height(), !preview);
+	}
+}
+
+static void serviceScreenCapture() {
+	if (!activeScreenCapture) return;
+	if (auto frame = screenCapture.takeFrame()) {
+		if (videoFrameLoaded && (frame->width != context.imageSize.x || frame->height != context.imageSize.y))
+			videoFrameLoaded = false;
+		presentVideoFrame(frame, false);
+		if (videoDepthProcessor.running()) videoDepthProcessor.submit(frame);
 	}
 }
 
@@ -298,8 +318,15 @@ static void serviceVideo() {
 	const double now = getTimeNow();
 	bool previewFrame = false;
 	if (auto frame = videoPlayer.takeFrame(&previewFrame)) {
-		if (previewFrame || !videoPlayer.playing()) {
+		if (previewFrame) {
 			resetVideoPlaybackBuffer();
+			videoPlaybackGeneration = frame->generation;
+			presentVideoFrame(frame, true);
+		} else if (!videoPlayer.playing()) {
+			// A normal pause may deliver one final decoded frame. Clear stale
+			// presentation data, but retain the inferred depth texture so the
+			// current frame remains in stereo while paused.
+			resetVideoPlaybackBuffer(true, false);
 			videoPlaybackGeneration = frame->generation;
 			presentVideoFrame(frame, true);
 		} else {
@@ -537,6 +564,7 @@ static void queueRapidBrowseNavigation(bool previous) {
 }
 
 void gotoPreviousImage(bool seekActiveVideo = true) {
+	if (activeScreenCapture) return;
 	if (seekActiveVideo && skipVideoBy(-15.0)) return;
 	noteRapidBrowseNavigation();
 	if (rapidBrowseMode && isConverting) {
@@ -583,6 +611,7 @@ void gotoPreviousImage(bool seekActiveVideo = true) {
 }
 
 void gotoNextImage(bool seekActiveVideo = true) {
+	if (activeScreenCapture) return;
 	if (seekActiveVideo && skipVideoBy(15.0)) return;
 	noteRapidBrowseNavigation();
 	if (rapidBrowseMode && isConverting) {
@@ -697,6 +726,7 @@ static void setDisplay3D(bool display);
 static void setStereoMode(ViewMode mode);
 static void refreshDisplay3D(StereoFormat type);
 static void toggleFullscreen();
+static void toggleScreenCapture();
 static void toggleSlideshow();
 static void openFile();
 static void openFolder();
@@ -880,6 +910,34 @@ Icon IconFullscreen = {
 	false
 };
 
+Icon IconScreenCapture = {
+	IconType::Crop,
+	IconType::Crop,
+	IconGroup::None,
+	IconMode::Button,
+	IconState::Idle,
+	"Capture Screen",
+	style.getColor(Style::Color::White, Style::Alpha::Solid),
+	[]()->Canvas {
+		return {
+			sizeStandard,
+			{ -positionEdge, style.getIconRadius(Style::getCurrentScale()) * 3.0 +
+				style.getIconSpacer(Style::getCurrentScale()) * 2.0 +
+				style.getInfo(Style::getCurrentScale()) },
+			alignRightTop,
+			{-positionEdge * 3.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0},
+			{0.0, positionEdge * 3.0 + style.getInfo(Style::getCurrentScale()),
+				1.0, 0.0}};
+	},
+	[]() {
+		if (isConverting) return;
+		toggleScreenCapture();
+	},
+	1.0,
+	false,
+	false
+};
+
 Icon IconClose = {
 	IconType::Close,
 	IconType::Close,
@@ -917,7 +975,12 @@ Icon IconHelp = {
 	[]()->Canvas {
 		return {
 			sizeStandard,
-{ -positionEdge, style.getIconRadius(Style::getCurrentScale()) * 3.0 + style.getIconSpacer(Style::getCurrentScale()) * 2.0 + style.getInfo(Style::getCurrentScale()) },
+	{ -(positionEdge + style.getIconRadius(Style::getCurrentScale()) +
+		style.getIconGutter(Style::getCurrentScale()) +
+		style.getIconSpacer(Style::getCurrentScale()) * 2.0),
+		style.getIconRadius(Style::getCurrentScale()) * 3.0 +
+		style.getIconSpacer(Style::getCurrentScale()) * 2.0 +
+		style.getInfo(Style::getCurrentScale()) },
 			alignRightTop,
 			{-positionEdge * 3.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0},
 			{0.0, positionEdge * 3.0 + style.getInfo(Style::getCurrentScale()),
@@ -1236,6 +1299,7 @@ static void changeEyes(int option) {
 
 static void endPreload(bool success);
 static auto depthRegenerated = false;
+static bool keep3DForDepthReload = false;
 static void waitForDepthThread() {
 	if (depthGenThread != nullptr) {
 		while (depthGenAlive.load(std::memory_order_acquire)) {
@@ -1289,7 +1353,9 @@ static void stopVideoDepth(bool disable3D) {
 	videoDepthFrameLoaded = false;
 	activeVideoDepthModelOption = -1;
 	videoDepthRestartPending = false;
-	if (activeVideo && !fileList.empty())
+	if (activeScreenCapture)
+		context.imageType = Color_Only;
+	else if (activeVideo && !fileList.empty())
 		context.imageType = fileList[fileIndex].type;
 	if (disable3D) {
 		setDisplay3D(false);
@@ -1298,7 +1364,8 @@ static void stopVideoDepth(bool disable3D) {
 }
 
 static bool startVideoDepth() {
-	if (!activeVideo || !videoPlayer.ready() || fileList.empty()) return false;
+	if ((!activeVideo && !activeScreenCapture) || (activeVideo && !videoPlayer.ready()) ||
+		(!activeScreenCapture && fileList.empty())) return false;
 	stopVideoDepth(false);
 	const int modelOption = std::clamp(menuSelection[ChoiceModel.label], 0,
 		static_cast<int>(videoDepthModelFiles.size()) - 1);
@@ -1313,13 +1380,13 @@ static bool startVideoDepth() {
 	#elif defined(RENDEPTH_ENABLE_ROCM)
 	config.provider = DepthEstimator::Provider::ROCM;
 	#endif
-	videoPlayer.setInferenceSize(config.processSize, config.targetFramesPerSecond);
+	if (activeVideo) videoPlayer.setInferenceSize(config.processSize, config.targetFramesPerSecond);
 	if (!videoDepthProcessor.start(config)) {
 		videoPlayer.setInferenceSize(0);
 		return false;
 	}
 	activeVideoDepthModelOption = modelOption;
-	context.imageType = fileList[fileIndex].type;
+	context.imageType = activeScreenCapture ? Color_Only : fileList[fileIndex].type;
 	setDisplay3D(true);
 	setVideoDepthFallbackMode();
 	Core::drawText(&context, "Loading Video Depth Model", Image::helpFont,
@@ -1329,7 +1396,7 @@ static bool startVideoDepth() {
 	if (lastVideoFrame != nullptr &&
 		lastVideoFrame->generation == videoPlayer.generation())
 		videoDepthProcessor.submit(lastVideoFrame);
-	if (!videoPlayer.playing()) videoPlayer.seek(videoPlayer.position(), false);
+	if (activeVideo && !videoPlayer.playing()) videoPlayer.seek(videoPlayer.position(), false);
 	return true;
 }
 
@@ -1353,7 +1420,7 @@ static void sampleVideoDepthBlend(double now) {
 }
 
 static void serviceVideoDepth() {
-	if (!activeVideo) return;
+	if (!activeVideo && !activeScreenCapture) return;
 	if (const auto error = videoDepthProcessor.takeError(); !error.empty()) {
 		SDL_Log("Video depth inference failed: %s", error.c_str());
 		stopVideoDepth();
@@ -1365,7 +1432,7 @@ static void serviceVideoDepth() {
 	}
 	auto completed = videoDepthProcessor.takeFrame();
 	if (completed != nullptr && completed->valid() &&
-		completed->generation == videoPlayer.generation()) {
+		(activeScreenCapture || completed->generation == videoPlayer.generation())) {
 		bufferedVideoDepthFrames.push_back(std::move(completed));
 		while (bufferedVideoDepthFrames.size() > 24)
 			bufferedVideoDepthFrames.pop_front();
@@ -1429,6 +1496,10 @@ static void serviceVideoDepth() {
 		videoDepthFrameLoaded = true;
 		checkMouseState();
 		context.imageType = Color_Plus_Depth;
+		// Capture has no file-backed source type to refresh from. Once the first
+		// inferred map is uploaded, make the capture source explicitly RGB-D and
+		// keep the requested 3D view enabled.
+		if (activeScreenCapture && !display3D) setDisplay3D(true);
 		if (display3D) refreshDisplay3D(Color_Plus_Depth);
 	}
 	context.imageType = Color_Plus_Depth;
@@ -1787,7 +1858,7 @@ static Icon IconVideoCaption = {
 	}, []() { videoPlayer.cycleSubtitleTrack(); }, 1.0, false, false
 };
 
-static std::vector appIcons = { IconLoading, IconFullscreen, IconOpen, IconBatch, IconSave,
+static std::vector appIcons = { IconLoading, IconFullscreen, IconScreenCapture, IconOpen, IconBatch, IconSave,
 	IconOptions, IconSettings, IconBack, IconForward, IconStereo3D,
 	IconStrength, IconDepth, IconOffset, IconPlay, IconVideoSeek, IconVideoVolume,
 	IconVideoAudio, IconVideoCaption, IconHelp, IconClose };
@@ -2210,11 +2281,21 @@ static void toggleOptions() {
 			if (restartVideoDepth) startVideoDepth();
 		}
 		if (depthRegenerated) {
+			const bool reloadDepthIn3D = !activeVideo && display3D;
+			const bool reloadIn3D = reloadDepthIn3D && preferredStereoMode != Light_Field;
 			depthRegenerated = false;
 			if (!activeVideo && !isConverting && !context.loading &&
 				!doingPreload && !fileList.empty()) {
+				// Light-field output cannot safely display the temporary color-only
+				// source while a new RGB-D image is being generated. Keep the user
+				// in a valid 2D state until conversionCompleted restores the source.
+				if (reloadDepthIn3D && preferredStereoMode == Light_Field)
+					setDisplay3D(false);
 				parseFileList({ fileList[fileIndex].link });
 				loadImage(nullptr);
+				keep3DForDepthReload = reloadIn3D;
+				if (reloadDepthIn3D && fileList[fileIndex].type == Color_Only)
+					callDepthGen(fileIndex);
 			}
 		}
 		saveOptions();
@@ -2274,7 +2355,12 @@ static void setPreferredStereo(ViewMode mode, bool saveMode) {
 	if (saveMode && mode != Light_Field)
 		Image::setNativeOutputActive(&context, false);
 	updateStereoIcon();
-	if (!fileList.empty()) {
+	if (activeScreenCapture) {
+		refreshDisplay3D(videoDepthFrameLoaded || videoDepthProcessor.running()
+			? Color_Plus_Depth : Color_Only);
+		Image::updateSize(&context);
+		Image::updateRatio(&context, windowSize);
+	} else if (!fileList.empty()) {
 		const auto sourceType = activeVideo &&
 			(videoDepthFrameLoaded || videoDepthProcessor.running())
 			? Color_Plus_Depth : fileList[fileIndex].type;
@@ -2390,8 +2476,46 @@ static void toggleFullscreen() {
 	setFullscreen(isFullscreen);
 }
 
+static void toggleScreenCapture() {
+#if defined(__linux__)
+	if (activeScreenCapture) {
+		stopVideoDepth();
+		screenCapture.stop();
+		activeScreenCapture = false;
+		videoFrameLoaded = false;
+		setVideoControlsVisible(false);
+		setDisplay3D(false);
+		SDL_SetWindowTitle(context.window, "Rendepth");
+		return;
+	}
+	if (activeVideo || isConverting || context.loading) return;
+	std::string error;
+	if (!screenCapture.start(context.window, error)) {
+		SDL_Log("Could not start screen capture: %s", error.c_str());
+		return;
+	}
+	activeScreenCapture = true;
+	videoFrameLoaded = false;
+	lastVideoFrame.reset();
+	resetVideoPlaybackBuffer(false);
+	setVideoControlsVisible(false);
+	context.loading = true;
+#elif defined(_WIN32)
+	SDL_Log("Windows screen capture requested; Windows Graphics Capture backend is not initialized yet");
+#elif defined(__APPLE__)
+	SDL_Log("macOS screen capture requested; ScreenCaptureKit backend is not initialized yet");
+#else
+	SDL_Log("Screen capture is not supported on this platform yet");
+#endif
+}
+
 void toggleStereo() {
 	if (isConverting) return;
+	if (activeScreenCapture) {
+		if (display3D) stopVideoDepth();
+		else startVideoDepth();
+		return;
+	}
 	if (fileList.empty()) return;
 	if (activeVideo) {
 		if (fileList[fileIndex].type != Color_Only) {
@@ -2463,6 +2587,7 @@ static void setSlideshow(bool slide) {
 }
 
 static void toggleSlideshow() {
+	if (activeScreenCapture) return;
 	if (activeVideo) {
 		videoPlayer.setPlaying(!videoPlayer.playing());
 		getIcon(IconType::Play).image = videoPlayer.playing() ? IconType::Pause : IconType::Play;
@@ -2819,6 +2944,11 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	}
 	serviceNativeGpuUpscale();
 	serviceVideo();
+	serviceScreenCapture();
+	// Screen capture shares the depth processor with video, but does not enter
+	// serviceVideo()'s activeVideo path where depth completion is normally
+	// serviced.
+	if (activeScreenCapture) serviceVideoDepth();
 	auto timeNow = getTimeNow();
 	context.deltaTime = timeNow - lastTime;
 	lastTime = timeNow;
@@ -2875,11 +3005,14 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 
 	if (doneLoadingImage) {
 		doneLoadingImage = false;
+		const bool preserve3D = keep3DForDepthReload;
+		keep3DForDepthReload = false;
 		if (rapidBrowseQueued && !rapidBrowseMode) {
 			rapidBrowsePostLoadClicks = 0;
 			rapidBrowsePostLoadDetection = true;
 		}
-		refreshDisplay3D(fileList[fileIndex].type);
+		if (!preserve3D)
+			refreshDisplay3D(fileList[fileIndex].type);
 		Image::updateSize(&context);
 		context.offset = glm::vec2(0.0f);
 		currentZoom = 1.0;
@@ -3169,10 +3302,12 @@ void checkMouseState() {
 	auto aspectScale = glm::vec2(1.0);
 	if (preferredStereoMode == SBS_Full && isFullscreen)
 		aspectScale = glm::vec2(2.0, 1.0);
-	const bool currentSourceHasDepth = !fileList.empty() &&
+	const bool currentSourceHasDepth = activeScreenCapture
+		? videoDepthFrameLoaded || videoDepthProcessor.running()
+		: (!fileList.empty() &&
 		(fileList[fileIndex].type == Color_Plus_Depth ||
 			fileList[fileIndex].type == Light_Field_LKG ||
-			(activeVideo && videoDepthFrameLoaded));
+			(activeVideo && videoDepthFrameLoaded)));
 	for (auto& icon : appIcons) {
 		auto displayLoading = !(icon.type == IconType::Loading && (!isConverting || isPlayingSlideshow));
 		auto displaySettings = !(icon.type == IconType::Settings &&
@@ -3182,11 +3317,14 @@ void checkMouseState() {
 			icon.type == IconType::Layers) && (!showingStereoSettings || !display3D));
 		auto displayParallax = !(icon.type == IconType::Focus &&
 			(!fileList.empty() && fileList[fileIndex].type == Light_Field_LKG));
-		auto displayOpen = !((icon.type != IconType::File && icon.type != IconType::Close)
-			&& fileList.empty());
+		auto displayOpen = !((icon.type != IconType::File && icon.type != IconType::Close &&
+			icon.type != IconType::Stereo_3D &&
+			icon.type != IconType::Crop)
+			&& fileList.empty() && !activeScreenCapture);
 		auto displayMenu = !(context.displayMenu && (icon.type == IconType::Forward || icon.type == IconType::Back ||
 			icon.type == IconType::File || icon.type == IconType::Folder || icon.type == IconType::Save || icon.type == IconType::Window ||
 			icon.type == IconType::Fullscreen || icon.type == IconType::Play || icon.type == IconType::Pause ||
+			icon.type == IconType::Crop ||
 			icon.type == IconType::VideoSeek || icon.type == IconType::VideoVolume ||
 			icon.type == IconType::VideoAudio || icon.type == IconType::VideoCaption ||
 			icon.type == IconType::Settings));
@@ -3205,11 +3343,15 @@ void checkMouseState() {
 				icon.type == IconType::VideoCaption;
 			const bool videoPlayControl = activeVideo &&
 				(icon.type == IconType::Play || icon.type == IconType::Pause);
-			const bool displayVideo = videoOnlyControl
+		const bool displayVideo = videoOnlyControl
 				? activeVideo && videoControlsVisible
 				: (!videoPlayControl || videoControlsVisible);
+			const bool displayCaptureNavigation = !(activeScreenCapture &&
+				(icon.type == IconType::Back || icon.type == IconType::Forward ||
+				 icon.type == IconType::Play || icon.type == IconType::Pause));
 			icon.active = displayLoading && displaySettings && displayStereo && displayParallax &&
 				displayOpen && displaySave && displayMenu && displayXD && displayVideo;
+			icon.active = icon.active && displayCaptureNavigation;
 			if (icon.type == IconType::Loading) icon.active = true;
 			auto iconPosition = getCoordinates(
 				{icon.canvas().position * aspectScale
@@ -3346,6 +3488,7 @@ struct NativeDepthRequest {
 
 struct NativeGpuUpscaleRequest {
 	SDL_Surface* source = nullptr;
+	const SDL_Surface* guide = nullptr;
 	int width = 0;
 	int height = 0;
 	SDL_Surface* result = nullptr;
@@ -3353,9 +3496,10 @@ struct NativeGpuUpscaleRequest {
 };
 
 static SDL_Surface* upscaleNativeSurfaceOnRenderThread(SDL_Surface* source,
-		int width, int height) {
+		int width, int height, const SDL_Surface* guide = nullptr) {
 	if (source == nullptr) return nullptr;
-	NativeGpuUpscaleRequest request{source, width, height};
+	NativeGpuUpscaleRequest request{.source = source, .guide = guide,
+		.width = width, .height = height};
 	{
 		std::lock_guard lock(nativeGpuUpscaleMutex);
 		pendingNativeGpuUpscale = &request;
@@ -3376,8 +3520,11 @@ static void serviceNativeGpuUpscale() {
 	}
 	if (request == nullptr) return;
 
-	request->result = Image::upscaleSurfaceGPU(&context, request->source,
-		request->width, request->height);
+	request->result = request->guide != nullptr
+		? Image::refineDepthSurfaceGPU(&context, request->guide, request->source,
+			request->width, request->height)
+		: Image::upscaleSurfaceGPU(&context, request->source,
+			request->width, request->height);
 	{
 		std::lock_guard lock(nativeGpuUpscaleMutex);
 		request->complete = true;
@@ -3385,37 +3532,104 @@ static void serviceNativeGpuUpscale() {
 	nativeGpuUpscaleCondition.notify_all();
 }
 
-static SDL_Surface* makeNativeDepthSurfaceAtModelSize(const DepthEstimator::Result& depth) {
-	if (!depth.valid()) return nullptr;
-	SDL_Surface* output = SDL_CreateSurface(depth.width, depth.height, SDL_PIXELFORMAT_RGBA32);
-	if (output == nullptr) return nullptr;
+static glm::vec3 sampleNativeRgb(const SDL_Surface* surface, int x, int y) {
+	if (surface == nullptr || surface->w <= 0 || surface->h <= 0)
+		return glm::vec3(0.0f);
+	x = std::clamp(x, 0, surface->w - 1);
+	y = std::clamp(y, 0, surface->h - 1);
+	const auto* format = SDL_GetPixelFormatDetails(surface->format);
+	const auto pixel = reinterpret_cast<const Uint32*>(
+		static_cast<const Uint8*>(surface->pixels) + static_cast<size_t>(y) * surface->pitch) + x;
+	Uint8 r = 0, g = 0, b = 0, a = 0;
+	SDL_GetRGBA(*pixel, format, nullptr, &r, &g, &b, &a);
+	return glm::vec3(r, g, b) / 255.0f;
+}
+
+// Reconstruct depth at the output resolution while using RGB edges as the
+// guide. The final weighted-mode pass removes isolated depth estimates without
+// averaging across strong color boundaries.
+static SDL_Surface* makeNativeDepthSurfaceForOutput(const DepthEstimator::Result& depth,
+		const SDL_Surface* color, int width, int height) {
+	if (!depth.valid() || color == nullptr || width <= 0 || height <= 0)
+		return nullptr;
 
 	const auto* format = SDL_GetPixelFormatDetails(SDL_PIXELFORMAT_RGBA32);
 	const auto minMax = std::minmax_element(depth.values.begin(), depth.values.end());
 	const float minimum = *minMax.first;
-	const float range = *minMax.second - minimum;
+	const float range = std::max(*minMax.second - minimum,
+		std::numeric_limits<float>::epsilon());
+	std::vector<float> normalized(depth.values.size());
+	for (size_t index = 0; index < depth.values.size(); ++index) {
+		const float value = std::isfinite(depth.values[index])
+			? depth.values[index] : minimum;
+		normalized[index] = 1.0f - std::clamp((value - minimum) / range, 0.0f, 1.0f);
+	}
+
+	// The expensive edge-aware reconstruction is done at model resolution.
+	// The existing GPU scaler then enlarges this refined map to the requested
+	// output size. Running the 5x5 pass at 4K would make conversion needlessly
+	// expensive (and would block shutdown while the worker finishes).
+	SDL_Surface* modelOutput = SDL_CreateSurface(depth.width, depth.height,
+		SDL_PIXELFORMAT_RGBA32);
+	if (modelOutput == nullptr) return nullptr;
+
+	constexpr int radius = 2;
+	constexpr float spatialSigma = 1.35f;
+	constexpr float colorSigma = 0.12f;
+	constexpr int modeBins = 64;
+	const float spatialDenominator = 2.0f * spatialSigma * spatialSigma;
+	const float colorDenominator = 2.0f * colorSigma * colorSigma;
+
 	for (int y = 0; y < depth.height; ++y) {
 		for (int x = 0; x < depth.width; ++x) {
-			const float normalized = range > std::numeric_limits<float>::epsilon()
-				? (depth.values[static_cast<size_t>(y * depth.width + x)] - minimum) / range : 0.0f;
-			const Uint8 value = static_cast<Uint8>((1.0f -
-				std::clamp(normalized, 0.0f, 1.0f)) * 255.0f);
-			static_cast<Uint32*>(output->pixels)[y * depth.width + x] =
+			const int centerX = x;
+			const int centerY = y;
+			const glm::vec3 guide = sampleNativeRgb(color,
+				static_cast<int>((x + 0.5f) * color->w / depth.width),
+				static_cast<int>((y + 0.5f) * color->h / depth.height));
+
+			std::array<float, modeBins> binWeights{};
+			std::array<float, modeBins> binValues{};
+			for (int offsetY = -radius; offsetY <= radius; ++offsetY) {
+				for (int offsetX = -radius; offsetX <= radius; ++offsetX) {
+					const int sampleX = std::clamp(centerX + offsetX, 0, depth.width - 1);
+					const int sampleY = std::clamp(centerY + offsetY, 0, depth.height - 1);
+					const float candidate = normalized[static_cast<size_t>(sampleY) * depth.width + sampleX];
+					const glm::vec3 candidateGuide = sampleNativeRgb(color,
+						static_cast<int>((sampleX + 0.5f) * color->w / depth.width),
+						static_cast<int>((sampleY + 0.5f) * color->h / depth.height));
+					const float spatialDistance = static_cast<float>(offsetX * offsetX + offsetY * offsetY);
+					const float colorDistance = glm::dot(guide - candidateGuide,
+						guide - candidateGuide);
+					const float weight = std::exp(-spatialDistance / spatialDenominator -
+						colorDistance / colorDenominator);
+					const int bin = std::clamp(static_cast<int>(candidate * (modeBins - 1) + 0.5f),
+						0, modeBins - 1);
+					binWeights[bin] += weight;
+					binValues[bin] += candidate * weight;
+				}
+			}
+
+			int selectedBin = 0;
+			for (int bin = 1; bin < modeBins; ++bin)
+				if (binWeights[bin] > binWeights[selectedBin]) selectedBin = bin;
+			const float refined = binWeights[selectedBin] > 0.0f
+				? binValues[selectedBin] / binWeights[selectedBin]
+				: normalized[static_cast<size_t>(std::clamp(centerY, 0, depth.height - 1)) * depth.width +
+					std::clamp(centerX, 0, depth.width - 1)];
+			const Uint8 value = static_cast<Uint8>(std::lround(
+				std::clamp(refined, 0.0f, 1.0f) * 255.0f));
+			reinterpret_cast<Uint32*>(static_cast<Uint8*>(modelOutput->pixels) +
+				static_cast<size_t>(y) * modelOutput->pitch)[x] =
 				SDL_MapRGBA(format, nullptr, value, value, value, 255);
 		}
 	}
-	return output;
-}
-
-static SDL_Surface* makeNativeDepthSurfaceForOutput(const DepthEstimator::Result& depth,
-		int width, int height) {
-	SDL_Surface* modelDepth = makeNativeDepthSurfaceAtModelSize(depth);
-	if (modelDepth == nullptr) return nullptr;
-	SDL_Surface* result = upscaleNativeSurfaceOnRenderThread(modelDepth, width, height);
-	SDL_DestroySurface(modelDepth);
-	if (result == nullptr) {
-		SDL_Log("GPU depth upscale failed.");
-	}
+	// Joint bilateral reconstruction and the final upscale run in one GPU pass;
+	// the CPU only prepares the small model-resolution fallback map.
+	SDL_Surface* result = upscaleNativeSurfaceOnRenderThread(
+		modelOutput, width, height, color);
+	SDL_DestroySurface(modelOutput);
+	if (result == nullptr) SDL_Log("GPU depth upscale failed.");
 	return result;
 }
 
@@ -3570,7 +3784,7 @@ static int nativeDepthRun(void* ptr) {
 				if (depth.valid()) {
 					const auto outputSize = getNativeDepthSize(color->w, color->h);
 					SDL_Surface* depthSurface = makeNativeDepthSurfaceForOutput(
-						depth, outputSize.x, outputSize.y);
+						depth, color, outputSize.x, outputSize.y);
 					SDL_Surface* output = depthSurface
 						? makeNativeRgbdSurface(color, depthSurface, outputSize.x, outputSize.y) : nullptr;
 					if (output) {
@@ -3606,7 +3820,7 @@ static int nativeDepthRun(void* ptr) {
 	auto depth = nativeDepthEstimator.predict(color, error);
 	const auto outputSize = getNativeDepthSize(color->w, color->h);
 	SDL_Surface* depthSurface = depth.valid()
-		? makeNativeDepthSurfaceForOutput(depth, outputSize.x, outputSize.y) : nullptr;
+		? makeNativeDepthSurfaceForOutput(depth, color, outputSize.x, outputSize.y) : nullptr;
 	SDL_Surface* output = depthSurface
 		? makeNativeRgbdSurface(color, depthSurface, outputSize.x, outputSize.y) : nullptr;
 	const auto result = mode == REAL_TIME
@@ -3769,6 +3983,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		finishSliderDrag();
 	} else if (event->type == SDL_EVENT_WINDOW_HIT_TEST) {
 		} else if (event->type == SDL_EVENT_KEY_DOWN) {
+		if (activeScreenCapture && event->key.key == SDLK_SPACE)
+			return SDL_APP_CONTINUE;
 		if (event->key.key == SDLK_ESCAPE) {
 			if(context.displayMenu) {
 				toggleOptions();
@@ -3828,7 +4044,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		}
 
 		if (event->key.key == SDLK_SPACE) {
-			if (!isConverting && !doingPreload && !fileList.empty()) {
+			if (!activeScreenCapture && !isConverting && !doingPreload && !fileList.empty()) {
 				if (activeVideo) {
 					if (!event->key.repeat) toggleSlideshow();
 				} else {
@@ -3836,7 +4052,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 				}
 			}
 		} else if (event->key.key == SDLK_KP_5) {
-			if (!isConverting && !doingPreload && !fileList.empty()) toggleStereo();
+			if (!activeScreenCapture && !isConverting && !doingPreload && !fileList.empty()) toggleStereo();
 		}
 
 		if (event->key.key == SDLK_RETURN && event->key.mod == SDL_KMOD_LALT) {
@@ -3847,12 +4063,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			toggleFullscreen();
 		}
 
-		if (event->key.key == SDLK_LEFT || event->key.key == SDLK_A || event->key.key == SDLK_UP ||
-			event->key.key == SDLK_KP_4 || event->key.key == SDLK_KP_8) {
+		if (!activeScreenCapture && (event->key.key == SDLK_LEFT || event->key.key == SDLK_A || event->key.key == SDLK_UP ||
+			event->key.key == SDLK_KP_4 || event->key.key == SDLK_KP_8)) {
 			if (!prevNextKeyDown) gotoPreviousImage();
 			prevNextKeyDown = true;
-		} else if (event->key.key == SDLK_RIGHT || event->key.key == SDLK_D || event->key.key == SDLK_DOWN ||
-			event->key.key == SDLK_KP_6 || event->key.key == SDLK_KP_2) {
+		} else if (!activeScreenCapture && (event->key.key == SDLK_RIGHT || event->key.key == SDLK_D || event->key.key == SDLK_DOWN ||
+			event->key.key == SDLK_KP_6 || event->key.key == SDLK_KP_2)) {
 			if (!prevNextKeyDown) gotoNextImage();
 			prevNextKeyDown = true;
 		}
@@ -4054,6 +4270,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
 	stopVideoDepth();
+	screenCapture.stop();
 	videoPlayer.close();
 	resetVideoPlaybackBuffer(false);
 	lastVideoFrame.reset();

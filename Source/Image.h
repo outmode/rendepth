@@ -37,6 +37,8 @@ public:
 	~Image() = default;
 
 	inline static SDL_GPUGraphicsPipeline* imagePipeline = nullptr;
+	inline static SDL_GPUGraphicsPipeline* depthRefinePipeline = nullptr;
+	inline static SDL_GPUGraphicsPipeline* depthRefineR16Pipeline = nullptr;
 	inline static SDL_GPUGraphicsPipeline* videoYUVPipeline = nullptr;
 	inline static SDL_GPUGraphicsPipeline* iconPipeline = nullptr;
 	inline static SDL_GPUGraphicsPipeline* spritePipeline = nullptr;
@@ -218,6 +220,10 @@ public:
 		bool waitForGpu = true, bool generateMipmaps = true);
 	static SDL_Surface* upscaleSurfaceGPU(Context* context, const SDL_Surface* source,
 		int outputWidth, int outputHeight);
+	static SDL_Surface* refineDepthSurfaceGPU(Context* context, const SDL_Surface* color,
+		const SDL_Surface* depth, int outputWidth, int outputHeight);
+	static SDL_GPUTexture* refineDepthTextureGPU(Context* context, SDL_GPUTexture* color,
+		SDL_GPUTexture* depth, int width, int height);
 	static void blitBlurTexture(Context* context, SDL_GPUTexture* inputTexture,
 		Uint32 imageWidth, Uint32 imageHeight, bool nextSnapshotOnly = false);
 	static int renderStereoImage(Context* context, StereoFormat stereoFormat,

@@ -655,6 +655,16 @@ int Image::updateVideoDepth(Context* context, const std::vector<std::uint16_t>& 
 	SDL_EndGPUCopyPass(copy);
 	SDL_SubmitGPUCommandBuffer(commands);
 	SDL_ReleaseGPUTransferBuffer(context->device, transfer);
+	// Apply the same RGB-guided median/Catmull-Rom reconstruction used for
+	// still images. Keep the result at inference resolution; the display path
+	// continues to sample it at video resolution with its existing filtering.
+	if (imageTexture != nullptr) {
+		if (SDL_GPUTexture* refined = refineDepthTextureGPU(context, imageTexture,
+				videoDepthTexture, width, height); refined != nullptr) {
+			SDL_ReleaseGPUTexture(context->device, videoDepthTexture);
+			videoDepthTexture = refined;
+		}
+	}
 	return 0;
 }
 
@@ -1015,6 +1025,12 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 		SDL_Log("Failed To Create Image Fragment Shader.");
 		return -1;
 	}
+	SDL_GPUShader* depthRefineFragmentShader = Core::loadShader(context->device,
+		"DepthRefine.frag", 2, 1, 0, 0);
+	if (depthRefineFragmentShader == nullptr) {
+		SDL_Log("Failed To Create Depth Refine Shader.");
+		return -1;
+	}
 	SDL_GPUShader* videoYUVVertexShader = Core::loadShader(context->device,
 		"VideoYUV.vert", 0, 0, 0, 0);
 	SDL_GPUShader* videoYUVFragmentShader = Core::loadShader(context->device,
@@ -1113,6 +1129,29 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	imagePipeline = SDL_CreateGPUGraphicsPipeline(context->device, &imagePipelineCreateInfo);
 	if (imagePipeline == nullptr) {
 		SDL_Log("Failed To Create Image Pipeline.");
+		return -1;
+	}
+	SDL_GPUGraphicsPipelineCreateInfo depthRefinePipelineInfo = imagePipelineCreateInfo;
+	depthRefinePipelineInfo.fragment_shader = depthRefineFragmentShader;
+	SDL_GPUColorTargetDescription depthRefineTargetDescription{
+		.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM
+	};
+	depthRefinePipelineInfo.target_info.color_target_descriptions = &depthRefineTargetDescription;
+	depthRefinePipeline = SDL_CreateGPUGraphicsPipeline(context->device,
+		&depthRefinePipelineInfo);
+	if (depthRefinePipeline == nullptr) {
+		SDL_Log("Failed To Create Depth Refine Pipeline.");
+		return -1;
+	}
+	SDL_GPUColorTargetDescription depthRefineR16TargetDescription{
+		.format = SDL_GPU_TEXTUREFORMAT_R16_UNORM
+	};
+	depthRefinePipelineInfo.target_info.color_target_descriptions =
+		&depthRefineR16TargetDescription;
+	depthRefineR16Pipeline = SDL_CreateGPUGraphicsPipeline(context->device,
+		&depthRefinePipelineInfo);
+	if (depthRefineR16Pipeline == nullptr) {
+		SDL_Log("Failed To Create R16 Depth Refine Pipeline.");
 		return -1;
 	}
 	SDL_GPUGraphicsPipelineCreateInfo videoYUVPipelineInfo = imagePipelineCreateInfo;
@@ -1225,6 +1264,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 
 	SDL_ReleaseGPUShader(context->device, imageVertexShader);
 	SDL_ReleaseGPUShader(context->device, imageFragmentShader);
+	SDL_ReleaseGPUShader(context->device, depthRefineFragmentShader);
 	SDL_ReleaseGPUShader(context->device, videoYUVVertexShader);
 	SDL_ReleaseGPUShader(context->device, videoYUVFragmentShader);
 	SDL_ReleaseGPUShader(context->device, interlacerFragmentShader);
@@ -1713,6 +1753,194 @@ SDL_Surface* Image::upscaleSurfaceGPU(Context* context, const SDL_Surface* sourc
 	if (sourceTexture != nullptr) SDL_ReleaseGPUTexture(context->device, sourceTexture);
 	if (outputTexture != nullptr) SDL_ReleaseGPUTexture(context->device, outputTexture);
 	return result;
+}
+
+SDL_Surface* Image::refineDepthSurfaceGPU(Context* context, const SDL_Surface* color,
+		const SDL_Surface* depth, int outputWidth, int outputHeight) {
+	if (context == nullptr || context->device == nullptr || color == nullptr || depth == nullptr ||
+		outputWidth <= 0 || outputHeight <= 0 || depthRefinePipeline == nullptr)
+		return nullptr;
+
+	SDL_GPUTexture* colorTexture = nullptr;
+	SDL_GPUTexture* depthTexture = nullptr;
+	if (uploadTexture(context, const_cast<SDL_Surface*>(color), &colorTexture,
+			"Depth Guide Texture", false, true, false) < 0 ||
+		uploadTexture(context, const_cast<SDL_Surface*>(depth), &depthTexture,
+			"Depth Input Texture", false, true, false) < 0) {
+		if (colorTexture != nullptr) SDL_ReleaseGPUTexture(context->device, colorTexture);
+		if (depthTexture != nullptr) SDL_ReleaseGPUTexture(context->device, depthTexture);
+		return nullptr;
+	}
+
+	const SDL_GPUTextureCreateInfo outputInfo{
+		.type = SDL_GPU_TEXTURETYPE_2D,
+		.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+		.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+		.width = static_cast<Uint32>(outputWidth),
+		.height = static_cast<Uint32>(outputHeight),
+		.layer_count_or_depth = 1,
+		.num_levels = 1
+	};
+	SDL_GPUTexture* outputTexture = SDL_CreateGPUTexture(context->device, &outputInfo);
+	const SDL_GPUTransferBufferCreateInfo downloadInfo{
+		.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+		.size = static_cast<Uint32>(outputWidth * outputHeight * 4)
+	};
+	SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(context->device, &downloadInfo);
+	SDL_Surface* result = nullptr;
+	if (outputTexture != nullptr && download != nullptr) {
+		SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(context->device);
+		if (commands != nullptr) {
+			const SDL_GPUColorTargetInfo target{
+				.texture = outputTexture,
+				.load_op = SDL_GPU_LOADOP_DONT_CARE,
+				.store_op = SDL_GPU_STOREOP_STORE
+			};
+			SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(commands, &target, 1, nullptr);
+			if (pass != nullptr) {
+				bindPipeline(pass, depthRefinePipeline);
+				const SDL_GPUBufferBinding vertexBinding{.buffer = sharedVertexBuffer, .offset = 0};
+				const SDL_GPUBufferBinding indexBinding{.buffer = sharedIndexBuffer, .offset = 0};
+				SDL_BindGPUVertexBuffers(pass, 0, &vertexBinding, 1);
+				SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+				const SDL_GPUTextureSamplerBinding bindings[2] = {
+					{.texture = colorTexture, .sampler = imageSampler},
+					{.texture = depthTexture, .sampler = imageSampler}
+				};
+				SDL_BindGPUFragmentSamplers(pass, 0, bindings, 2);
+				const ImageDataVert vertexUniforms{
+					.transform = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f)),
+					.projection = glm::mat4(1.0f),
+					.displayImageAspect = glm::vec3(1.0f),
+					.fillScreen = 0
+				};
+				const struct {
+					glm::vec2 depthSize;
+					float spatialSigma;
+					float colorSigma;
+				} fragmentUniforms{
+					.depthSize = glm::vec2(depth->w, depth->h),
+					.spatialSigma = 1.35f,
+					.colorSigma = 0.12f
+				};
+				SDL_PushGPUVertexUniformData(commands, 0, &vertexUniforms, sizeof(vertexUniforms));
+				SDL_PushGPUFragmentUniformData(commands, 0, &fragmentUniforms,
+					sizeof(fragmentUniforms));
+				const SDL_GPUViewport viewport{0.0f, 0.0f, static_cast<float>(outputWidth),
+					static_cast<float>(outputHeight), 0.0f, 1.0f};
+				SDL_SetGPUViewport(pass, &viewport);
+				SDL_DrawGPUIndexedPrimitives(pass, 6, 1, 0, 0, 0);
+				SDL_EndGPURenderPass(pass);
+				SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commands);
+				const SDL_GPUTextureTransferInfo transfer{.transfer_buffer = download};
+				const SDL_GPUTextureRegion region{.texture = outputTexture,
+					.w = static_cast<Uint32>(outputWidth), .h = static_cast<Uint32>(outputHeight), .d = 1};
+				SDL_DownloadFromGPUTexture(copy, &region, &transfer);
+				SDL_EndGPUCopyPass(copy);
+				SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commands);
+				const bool completed = fence != nullptr &&
+					SDL_WaitForGPUFences(context->device, true, &fence, 1);
+				if (fence != nullptr) SDL_ReleaseGPUFence(context->device, fence);
+				if (completed) {
+					auto* mapped = static_cast<Uint8*>(SDL_MapGPUTransferBuffer(
+						context->device, download, false));
+					if (mapped != nullptr) {
+						result = SDL_CreateSurface(outputWidth, outputHeight, SDL_PIXELFORMAT_RGBA32);
+						if (result != nullptr) {
+							for (int y = 0; y < outputHeight; ++y)
+								SDL_memcpy(static_cast<Uint8*>(result->pixels) +
+									static_cast<size_t>(y) * result->pitch,
+									mapped + static_cast<size_t>(y) * outputWidth * 4,
+									static_cast<size_t>(outputWidth) * 4);
+						}
+						SDL_UnmapGPUTransferBuffer(context->device, download);
+					}
+				}
+			} else {
+				SDL_CancelGPUCommandBuffer(commands);
+			}
+		}
+	}
+	if (download != nullptr) SDL_ReleaseGPUTransferBuffer(context->device, download);
+	if (outputTexture != nullptr) SDL_ReleaseGPUTexture(context->device, outputTexture);
+	SDL_ReleaseGPUTexture(context->device, colorTexture);
+	SDL_ReleaseGPUTexture(context->device, depthTexture);
+	return result;
+}
+
+SDL_GPUTexture* Image::refineDepthTextureGPU(Context* context, SDL_GPUTexture* color,
+		SDL_GPUTexture* depth, int width, int height) {
+	if (context == nullptr || context->device == nullptr || color == nullptr || depth == nullptr ||
+		width <= 0 || height <= 0 || depthRefineR16Pipeline == nullptr)
+		return nullptr;
+	const SDL_GPUTextureCreateInfo outputInfo{
+		.type = SDL_GPU_TEXTURETYPE_2D,
+		.format = SDL_GPU_TEXTUREFORMAT_R16_UNORM,
+		.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+		.width = static_cast<Uint32>(width),
+		.height = static_cast<Uint32>(height),
+		.layer_count_or_depth = 1,
+		.num_levels = 1
+	};
+	SDL_GPUTexture* output = SDL_CreateGPUTexture(context->device, &outputInfo);
+	if (output == nullptr) return nullptr;
+	SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(context->device);
+	if (commands == nullptr) {
+		SDL_ReleaseGPUTexture(context->device, output);
+		return nullptr;
+	}
+	const SDL_GPUColorTargetInfo target{
+		.texture = output,
+		.load_op = SDL_GPU_LOADOP_DONT_CARE,
+		.store_op = SDL_GPU_STOREOP_STORE
+	};
+	SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(commands, &target, 1, nullptr);
+	if (pass == nullptr) {
+		SDL_CancelGPUCommandBuffer(commands);
+		SDL_ReleaseGPUTexture(context->device, output);
+		return nullptr;
+	}
+	bindPipeline(pass, depthRefineR16Pipeline);
+	const SDL_GPUBufferBinding vertexBinding{.buffer = sharedVertexBuffer, .offset = 0};
+	const SDL_GPUBufferBinding indexBinding{.buffer = sharedIndexBuffer, .offset = 0};
+	SDL_BindGPUVertexBuffers(pass, 0, &vertexBinding, 1);
+	SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+	const SDL_GPUTextureSamplerBinding bindings[2] = {
+		{.texture = color, .sampler = imageSampler},
+		{.texture = depth, .sampler = imageSampler}
+	};
+	SDL_BindGPUFragmentSamplers(pass, 0, bindings, 2);
+	const ImageDataVert vertexUniforms{
+		.transform = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f)),
+		.projection = glm::mat4(1.0f),
+		.displayImageAspect = glm::vec3(1.0f),
+		.fillScreen = 0
+	};
+	const struct {
+		glm::vec2 depthSize;
+		float spatialSigma;
+		float colorSigma;
+	} fragmentUniforms{
+		.depthSize = glm::vec2(width, height),
+		.spatialSigma = 1.35f,
+		.colorSigma = 0.12f
+	};
+	SDL_PushGPUVertexUniformData(commands, 0, &vertexUniforms, sizeof(vertexUniforms));
+	SDL_PushGPUFragmentUniformData(commands, 0, &fragmentUniforms, sizeof(fragmentUniforms));
+	const SDL_GPUViewport viewport{0.0f, 0.0f, static_cast<float>(width),
+		static_cast<float>(height), 0.0f, 1.0f};
+	SDL_SetGPUViewport(pass, &viewport);
+	SDL_DrawGPUIndexedPrimitives(pass, 6, 1, 0, 0, 0);
+	SDL_EndGPURenderPass(pass);
+	SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commands);
+	const bool completed = fence != nullptr &&
+		SDL_WaitForGPUFences(context->device, true, &fence, 1);
+	if (fence != nullptr) SDL_ReleaseGPUFence(context->device, fence);
+	if (!completed) {
+		SDL_ReleaseGPUTexture(context->device, output);
+		return nullptr;
+	}
+	return output;
 }
 
 void Image::blitBlurTexture(Context* context, SDL_GPUTexture* inputTexture,
@@ -2772,6 +3000,8 @@ void Image::quit(Context* context){
 	}
 	SDL_ReleaseGPUGraphicsPipeline(context->device, interlacerPipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, imagePipeline);
+	SDL_ReleaseGPUGraphicsPipeline(context->device, depthRefinePipeline);
+	SDL_ReleaseGPUGraphicsPipeline(context->device, depthRefineR16Pipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, videoYUVPipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, iconPipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, spritePipeline);
