@@ -1,7 +1,48 @@
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wmissing-braces"
+
 #include <metal_stdlib>
 #include <simd/simd.h>
 
 using namespace metal;
+
+template<typename T, size_t Num>
+struct spvUnsafeArray
+{
+    T elements[Num ? Num : 1];
+    
+    thread T& operator [] (size_t pos) thread
+    {
+        return elements[pos];
+    }
+    constexpr const thread T& operator [] (size_t pos) const thread
+    {
+        return elements[pos];
+    }
+    
+    device T& operator [] (size_t pos) device
+    {
+        return elements[pos];
+    }
+    constexpr const device T& operator [] (size_t pos) const device
+    {
+        return elements[pos];
+    }
+    
+    constexpr const constant T& operator [] (size_t pos) const constant
+    {
+        return elements[pos];
+    }
+    
+    threadgroup T& operator [] (size_t pos) threadgroup
+    {
+        return elements[pos];
+    }
+    constexpr const threadgroup T& operator [] (size_t pos) const threadgroup
+    {
+        return elements[pos];
+    }
+};
 
 struct DepthRefineData
 {
@@ -20,32 +61,199 @@ struct main0_in
     float2 fragUV [[user(locn0)]];
 };
 
-fragment main0_out main0(main0_in in [[stage_in]], constant DepthRefineData& _27 [[buffer(0)]], texture2d<float> colorTexture [[texture(0)]], texture2d<float> depthTexture [[texture(1)]], sampler colorTextureSmplr [[sampler(0)]], sampler depthTextureSmplr [[sampler(1)]])
+static inline __attribute__((always_inline))
+float bicubicWeight(thread const float& value)
 {
-    main0_out out = {};
-    float3 guide = colorTexture.sample(colorTextureSmplr, in.fragUV).xyz;
-    float2 depthPixel = (in.fragUV * _27.depthSize) - float2(0.5);
-    int2 center = int2(floor(depthPixel));
-    float spatialDenominator = (2.0 * _27.spatialSigma) * _27.spatialSigma;
-    float colorDenominator = (2.0 * _27.colorSigma) * _27.colorSigma;
+    float absoluteValue = abs(value);
+    if (absoluteValue <= 1.0)
+    {
+        return (0.666666686534881591796875 - (absoluteValue * absoluteValue)) + (((0.5 * absoluteValue) * absoluteValue) * absoluteValue);
+    }
+    if (absoluteValue < 2.0)
+    {
+        float distanceToEdge = 2.0 - absoluteValue;
+        return ((distanceToEdge * distanceToEdge) * distanceToEdge) / 6.0;
+    }
+    return 0.0;
+}
+
+static inline __attribute__((always_inline))
+float bicubicDepth(thread const float2& uv, thread const float& referenceDepth, constant DepthRefineData& _65, texture2d<float> depthTexture, sampler depthTextureSmplr)
+{
+    float2 pixel = (uv * _65.depthSize) - float2(0.5);
+    float2 base = floor(pixel);
+    float2 fraction = pixel - base;
+    float depthDenominator = 0.007199999876320362091064453125;
     float result = 0.0;
     float totalWeight = 0.0;
-    for (int y = -2; y <= 2; y++)
+    for (int y = -1; y <= 2; y++)
     {
-        for (int x = -2; x <= 2; x++)
+        for (int x = -1; x <= 2; x++)
         {
-            int2 samplePixel = clamp(center + int2(x, y), int2(0), int2(_27.depthSize) - int2(1));
-            float2 sampleUV = (float2(samplePixel) + float2(0.5)) / _27.depthSize;
-            float candidate = depthTexture.sample(depthTextureSmplr, sampleUV).x;
-            float3 candidateGuide = colorTexture.sample(colorTextureSmplr, sampleUV).xyz;
-            float spatialDistance = float((x * x) + (y * y));
-            float colorDistance = dot(guide - candidateGuide, guide - candidateGuide);
-            float weight = exp(((-spatialDistance) / spatialDenominator) - (colorDistance / colorDenominator));
+            int2 samplePixel = clamp(int2(base) + int2(x, y), int2(0), int2(_65.depthSize) - int2(1));
+            float2 offset = float2(float(x), float(y)) - fraction;
+            float param = offset.x;
+            float param_1 = offset.y;
+            float weight = bicubicWeight(param) * bicubicWeight(param_1);
+            float candidate = depthTexture.sample(depthTextureSmplr, ((float2(samplePixel) + float2(0.5)) / _65.depthSize)).x;
+            float depthDifference = candidate - referenceDepth;
+            weight *= exp((-(depthDifference * depthDifference)) / depthDenominator);
             result += (candidate * weight);
             totalWeight += weight;
         }
     }
-    out.outColor = float4(float3(result / fast::max(totalWeight, 9.9999997473787516355514526367188e-05)), 1.0);
+    return result / fast::max(totalWeight, 9.9999997473787516355514526367188e-05);
+}
+
+fragment main0_out main0(main0_in in [[stage_in]], constant DepthRefineData& _65 [[buffer(0)]], texture2d<float> colorTexture [[texture(0)]], texture2d<float> depthTexture [[texture(1)]], sampler colorTextureSmplr [[sampler(0)]], sampler depthTextureSmplr [[sampler(1)]])
+{
+    main0_out out = {};
+    float3 guide = colorTexture.sample(colorTextureSmplr, in.fragUV).xyz;
+    float2 depthPixel = (in.fragUV * _65.depthSize) - float2(0.5);
+    int2 center = int2(floor(depthPixel));
+    float spatialDenominator = (2.0 * _65.spatialSigma) * _65.spatialSigma;
+    float colorDenominator = (2.0 * _65.colorSigma) * _65.colorSigma;
+    float depthDenominator = 0.007199999876320362091064453125;
+    int sampleCount = 0;
+    spvUnsafeArray<float, 25> candidates;
+    spvUnsafeArray<float, 25> weights;
+    for (int y = -2; y <= 2; y++)
+    {
+        for (int x = -2; x <= 2; x++)
+        {
+            int2 samplePixel = clamp(center + int2(x, y), int2(0), int2(_65.depthSize) - int2(1));
+            float2 sampleUV = (float2(samplePixel) + float2(0.5)) / _65.depthSize;
+            float candidate = depthTexture.sample(depthTextureSmplr, sampleUV).x;
+            float3 candidateGuide = colorTexture.sample(colorTextureSmplr, sampleUV).xyz;
+            float2 spatialOffset = float2(samplePixel) - depthPixel;
+            float spatialDistance = dot(spatialOffset, spatialOffset);
+            float colorDistance = dot(guide - candidateGuide, guide - candidateGuide);
+            float weight = exp(((-spatialDistance) / spatialDenominator) - (colorDistance / colorDenominator));
+            candidates[sampleCount] = candidate;
+            weights[sampleCount] = weight;
+            sampleCount++;
+        }
+    }
+    for (int i = 1; i < 25; i++)
+    {
+        float candidate_1 = candidates[i];
+        float weight_1 = weights[i];
+        int j = i - 1;
+        for (;;)
+        {
+            bool _341 = j >= 0;
+            bool _349;
+            if (_341)
+            {
+                _349 = candidates[j] > candidate_1;
+            }
+            else
+            {
+                _349 = _341;
+            }
+            if (_349)
+            {
+                candidates[j + 1] = candidates[j];
+                weights[j + 1] = weights[j];
+                j--;
+                continue;
+            }
+            else
+            {
+                break;
+            }
+        }
+        candidates[j + 1] = candidate_1;
+        weights[j + 1] = weight_1;
+    }
+    float totalWeight = 0.0;
+    for (int i_1 = 0; i_1 < 25; i_1++)
+    {
+        totalWeight += weights[i_1];
+    }
+    float accumulatedWeight = 0.0;
+    float median = candidates[24];
+    float localMinimum = candidates[0];
+    float localMaximum = candidates[0];
+    float _434;
+    float _451;
+    for (int i_2 = 0; i_2 < 25; i_2++)
+    {
+        localMinimum = fast::min(localMinimum, candidates[i_2]);
+        localMaximum = fast::max(localMaximum, candidates[i_2]);
+        float nextAccumulated = accumulatedWeight + weights[i_2];
+        if (nextAccumulated >= (totalWeight * 0.5))
+        {
+            if (i_2 > 0)
+            {
+                _434 = candidates[i_2 - 1];
+            }
+            else
+            {
+                _434 = candidates[i_2];
+            }
+            float previous = _434;
+            if (weights[i_2] > 0.0)
+            {
+                _451 = ((totalWeight * 0.5) - accumulatedWeight) / weights[i_2];
+            }
+            else
+            {
+                _451 = 0.0;
+            }
+            float fraction = _451;
+            median = mix(previous, candidates[i_2], fast::clamp(fraction, 0.0, 1.0));
+            break;
+        }
+        accumulatedWeight = nextAccumulated;
+    }
+    for (int i_3 = 0; i_3 < 25; i_3++)
+    {
+        float depthDifference = candidates[i_3] - median;
+        weights[i_3] *= exp((-(depthDifference * depthDifference)) / depthDenominator);
+    }
+    totalWeight = 0.0;
+    for (int i_4 = 0; i_4 < 25; i_4++)
+    {
+        totalWeight += weights[i_4];
+    }
+    accumulatedWeight = 0.0;
+    median = candidates[24];
+    float _543;
+    float _560;
+    for (int i_5 = 0; i_5 < 25; i_5++)
+    {
+        float nextAccumulated_1 = accumulatedWeight + weights[i_5];
+        if (nextAccumulated_1 >= (totalWeight * 0.5))
+        {
+            if (i_5 > 0)
+            {
+                _543 = candidates[i_5 - 1];
+            }
+            else
+            {
+                _543 = candidates[i_5];
+            }
+            float previous_1 = _543;
+            if (weights[i_5] > 0.0)
+            {
+                _560 = ((totalWeight * 0.5) - accumulatedWeight) / weights[i_5];
+            }
+            else
+            {
+                _560 = 0.0;
+            }
+            float fraction_1 = _560;
+            median = mix(previous_1, candidates[i_5], fast::clamp(fraction_1, 0.0, 1.0));
+            break;
+        }
+        accumulatedWeight = nextAccumulated_1;
+    }
+    float2 param = in.fragUV;
+    float param_1 = median;
+    float smoothDepth = fast::clamp(bicubicDepth(param, param_1, _65, depthTexture, depthTextureSmplr), localMinimum, localMaximum);
+    float softened = mix(median, smoothDepth, 0.300000011920928955078125);
+    out.outColor = float4(float3(softened), 1.0);
     return out;
 }
 

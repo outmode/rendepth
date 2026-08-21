@@ -1911,10 +1911,15 @@ static void updateVideoSlider() {
 	if (!activeVideo) return;
 	auto& timeline = getIcon(IconType::VideoSeek);
 	const auto scale = std::max(context.displayScale, 0.01f);
-	const auto preferredWidth = style.getIconDragger(Style::getCurrentScale()) * 12.0f;
+	// SBS Full doubles the displayed horizontal view. Keep the video control
+	// group in the same logical half-width so its buttons do not spread across
+	// both views.
+	const auto controlWidthScale = preferredStereoMode == SBS_Full ? 0.5f : 1.0f;
+	const auto preferredWidth = style.getIconDragger(Style::getCurrentScale()) *
+		12.0f * controlWidthScale;
 	const auto thumbDiameter = style.getIconSlider(Style::getCurrentScale()) * 2.0f;
 	const auto availableWidth = std::max(thumbDiameter,
-		windowSize.x / scale - positionEdgeLarge * 2.0f);
+		(windowSize.x / scale - positionEdgeLarge * 2.0f) * controlWidthScale);
 	const auto totalWidth = std::min(preferredWidth, availableWidth);
 	// Keep the language buttons close together while retaining the same gap
 	// between the volume slider and the first language button.
@@ -1992,6 +1997,17 @@ static void openFolder() {
 
 static void saveFile() {
 	doingFileOp = true;
+	// The save callback can run between video-frame updates. Refresh the GPU
+	// source from the frame currently being presented so export reads the
+	// complete packed frame (both eyes for native SBS video).
+	if (activeVideo && lastVideoFrame != nullptr &&
+		lastVideoFrame->generation == videoPlayer.generation()) {
+		if (Image::updateVideoFrame(&context, *lastVideoFrame, false,
+			lastVideoFrame->width, lastVideoFrame->height, false) != 0) {
+			doingFileOp = false;
+			return;
+		}
+	}
 	auto renderResult = Image::renderStereoImage(&context, exportFormat);
 	if (renderResult != 0) {
 		doingFileOp = false;
@@ -2323,7 +2339,11 @@ static void refreshDisplay3D(StereoFormat type) {
 		return;
 	}
 	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half) {
-		context.mode = preferredStereoMode;
+		// SBS is a two-view presentation and is only valid in fullscreen. On
+		// the initial load the window is still windowed, so keep the normal
+		// single-view mode until fullscreen is entered.
+		setStereoMode(isFullscreen ? preferredStereoMode :
+			(type == Color_Only ? Native : Mono));
 		if (type == Color_Only) setDisplay3D(false);
 		return;
 	}
@@ -2463,6 +2483,8 @@ static void updateFullscreenState() {
 	context.fullscreen = isFullscreen;
 	context.maximized = isMaximized;
 	Image::updateSize(&context);
+	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half)
+		refreshDisplay3D(context.imageType);
 }
 
 static void setFullscreen(bool fullscreen = true) {
@@ -2880,16 +2902,28 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 
 	if (Image::useBorderlessWindow) SDL_SetWindowHitTest(context.window, windowHitCallback, &context);
 
+	// Rendepth always starts windowed. Establish that state before applying
+	// the saved stereo preference so SBS cannot affect the first frame.
+	isFullscreen = false;
+	context.fullscreen = isFullscreen;
+	context.maximized = isMaximized;
+	refreshWindowSize();
+	refreshWindowSizeBase();
+
 	const bool savedLightField = preferredStereoMode == Light_Field &&
 		!fileList.empty();
 	setDisplay3D(false);
 	if (savedLightField) Image::setNativeOutputActive(&context, true);
 
-	if (!fileList.empty() && fileList.size() > fileIndex) refreshDisplay3D(fileList[fileIndex].type);
+	if (!fileList.empty() && fileList.size() > fileIndex) {
+		refreshDisplay3D(fileList[fileIndex].type);
+		if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half)
+			setStereoMode(fileList[fileIndex].type == Color_Only ? Native : Mono);
+	} else if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half) {
+		setStereoMode(Native);
+	}
 
 	hideUI();
-	refreshWindowSize();
-	refreshWindowSizeBase();
 
 	return SDL_APP_CONTINUE;
 }
@@ -2901,8 +2935,23 @@ static int loadImage(void* ptr) {
 	currentVisibility = 0.0;
 	targetVisibility = 0.0;
 	if (isSupportedVideo(fileList[fileIndex].link)) {
+		// Video controls and stereo settings occupy the same UI area.
+		// Close the stereo panel before showing controls for the new video.
+		setShowStereoSettings(false);
+		// Keep 3D enabled when replacing a video. Color-only videos need a new
+		// depth worker when one was not already active.
+		const bool preserveVideo3D = activeVideo && display3D;
+		const bool preserveVideoDepth = preserveVideo3D &&
+			videoDepthProcessor.running();
 		std::string error;
-		stopVideoDepth();
+		if (preserveVideoDepth) {
+			// The model is independent of the video decoder. Drop pending output
+			// and temporal state for the new generation, but keep the worker and
+			// loaded estimator alive.
+			videoDepthProcessor.reset();
+		} else {
+			stopVideoDepth(false);
+		}
 		videoPlayer.close();
 		resetVideoPlaybackBuffer(false);
 		lastVideoFrame.reset();
@@ -2913,6 +2962,9 @@ static int loadImage(void* ptr) {
 			failVideoLoad(error);
 			return 1;
 		}
+		if (preserveVideo3D && !preserveVideoDepth &&
+			fileList[fileIndex].type == Color_Only)
+			startVideoDepth();
 		resetVideoPlaybackBuffer(false);
 		setVideoControlsVisible(true);
 		getIcon(IconType::Play).image = IconType::Pause;
@@ -3011,8 +3063,11 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 			rapidBrowsePostLoadClicks = 0;
 			rapidBrowsePostLoadDetection = true;
 		}
-		if (!preserve3D)
-			refreshDisplay3D(fileList[fileIndex].type);
+		if (!preserve3D) {
+			const auto sourceType = activeVideo && videoDepthProcessor.running()
+				? Color_Plus_Depth : fileList[fileIndex].type;
+			refreshDisplay3D(sourceType);
+		}
 		Image::updateSize(&context);
 		context.offset = glm::vec2(0.0f);
 		currentZoom = 1.0;
@@ -3124,7 +3179,16 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	context.gotoPrev = false;
 	context.gotoNext = false;
 	context.gotoRand = false;
+	// Use the window's actual state for the render decision. The cached flag
+	// can briefly be stale during startup before the first resize event.
+	if (context.window != nullptr)
+		isFullscreen = (SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) != 0;
 	context.fullscreen = isFullscreen;
+	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half) {
+		const auto fullscreenMode = isFullscreen ? preferredStereoMode :
+			(context.imageType == Color_Only ? Native : Mono);
+		if (context.mode != fullscreenMode) setStereoMode(fullscreenMode);
+	}
 	context.maximized = isMaximized;
 	context.visibility = (float)currentVisibility;
 	context.stereoStrength = currentStereoStrength;
@@ -3318,7 +3382,6 @@ void checkMouseState() {
 		auto displayParallax = !(icon.type == IconType::Focus &&
 			(!fileList.empty() && fileList[fileIndex].type == Light_Field_LKG));
 		auto displayOpen = !((icon.type != IconType::File && icon.type != IconType::Close &&
-			icon.type != IconType::Stereo_3D &&
 			icon.type != IconType::Crop)
 			&& fileList.empty() && !activeScreenCapture);
 		auto displayMenu = !(context.displayMenu && (icon.type == IconType::Forward || icon.type == IconType::Back ||
@@ -3327,7 +3390,7 @@ void checkMouseState() {
 			icon.type == IconType::Crop ||
 			icon.type == IconType::VideoSeek || icon.type == IconType::VideoVolume ||
 			icon.type == IconType::VideoAudio || icon.type == IconType::VideoCaption ||
-			icon.type == IconType::Settings));
+			icon.type == IconType::Settings || icon.type == IconType::Info));
 		auto displayXD = !(context.displayMenu && icon.type == IconType::Stereo_3D);
 		auto displaySave = true;
 		if (!fileList.empty()) {
@@ -3576,9 +3639,10 @@ static SDL_Surface* makeNativeDepthSurfaceForOutput(const DepthEstimator::Result
 	constexpr int radius = 2;
 	constexpr float spatialSigma = 1.35f;
 	constexpr float colorSigma = 0.12f;
-	constexpr int modeBins = 64;
+	constexpr float depthSigma = 0.06f;
 	const float spatialDenominator = 2.0f * spatialSigma * spatialSigma;
 	const float colorDenominator = 2.0f * colorSigma * colorSigma;
+	const float depthDenominator = 2.0f * depthSigma * depthSigma;
 
 	for (int y = 0; y < depth.height; ++y) {
 		for (int x = 0; x < depth.width; ++x) {
@@ -3588,8 +3652,9 @@ static SDL_Surface* makeNativeDepthSurfaceForOutput(const DepthEstimator::Result
 				static_cast<int>((x + 0.5f) * color->w / depth.width),
 				static_cast<int>((y + 0.5f) * color->h / depth.height));
 
-			std::array<float, modeBins> binWeights{};
-			std::array<float, modeBins> binValues{};
+			std::array<float, 25> candidates{};
+			std::array<float, 25> weights{};
+			int sampleCount = 0;
 			for (int offsetY = -radius; offsetY <= radius; ++offsetY) {
 				for (int offsetX = -radius; offsetX <= radius; ++offsetX) {
 					const int sampleX = std::clamp(centerX + offsetX, 0, depth.width - 1);
@@ -3601,22 +3666,57 @@ static SDL_Surface* makeNativeDepthSurfaceForOutput(const DepthEstimator::Result
 					const float spatialDistance = static_cast<float>(offsetX * offsetX + offsetY * offsetY);
 					const float colorDistance = glm::dot(guide - candidateGuide,
 						guide - candidateGuide);
-					const float weight = std::exp(-spatialDistance / spatialDenominator -
+					weights[sampleCount] = std::exp(-spatialDistance / spatialDenominator -
 						colorDistance / colorDenominator);
-					const int bin = std::clamp(static_cast<int>(candidate * (modeBins - 1) + 0.5f),
-						0, modeBins - 1);
-					binWeights[bin] += weight;
-					binValues[bin] += candidate * weight;
+					candidates[sampleCount++] = candidate;
 				}
 			}
 
-			int selectedBin = 0;
-			for (int bin = 1; bin < modeBins; ++bin)
-				if (binWeights[bin] > binWeights[selectedBin]) selectedBin = bin;
-			const float refined = binWeights[selectedBin] > 0.0f
-				? binValues[selectedBin] / binWeights[selectedBin]
-				: normalized[static_cast<size_t>(std::clamp(centerY, 0, depth.height - 1)) * depth.width +
-					std::clamp(centerX, 0, depth.width - 1)];
+			// Use a continuous weighted median instead of selecting a quantized
+			// mode bin. The preliminary median gives the depth-consistency gate a
+			// robust reference, so samples across a large disparity are not blended
+			// into the surface being reconstructed.
+			auto weightedMedian = [](const std::array<float, 25>& values,
+				const std::array<float, 25>& sampleWeights) {
+				std::array<float, 25> sortedValues = values;
+				std::array<float, 25> sortedWeights = sampleWeights;
+				for (int i = 1; i < 25; ++i) {
+					const float value = sortedValues[i];
+					const float weight = sortedWeights[i];
+					int j = i - 1;
+					while (j >= 0 && sortedValues[j] > value) {
+						sortedValues[j + 1] = sortedValues[j];
+						sortedWeights[j + 1] = sortedWeights[j];
+						--j;
+					}
+					sortedValues[j + 1] = value;
+					sortedWeights[j + 1] = weight;
+				}
+				float totalWeight = 0.0f;
+				for (const float weight : sortedWeights) totalWeight += weight;
+				const float target = totalWeight * 0.5f;
+				float accumulated = 0.0f;
+				float previous = sortedValues[0];
+				for (int i = 0; i < 25; ++i) {
+					const float nextAccumulated = accumulated + sortedWeights[i];
+					if (nextAccumulated >= target) {
+						const float fraction = sortedWeights[i] > 0.0f
+							? (target - accumulated) / sortedWeights[i] : 0.0f;
+						return previous + (sortedValues[i] - previous) *
+							std::clamp(fraction, 0.0f, 1.0f);
+					}
+					accumulated = nextAccumulated;
+					previous = sortedValues[i];
+				}
+				return sortedValues[24];
+			};
+			const float preliminaryMedian = weightedMedian(candidates, weights);
+			for (int index = 0; index < sampleCount; ++index) {
+				const float depthDifference = candidates[index] - preliminaryMedian;
+				weights[index] *= std::exp(-(depthDifference * depthDifference) /
+					depthDenominator);
+			}
+			const float refined = weightedMedian(candidates, weights);
 			const Uint8 value = static_cast<Uint8>(std::lround(
 				std::clamp(refined, 0.0f, 1.0f) * 255.0f));
 			reinterpret_cast<Uint32*>(static_cast<Uint8*>(modelOutput->pixels) +
