@@ -546,7 +546,7 @@ struct VideoPlayer::Impl {
 		const int maxWidth = outputMaxWidth.load();
 		const int maxHeight = outputMaxHeight.load();
 		const double displayScale = maxWidth > 0 && maxHeight > 0
-			? std::min({1.0, static_cast<double>(maxWidth) / sourceWidth,
+			? std::min({static_cast<double>(maxWidth) / sourceWidth,
 				static_cast<double>(maxHeight) / sourceHeight}) : 1.0;
 		double scale = previewScale * displayScale;
 		const int outputWidth = std::max(1, static_cast<int>(std::lround(sourceWidth * scale)));

@@ -15,6 +15,7 @@ foreach(RENDEPTH_BUILD_FEATURE IN ITEMS
         RENDEPTH_ENABLE_ROCM
         RENDEPTH_ENABLE_CUDA
         RENDEPTH_BUILD_DEPTH_TEST
+        RENDEPTH_BUILD_SUPER_TEST
         RENDEPTH_COMPILE_SHADERS)
     unset(${RENDEPTH_BUILD_FEATURE} CACHE)
 endforeach()
@@ -31,6 +32,7 @@ else()
     set(RENDEPTH_ENABLE_CUDA OFF)
 endif()
 set(RENDEPTH_BUILD_DEPTH_TEST OFF)
+set(RENDEPTH_BUILD_SUPER_TEST ON)
 set(RENDEPTH_COMPILE_SHADERS OFF)
 
 # ONNX Runtime is not bundled, so these remain cache entries for each local
@@ -295,7 +297,7 @@ target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp 
 		Source/VideoDepthProcessor.cpp
 		Source/ScreenCapture.cpp
         Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
-        Source/ModelDownloader.cpp)
+        Source/ModelDownloader.cpp Source/SuperResolution.cpp)
 
 target_include_directories(Rendepth PUBLIC
         ThirdParty/glm ThirdParty/SDL/include ThirdParty/SDL_image/include
@@ -611,6 +613,33 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
                     INSTALL_RPATH "\$ORIGIN/../Library;${RENDEPTH_ROCM_DIR}/lib")
             target_link_options(DepthTest PRIVATE "-Wl,--disable-new-dtags")
         endif()
+    endif()
+
+    if(RENDEPTH_BUILD_SUPER_TEST)
+        add_executable(SuperTest Source/SuperTest.cpp Source/SuperResolution.cpp)
+        target_compile_definitions(SuperTest PUBLIC RENDEPTH_ENABLE_ONNX_RUNTIME)
+        target_include_directories(SuperTest PUBLIC
+                Source ThirdParty/SDL/include ThirdParty/SDL_image/include
+                "${RENDEPTH_ONNXRUNTIME_INCLUDE_DIR}")
+        target_link_libraries(SuperTest PUBLIC SDL3::SDL3 SDL3_image::SDL3_image)
+        if(RENDEPTH_ENABLE_ROCM)
+            target_compile_definitions(SuperTest PUBLIC RENDEPTH_ENABLE_ROCM)
+            target_link_libraries(SuperTest PUBLIC "${RENDEPTH_ROCM_ONNXRUNTIME_LIBRARY}")
+            set_property(TARGET SuperTest APPEND PROPERTY BUILD_RPATH "${RENDEPTH_ROCM_DIR}/lib")
+        elseif(WIN32)
+            target_link_libraries(SuperTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/onnxruntime.lib")
+        elseif(APPLE)
+            target_link_libraries(SuperTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/libonnxruntime.dylib")
+        else()
+            target_link_libraries(SuperTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/libonnxruntime.so")
+        endif()
+        if(RENDEPTH_ENABLE_CUDA)
+            target_compile_definitions(SuperTest PUBLIC RENDEPTH_ENABLE_CUDA)
+        endif()
+        set_target_properties(SuperTest PROPERTIES
+                SKIP_BUILD_RPATH FALSE
+                BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib;${RENDEPTH_ROCM_DIR}/lib"
+                INSTALL_RPATH "\$ORIGIN/../Library")
     endif()
 
 endif()

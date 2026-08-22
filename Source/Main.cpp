@@ -62,6 +62,7 @@
 #include "Utils.h"
 #include "Image.h"
 #include "DepthEstimator.h"
+#include "SuperResolution.h"
 #include "ModelDownloader.h"
 #include "VideoPlayer.h"
 #include "VideoDepthProcessor.h"
@@ -138,6 +139,7 @@ static void stopVideoDepth(bool disable3D = true);
 static void seekVideo(double seconds, bool fastPreview = false);
 static void failVideoLoad(const std::string& error);
 static bool skipVideoBy(double seconds);
+static glm::ivec2 getNativeDepthSize(int sourceWidth, int sourceHeight);
 
 glm::vec2 windowSize{};
 auto switchedImage = false;
@@ -307,8 +309,15 @@ static void serviceScreenCapture() {
 
 static void serviceVideo() {
 	if (!activeVideo) return;
-	videoPlayer.setOutputSize(static_cast<int>(context.windowSize.x),
-		static_cast<int>(context.windowSize.y));
+	// Decode color frames at the requested output resolution rather than at
+	// the window size. The depth worker remains independent and continues to
+	// infer at its configured model resolution.
+	const auto videoOutputSize = getNativeDepthSize(videoPlayer.width(), videoPlayer.height());
+	if (videoOutputSize.x > 0 && videoOutputSize.y > 0)
+		videoPlayer.setOutputSize(videoOutputSize.x, videoOutputSize.y);
+	else
+		videoPlayer.setOutputSize(static_cast<int>(context.windowSize.x),
+			static_cast<int>(context.windowSize.y));
 	videoPlayer.update();
 	if (const std::string error = videoPlayer.takeError(); !error.empty()) {
 		failVideoLoad(error);
@@ -419,6 +428,10 @@ static double getMinimumSwitchTime() {
 static DepthEstimator nativeDepthEstimator;
 static bool nativeDepthEstimatorLoaded = false;
 static std::string nativeDepthEstimatorError;
+static std::array<SuperResolution, 2> nativeSuperResolution;
+static std::array<bool, 2> nativeSuperResolutionAttempted{};
+static std::array<bool, 2> nativeSuperResolutionLoaded{};
+static std::array<std::string, 2> nativeSuperResolutionError{};
 
 std::filesystem::path exePath = std::filesystem::path(
 	SDL_GetBasePath()).parent_path().parent_path();
@@ -1521,7 +1534,12 @@ static void changeModel(int option, bool init) {
 static std::array<std::string, 3> upscaleResolutions = { "1920", "2560", "3840" };
 static void changeResolution(int option, bool init) {
 	upscaleResolution = upscaleResolutions[option];
-	if (!init) resetDepthGeneration();
+	if (!init) {
+		// Resolution only changes the color/output scale. Do not throw away the
+		// depth estimator or its temporal video state.
+		if (activeVideo) resetVideoPlaybackBuffer(true, false);
+		else resetDepthGeneration();
+	}
 }
 
 static std::array backgroundStyles = { Blur, Solid, Light, Dark };
@@ -3754,14 +3772,10 @@ static glm::ivec2 getNativeDepthSize(int sourceWidth, int sourceHeight) {
 	if (maximum <= 0) return { sourceWidth, sourceHeight };
 
 	const auto longestSide = std::max(sourceWidth, sourceHeight);
-	int targetLongestSide = 3840;
-	for (const int preset : { 1920, 2560, 3840 }) {
-		if (longestSide <= preset) {
-			targetLongestSide = preset;
-			break;
-		}
-	}
-	targetLongestSide = std::min(targetLongestSide, maximum);
+	// The selected preset is a minimum output long edge. Preserve larger
+	// sources, but never create output above the UHD cap.
+	const int targetLongestSide = std::min(
+		std::max(longestSide, maximum), 3840);
 	const double scale = static_cast<double>(targetLongestSide) / longestSide;
 	return {
 		std::max(1, static_cast<int>(std::lround(sourceWidth * scale))),
@@ -3836,6 +3850,58 @@ static std::filesystem::path runtimeDepthOutputPath(const std::filesystem::path&
 		directory / (input.stem().string() + "_rgbd.jpg");
 }
 
+static int nativeSuperResolutionScale(const SDL_Surface* color) {
+	if (color == nullptr) return 0;
+	const int longestSide = std::max(color->w, color->h);
+	if (longestSide <= 720) return 3;
+	if (longestSide <= 1280) return 2;
+	return 0;
+}
+
+static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
+	const std::filesystem::path& inputPath) {
+	if (color == nullptr || Core::getImageType(inputPath) != Color_Only) return color;
+	const int scale = nativeSuperResolutionScale(color);
+	if (scale == 0) return color;
+	const size_t modelIndex = scale == 3 ? 1 : 0;
+
+	if (!nativeSuperResolutionAttempted[modelIndex]) {
+		nativeSuperResolutionAttempted[modelIndex] = true;
+		SuperResolution::Config config;
+		const auto modelDirectoryPath = modelDirectory.empty()
+			? homePath / "Models" : std::filesystem::path(modelDirectory);
+		config.modelPath = ModelDownloader::ensureAvailable(
+			modelDirectoryPath, scale == 3 ? "IMDN_x3.onnx" : "IMDN_x2.onnx",
+			nativeSuperResolutionError[modelIndex]);
+	#ifdef RENDEPTH_ENABLE_CUDA
+		config.provider = DepthEstimator::Provider::CUDA;
+	#elif defined(RENDEPTH_ENABLE_ROCM)
+		config.provider = DepthEstimator::Provider::ROCM;
+	#endif
+		if (!config.modelPath.empty())
+			nativeSuperResolutionLoaded[modelIndex] = nativeSuperResolution[modelIndex].load(
+				config, nativeSuperResolutionError[modelIndex]);
+		if (nativeSuperResolutionLoaded[modelIndex])
+			SDL_Log("Native IMDN x%d model loaded at %s using %s provider.", scale,
+				config.modelPath.string().c_str(),
+				nativeSuperResolution[modelIndex].providerName().c_str());
+		else
+			SDL_Log("Native IMDN x%d model unavailable; using original color: %s", scale,
+				nativeSuperResolutionError[modelIndex].c_str());
+	}
+	if (!nativeSuperResolutionLoaded[modelIndex]) return color;
+
+	std::string error;
+	SDL_Surface* result = nativeSuperResolution[modelIndex].predict(color, error);
+	if (result == nullptr) {
+		SDL_Log("Native IMDN x%d inference failed; using original color: %s", scale,
+			error.c_str());
+		return color;
+	}
+	SDL_DestroySurface(color);
+	return result;
+}
+
 static int nativeDepthRun(void* ptr) {
 	auto request = static_cast<NativeDepthRequest*>(ptr);
 	const auto inputPath = request->input;
@@ -3889,6 +3955,7 @@ static int nativeDepthRun(void* ptr) {
 				SDL_Surface* color = SDL_ConvertSurface(loaded, SDL_PIXELFORMAT_RGBA32);
 				SDL_DestroySurface(loaded);
 				if (!color) continue;
+				color = maybeSuperResolveNativeColor(color, batchRequest.input);
 				std::string error;
 				auto depth = nativeDepthEstimator.predict(color, error);
 				if (depth.valid()) {
@@ -3925,6 +3992,7 @@ static int nativeDepthRun(void* ptr) {
 		depthGenAlive = false;
 		return 0;
 	}
+	color = maybeSuperResolveNativeColor(color, inputPath);
 
 	std::string error;
 	auto depth = nativeDepthEstimator.predict(color, error);
