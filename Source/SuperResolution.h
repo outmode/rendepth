@@ -24,6 +24,7 @@ public:
 	SuperResolution& operator=(const SuperResolution&) = delete;
 
 	bool load(const Config& config, std::string& error);
+	void unload();
 	SDL_Surface* predict(const SDL_Surface* image, std::string& error) const;
 	const std::string& providerName() const;
 

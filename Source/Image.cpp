@@ -713,8 +713,8 @@ void Image::updateVideoSubtitle(Context* context, const std::string& text) {
 	}
 	if (subtitleFont == nullptr) return;
 	const auto wrapWidth = std::max(256.0f, context->windowSize.x * 0.95f);
-	const auto outlineSize = std::max(1, static_cast<int>(std::lround(2.0f * context->displayScale)));
-	const SDL_Color outlineColor = { 96, 96, 96, 255 };
+	const auto outlineSize = 0;
+	const SDL_Color outlineColor = { 255, 255, 255, 255 };
 	const SDL_Color textColor = { 255, 255, 255, 255 };
 
 	TTF_SetFontOutline(subtitleFont, outlineSize);
@@ -2818,7 +2818,7 @@ int Image::draw(Context* context) {
 				const auto subtitleMargin = 24.0f * context->displayScale;
 				const auto subtitleCenter = glm::vec3(windowSize.x * 0.5f, windowSize.y, 0.0f) -
 					glm::vec3(0.0f, subtitleTextSize.y + subtitleMargin, 0.0f);
-				const auto subtitleShadowOffset = 1.25f * context->displayScale / aspectScale;
+				const auto subtitleShadowOffset = 1.5f * context->displayScale / aspectScale;
 				const auto subtitleSize = glm::vec3(subtitleTextSize, 1.0f);
 				for (const auto& offset : std::array<glm::vec2, 4>{
 					glm::vec2(-subtitleShadowOffset.x, 0.0f),
@@ -3051,6 +3051,7 @@ int Image::drawNativeOutput(Context* context) {
 }
 
 void Image::quit(Context* context){
+	if (context->device != nullptr) SDL_WaitForGPUIdle(context->device);
 	if (context->nativeOutputWindow != nullptr) {
 		SDL_ReleaseWindowFromGPUDevice(context->device, context->nativeOutputWindow);
 		SDL_DestroyWindow(context->nativeOutputWindow);

@@ -37,6 +37,7 @@ struct ScreenCapture::Impl {
 	GstElement* pipeline = nullptr;
 	GstElement* sink = nullptr;
 	int pipewireFd = -1;
+	std::string portalSession;
 	#endif
 };
 
@@ -91,6 +92,26 @@ GVariant* callPortalRequest(GDBusConnection* connection, GDBusProxy* proxy,
 	const std::string requestPath(path);
 	g_variant_unref(reply);
 	return waitForPortalRequest(connection, requestPath.c_str());
+}
+
+void closePortalSession(const std::string& session) {
+	if (session.empty()) return;
+	GError* error = nullptr;
+	auto* connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &error);
+	if (connection == nullptr) {
+		if (error != nullptr) g_error_free(error);
+		return;
+	}
+	auto* reply = g_dbus_connection_call_sync(connection, portalName, session.c_str(),
+		"org.freedesktop.portal.Session", "Close", nullptr, nullptr,
+		G_DBUS_CALL_FLAGS_NONE, -1, nullptr, &error);
+	if (reply != nullptr) {
+		g_variant_unref(reply);
+	} else if (error != nullptr) {
+		SDL_Log("Could not close ScreenCast portal session: %s", error->message);
+	}
+	if (error != nullptr) g_error_free(error);
+	g_object_unref(connection);
 }
 
 GVariantBuilder* portalOptions(const char* token) {
@@ -155,6 +176,7 @@ bool ScreenCapture::start(SDL_Window* parentWindow, std::string& error) {
 	}
 	const std::string session(g_variant_get_string(sessionValue, nullptr));
 	g_variant_unref(sessionValue);
+	impl->portalSession = session;
 
 	options = portalOptions((token + "_select").c_str());
 	// Offer both monitor and window sources. Monitor capture is convenient for
@@ -166,6 +188,7 @@ bool ScreenCapture::start(SDL_Window* parentWindow, std::string& error) {
 		g_variant_new("(o@a{sv})", session.c_str(), g_variant_builder_end(options)));
 	g_variant_builder_unref(options);
 	if (selectResults == nullptr) {
+		closePortalSession(session);
 		g_object_unref(proxy); g_object_unref(connection);
 		return setCaptureError(error, "ScreenCast source selection was cancelled.");
 	}
@@ -181,6 +204,7 @@ bool ScreenCapture::start(SDL_Window* parentWindow, std::string& error) {
 			g_variant_builder_end(options)));
 	g_variant_builder_unref(options);
 	if (startResults == nullptr) {
+		closePortalSession(session);
 		g_object_unref(proxy); g_object_unref(connection);
 		return setCaptureError(error, "ScreenCast start was cancelled.");
 	}
@@ -188,6 +212,7 @@ bool ScreenCapture::start(SDL_Window* parentWindow, std::string& error) {
 	g_variant_unref(startResults);
 	if (streams == nullptr || g_variant_n_children(streams) == 0) {
 		if (streams != nullptr) g_variant_unref(streams);
+		closePortalSession(session);
 		g_object_unref(proxy); g_object_unref(connection);
 		return setCaptureError(error, "ScreenCast portal returned no streams.");
 	}
@@ -211,6 +236,7 @@ bool ScreenCapture::start(SDL_Window* parentWindow, std::string& error) {
 		if (dbusError != nullptr) g_error_free(dbusError);
 		if (fdReply != nullptr) g_variant_unref(fdReply);
 		if (fdList != nullptr) g_object_unref(fdList);
+		closePortalSession(session);
 		return false;
 	}
 	int fdIndex = -1;
@@ -218,8 +244,10 @@ bool ScreenCapture::start(SDL_Window* parentWindow, std::string& error) {
 	impl->pipewireFd = g_unix_fd_list_get(fdList, fdIndex, &dbusError);
 	g_variant_unref(fdReply);
 	g_object_unref(fdList);
-	if (impl->pipewireFd < 0)
+	if (impl->pipewireFd < 0) {
+		closePortalSession(session);
 		return setCaptureError(error, "ScreenCast returned an invalid PipeWire descriptor.");
+	}
 
 	const std::string description = "pipewiresrc fd=" + std::to_string(impl->pipewireFd) +
 		" always-copy=true do-timestamp=true keepalive-time=33" +
@@ -231,12 +259,14 @@ bool ScreenCapture::start(SDL_Window* parentWindow, std::string& error) {
 		error = pipelineError != nullptr ? pipelineError->message : "Could not create PipeWire pipeline.";
 		if (pipelineError != nullptr) g_error_free(pipelineError);
 		close(impl->pipewireFd); impl->pipewireFd = -1;
+		closePortalSession(session);
 		return false;
 	}
 	impl->sink = gst_bin_get_by_name(GST_BIN(impl->pipeline), "sink");
 	if (impl->sink == nullptr) {
 		gst_object_unref(impl->pipeline); impl->pipeline = nullptr;
 		close(impl->pipewireFd); impl->pipewireFd = -1;
+		closePortalSession(session);
 		return setCaptureError(error, "Could not create PipeWire frame sink.");
 	}
 	{
@@ -304,6 +334,10 @@ void ScreenCapture::stop() {
 	if (impl->sink != nullptr) { gst_object_unref(impl->sink); impl->sink = nullptr; }
 	if (impl->pipeline != nullptr) { gst_object_unref(impl->pipeline); impl->pipeline = nullptr; }
 	if (impl->pipewireFd >= 0) { close(impl->pipewireFd); impl->pipewireFd = -1; }
+	if (!impl->portalSession.empty()) {
+		closePortalSession(impl->portalSession);
+		impl->portalSession.clear();
+	}
 #endif
 	std::lock_guard lock(impl->mutex);
 	impl->newestFrame.reset();

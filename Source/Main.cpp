@@ -432,6 +432,8 @@ static std::array<SuperResolution, 2> nativeSuperResolution;
 static std::array<bool, 2> nativeSuperResolutionAttempted{};
 static std::array<bool, 2> nativeSuperResolutionLoaded{};
 static std::array<std::string, 2> nativeSuperResolutionError{};
+static std::uint64_t nextDepthGeneration = 0;
+static std::uint64_t activeDepthGeneration = 0;
 
 std::filesystem::path exePath = std::filesystem::path(
 	SDL_GetBasePath()).parent_path().parent_path();
@@ -752,9 +754,10 @@ static void toggleStereoSettings();
 static void parseFileList(const std::vector<std::string>& filesToLoad);
 static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int imageId = -1);
 static int loadImage(void* ptr);
-static void conversionCompleted(const char* path, int imageId = -1);
+static void conversionCompleted(const char* path, int imageId, std::uint64_t generation);
 static int nativeDepthRun(void* ptr);
 static void serviceNativeGpuUpscale();
+static void serviceDepthCompletions();
 
 struct NativeGpuUpscaleRequest;
 static std::mutex nativeGpuUpscaleMutex;
@@ -1325,6 +1328,10 @@ static void waitForDepthThread() {
 }
 
 static void resetDepthGeneration() {
+	// Invalidate any completion that may already be queued by the worker. The
+	// current conversion is still joined below, but its result must not restore
+	// an image after the user changes the depth settings.
+	activeDepthGeneration = ++nextDepthGeneration;
 	depthGenAlive = false;
 	isSpeculativeDepth = false;
 	nativeDepthEstimator.cancel();
@@ -2518,14 +2525,58 @@ static void toggleFullscreen() {
 
 static void toggleScreenCapture() {
 #if defined(__linux__)
-	if (activeScreenCapture) {
-		stopVideoDepth();
-		screenCapture.stop();
-		activeScreenCapture = false;
-		videoFrameLoaded = false;
-		setVideoControlsVisible(false);
-		setDisplay3D(false);
+		if (activeScreenCapture) {
+			stopVideoDepth();
+			screenCapture.stop();
+			activeScreenCapture = false;
+			activeVideo = false;
+			videoFrameLoaded = false;
+			lastVideoFrame.reset();
+			resetVideoPlaybackBuffer(false);
+			setVideoControlsVisible(false);
+			setDisplay3D(false);
+			setStereoMode(Native);
+			setShowStereoSettings(false);
+			context.displayMenu = false;
+			context.gotoPrev = false;
+			context.gotoNext = false;
+			context.gotoRand = false;
+			doneLoadingImage = false;
+			switchedImage = false;
+			isConverting = false;
+			justConverted = false;
+			currentVisibility = 0.0;
+			targetVisibility = 0.0;
+			context.visibility = 0.0f;
+		Image::displayTip = false;
+		Image::infoTargetVisibility = 0.0f;
+		Image::infoCurrentVisibility = 0.0f;
+		currentInfoLabel.clear();
+		currentSlider = nullptr;
+			mouseIsDown = false;
+			isDragging = false;
+			if (doingPreload) endPreload(false);
+			for (auto& file : fileList) {
+				SDL_DestroySurface(file.preload);
+				file.preload = nullptr;
+			}
+			fileList.clear();
+			fileIndex = -1;
+		// Return to the same empty state used at startup instead of leaving the
+		// last captured frame as the current image.
+		FileInfo emptyFile{};
+		Image::load(&context, emptyFile, nullptr);
+		context.loading = false;
+		context.fileLink.clear();
+		context.fileName.clear();
+		context.infoText.clear();
+		Image::displayInfo = false;
 		SDL_SetWindowTitle(context.window, "Rendepth");
+		// Do not recalculate hover state here: the mouse is often still over a
+		// photo control when capture is stopped, which would immediately reveal
+		// the normal image UI over the blank state.
+		mouseLastActive = 0.0;
+		hideUI();
 		return;
 	}
 	if (activeVideo || isConverting || context.loading) return;
@@ -3079,6 +3130,10 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		}
 		checkMouseState();
 	}
+	// Apply worker completions after the navigation state machine has run. This
+	// preserves the next-frame handoff used by switchedImage instead of allowing
+	// a completion to be consumed and cleared in the same frame.
+	serviceDepthCompletions();
 
 	if (justConverted) setDisplay3D(true);
 	justConverted = false;
@@ -3158,7 +3213,8 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 				!isPlayingSlideshow) ? 1.0 : 0.0;
 		}
 		icon.visibility = Utils::tween(icon.visibility, iconTargetVisibility, iconVisibilitySpeed * deltaAverage);
-		if (icon.type == IconType::File && fileList.empty()) icon.visibility = 1.0;
+		if (icon.type == IconType::File && fileList.empty() && !activeScreenCapture)
+			icon.visibility = 1.0;
 	}
 
 
@@ -3409,6 +3465,9 @@ void checkMouseState() {
 			icon.type == IconType::Layers) && (!showingStereoSettings || !display3D));
 		auto displayParallax = !(icon.type == IconType::Focus &&
 			(!fileList.empty() && fileList[fileIndex].type == Light_Field_LKG));
+		auto displayCaptureFileActions = !(activeScreenCapture &&
+			(icon.type == IconType::File || icon.type == IconType::Folder ||
+				icon.type == IconType::Save));
 		auto displayOpen = !((icon.type != IconType::File && icon.type != IconType::Close &&
 			icon.type != IconType::Crop)
 			&& fileList.empty() && !activeScreenCapture);
@@ -3439,9 +3498,12 @@ void checkMouseState() {
 				: (!videoPlayControl || videoControlsVisible);
 			const bool displayCaptureNavigation = !(activeScreenCapture &&
 				(icon.type == IconType::Back || icon.type == IconType::Forward ||
-				 icon.type == IconType::Play || icon.type == IconType::Pause));
+					icon.type == IconType::Play || icon.type == IconType::Pause));
+			const bool displayFileNavigation = fileList.size() > 1 ||
+				(icon.type != IconType::Back && icon.type != IconType::Forward);
 			icon.active = displayLoading && displaySettings && displayStereo && displayParallax &&
-				displayOpen && displaySave && displayMenu && displayXD && displayVideo;
+				displayOpen && displaySave && displayMenu && displayXD && displayVideo &&
+				displayCaptureFileActions && displayFileNavigation;
 			icon.active = icon.active && displayCaptureNavigation;
 			if (icon.type == IconType::Loading) icon.active = true;
 			auto iconPosition = getCoordinates(
@@ -3500,7 +3562,8 @@ void checkMouseState() {
 				isIconCaptured = true;
 				continue;
 			}
-			if (icon.type != IconType::Loading && !(icon.type == IconType::File && fileList.empty())) {
+			if (icon.type != IconType::Loading &&
+				!(icon.type == IconType::File && fileList.empty() && !activeScreenCapture)) {
 				icon.state = IconState::Idle;
 				icon.active = false;
 			} else {
@@ -3575,7 +3638,17 @@ struct NativeDepthRequest {
 	std::filesystem::path input;
 	int mode;
 	int imageId;
+	std::uint64_t generation;
 };
+
+struct NativeDepthCompletion {
+	std::string path;
+	int imageId;
+	std::uint64_t generation;
+};
+
+static std::mutex depthCompletionMutex;
+static std::deque<NativeDepthCompletion> depthCompletions;
 
 struct NativeGpuUpscaleRequest {
 	SDL_Surface* source = nullptr;
@@ -3853,14 +3926,17 @@ static std::filesystem::path runtimeDepthOutputPath(const std::filesystem::path&
 static int nativeSuperResolutionScale(const SDL_Surface* color) {
 	if (color == nullptr) return 0;
 	const int longestSide = std::max(color->w, color->h);
-	if (longestSide <= 720) return 3;
-	if (longestSide <= 1280) return 2;
+	if (longestSide <= 512) return 3;
+	if (longestSide <= 720) return 2;
 	return 0;
 }
 
 static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
 	const std::filesystem::path& inputPath) {
-	if (color == nullptr || Core::getImageType(inputPath) != Color_Only) return color;
+	const auto imageType = Core::getImageType(inputPath);
+	// Untagged images are resolved to Color_Only when they enter the file list,
+	// but getImageType() returns Unknown_Format when inspecting the raw path.
+	if (color == nullptr || (imageType != Color_Only && imageType != Unknown_Format)) return color;
 	const int scale = nativeSuperResolutionScale(color);
 	if (scale == 0) return color;
 	const size_t modelIndex = scale == 3 ? 1 : 0;
@@ -3907,6 +3983,7 @@ static int nativeDepthRun(void* ptr) {
 	const auto inputPath = request->input;
 	const auto mode = request->mode;
 	const auto imageId = request->imageId;
+	const auto generation = request->generation;
 	delete request;
 
 	const auto modelOption = std::clamp(
@@ -4014,7 +4091,7 @@ static int nativeDepthRun(void* ptr) {
 	SDL_DestroySurface(color);
 
 	if (saved) {
-		conversionCompleted(result.string().c_str(), imageId);
+		conversionCompleted(result.string().c_str(), imageId, generation);
 	} else {
 		std::cerr << "Native depth inference failed: " << error << '\n';
 		depthGenerationError = true;
@@ -4023,7 +4100,21 @@ static int nativeDepthRun(void* ptr) {
 	return 0;
 }
 
-static void conversionCompleted(const char* path, int imageId) {
+static void conversionCompleted(const char* path, int imageId, std::uint64_t generation) {
+	std::lock_guard lock(depthCompletionMutex);
+	depthCompletions.push_back({path, imageId, generation});
+}
+
+static void serviceDepthCompletions() {
+	std::deque<NativeDepthCompletion> completions;
+	{
+		std::lock_guard lock(depthCompletionMutex);
+		completions.swap(depthCompletions);
+	}
+	for (const auto& completion : completions) {
+		if (completion.generation != activeDepthGeneration) continue;
+		const auto& path = completion.path;
+		const auto imageId = completion.imageId;
 	if (isSpeculativeDepth && imageId == preloadDepthIndex &&
 		imageId >= 0 && imageId < static_cast<int>(fileList.size())) {
 		if (imageId != fileIndex) {
@@ -4036,7 +4127,7 @@ static void conversionCompleted(const char* path, int imageId) {
 		}
 		isSpeculativeDepth = false;
 		preloadDepthIndex = -1;
-		return;
+		continue;
 	}
 	if (imageId != fileIndex && imageId >= 0 && imageId < static_cast<int>(fileList.size())) {
 		SDL_DestroySurface(fileList[imageId].preload);
@@ -4048,8 +4139,9 @@ static void conversionCompleted(const char* path, int imageId) {
 		isConverting = false;
 		preloadDepthIndex = -1;
 		isSpeculativeDepth = false;
-		return;
+		continue;
 	}
+	if (imageId < 0 || imageId >= static_cast<int>(fileList.size())) continue;
 	auto colorPath = std::filesystem::path(fileList[imageId].path).filename().replace_extension();;
 	auto depthPath = std::filesystem::path(path).filename().replace_extension();;
 	if (imageId == fileIndex) fileList[imageId].path = path;
@@ -4057,6 +4149,7 @@ static void conversionCompleted(const char* path, int imageId) {
 	switchedImage = true;
 	justConverted = true;
 	isConverting = false;
+	}
 }
 
 static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int imageId) {
@@ -4070,8 +4163,9 @@ static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int 
 	}
 
 	depthGenAlive = true;
+	activeDepthGeneration = ++nextDepthGeneration;
 	auto request = new NativeDepthRequest{
-		std::filesystem::path(fileFolderPath), genMode, imageId};
+		std::filesystem::path(fileFolderPath), genMode, imageId, activeDepthGeneration};
 	depthGenThread = SDL_CreateThread(nativeDepthRun, "nativeDepthRun", request);
 	if (depthGenThread == nullptr) {
 		delete request;
@@ -4085,7 +4179,15 @@ static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int 
 }
 
 static void callDepthGen(int imageIndex, bool speculative) {
-	if (!speculative) isConverting = true;
+	if (!speculative) {
+		// A preloaded image can be promoted to the current image while its
+		// speculative depth job is still finishing. From this point onward the
+		// current-image conversion owns completion handling; do not let its
+		// result be mistaken for the old speculative request.
+		isConverting = true;
+		isSpeculativeDepth = false;
+		preloadDepthIndex = -1;
+	}
 	if (callDepthGenOnce(fileList[imageIndex].link, REAL_TIME, imageIndex) != 0 && speculative) {
 		isSpeculativeDepth = false;
 		preloadDepthIndex = -1;
@@ -4457,6 +4559,8 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result) {
 	resetDepthGeneration();
 	nativeDepthEstimator.unload();
 	nativeDepthEstimatorLoaded = false;
+	for (auto& superResolution : nativeSuperResolution) superResolution.unload();
+	nativeSuperResolutionLoaded.fill(false);
 	const auto runtimeDirectory = runtimeDepthDirectory();
 	if (!runtimeDirectory.empty()) {
 		std::error_code cleanupError;

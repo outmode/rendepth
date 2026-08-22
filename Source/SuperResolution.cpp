@@ -25,13 +25,17 @@ struct SuperResolution::State {
 };
 
 SuperResolution::~SuperResolution() {
-	delete state;
+	unload();
 }
 
-bool SuperResolution::load(const Config& config, std::string& error) {
+void SuperResolution::unload() {
 	delete state;
 	state = nullptr;
 	activeProvider = "Unavailable";
+}
+
+bool SuperResolution::load(const Config& config, std::string& error) {
+	unload();
 #ifndef RENDEPTH_ENABLE_ONNX_RUNTIME
 	(void)config;
 	error = "ONNX Runtime support is not enabled.";
