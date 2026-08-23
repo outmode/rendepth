@@ -103,7 +103,7 @@ struct VideoPlayer::Impl {
 	struct SubtitleCue {
 		double start = 0.0;
 		double end = 0.0;
-		std::string text;
+		std::shared_ptr<const VideoSubtitle> subtitle;
 	};
 	mutable std::mutex subtitleMutex;
 	mutable std::deque<SubtitleCue> subtitleCues;
@@ -283,11 +283,100 @@ struct VideoPlayer::Impl {
 		return result;
 	}
 
+	static std::shared_ptr<VideoSubtitle> subtitleBitmap(const AVSubtitle& subtitle,
+		int videoWidth, int videoHeight) {
+		int canvasWidth = std::max(videoWidth, 1);
+		int canvasHeight = std::max(videoHeight, 1);
+		int left = canvasWidth;
+		int top = canvasHeight;
+		int right = 0;
+		int bottom = 0;
+		bool foundBitmap = false;
+
+		for (unsigned int index = 0; index < subtitle.num_rects; ++index) {
+			const auto* rect = subtitle.rects[index];
+			if (rect == nullptr || rect->type != SUBTITLE_BITMAP ||
+				rect->data[0] == nullptr || rect->data[1] == nullptr ||
+				rect->w <= 0 || rect->h <= 0) continue;
+			canvasWidth = std::max(canvasWidth, rect->x + rect->w);
+			canvasHeight = std::max(canvasHeight, rect->y + rect->h);
+		}
+
+		for (unsigned int index = 0; index < subtitle.num_rects; ++index) {
+			const auto* rect = subtitle.rects[index];
+			if (rect == nullptr || rect->type != SUBTITLE_BITMAP ||
+				rect->data[0] == nullptr || rect->data[1] == nullptr ||
+				rect->w <= 0 || rect->h <= 0) continue;
+			const int rectLeft = std::clamp(rect->x, 0, canvasWidth);
+			const int rectTop = std::clamp(rect->y, 0, canvasHeight);
+			const int rectRight = std::clamp(rect->x + rect->w, 0, canvasWidth);
+			const int rectBottom = std::clamp(rect->y + rect->h, 0, canvasHeight);
+			if (rectRight <= rectLeft || rectBottom <= rectTop) continue;
+			foundBitmap = true;
+			left = std::min(left, rectLeft);
+			top = std::min(top, rectTop);
+			right = std::max(right, rectRight);
+			bottom = std::max(bottom, rectBottom);
+		}
+		if (!foundBitmap || right <= left || bottom <= top) return nullptr;
+
+		auto result = std::make_shared<VideoSubtitle>();
+		result->format = VideoSubtitle::Format::Bitmap;
+		result->canvasWidth = canvasWidth;
+		result->canvasHeight = canvasHeight;
+		result->x = left;
+		result->y = top;
+		result->width = right - left;
+		result->height = bottom - top;
+		result->rgba.assign(static_cast<size_t>(result->width) * result->height * 4, 0);
+
+		for (unsigned int index = 0; index < subtitle.num_rects; ++index) {
+			const auto* rect = subtitle.rects[index];
+			if (rect == nullptr || rect->type != SUBTITLE_BITMAP ||
+				rect->data[0] == nullptr || rect->data[1] == nullptr) continue;
+			const int rectLeft = std::clamp(rect->x, left, right);
+			const int rectTop = std::clamp(rect->y, top, bottom);
+			const int rectRight = std::clamp(rect->x + rect->w, left, right);
+			const int rectBottom = std::clamp(rect->y + rect->h, top, bottom);
+			const auto* palette = rect->data[1];
+			for (int y = rectTop; y < rectBottom; ++y) {
+				const int sourceY = y - rect->y;
+				const auto* source = rect->data[0] +
+					static_cast<ptrdiff_t>(sourceY) * rect->linesize[0] + (rectLeft - rect->x);
+				for (int x = rectLeft; x < rectRight; ++x) {
+					const auto* color = palette + static_cast<size_t>(*source) * 4;
+					auto* destination = result->rgba.data() +
+						(static_cast<size_t>(y - top) * result->width + x - left) * 4;
+					std::copy_n(color, 4, destination);
+					++source;
+				}
+			}
+		}
+		return result;
+	}
+
+	void closeOpenBitmapSubtitle(double end) {
+		std::lock_guard lock(subtitleMutex);
+		for (auto cue = subtitleCues.rbegin(); cue != subtitleCues.rend(); ++cue) {
+			if (cue->start <= end && std::isinf(cue->end)) {
+				cue->end = end;
+				break;
+			}
+		}
+	}
+
 	void decodeSubtitlePacket(AVPacket* subtitlePacket) {
 		if (subtitleCodec == nullptr) return;
 		AVSubtitle subtitle{};
 		int gotSubtitle = 0;
 		if (avcodec_decode_subtitle2(subtitleCodec, &subtitle, &gotSubtitle, subtitlePacket) >= 0 && gotSubtitle) {
+			const auto* streamInfo = format->streams[subtitleStreamIndex];
+			const double packetStart = subtitle.pts != AV_NOPTS_VALUE
+				? subtitle.pts / static_cast<double>(AV_TIME_BASE) - streamStart
+				: subtitlePacket->pts == AV_NOPTS_VALUE ? currentPosition.load() :
+					subtitlePacket->pts * av_q2d(streamInfo->time_base) - streamStart;
+			const double start = packetStart + subtitle.start_display_time / 1000.0;
+			const bool bitmapSubtitle = subtitle.format == 0;
 			std::string text;
 			for (unsigned int i = 0; i < subtitle.num_rects; ++i) {
 				const auto line = subtitleRectText(subtitle.rects[i]);
@@ -296,22 +385,33 @@ struct VideoPlayer::Impl {
 					text += line;
 				}
 			}
-			const auto* streamInfo = format->streams[subtitleStreamIndex];
-			const double packetStart = subtitlePacket->pts == AV_NOPTS_VALUE ? currentPosition.load() :
-				subtitlePacket->pts * av_q2d(streamInfo->time_base) - streamStart;
-			const double start = packetStart + subtitle.start_display_time / 1000.0;
-			double duration = (subtitle.end_display_time - subtitle.start_display_time) / 1000.0;
-			if (duration <= 0.0 && subtitlePacket->duration > 0)
+			auto decodedSubtitle = subtitleBitmap(subtitle, videoWidth.load(), videoHeight.load());
+			if (decodedSubtitle == nullptr && !text.empty()) {
+				decodedSubtitle = std::make_shared<VideoSubtitle>();
+				decodedSubtitle->format = VideoSubtitle::Format::Text;
+				decodedSubtitle->text = std::move(text);
+			}
+			if (decodedSubtitle == nullptr) {
+				if (bitmapSubtitle) closeOpenBitmapSubtitle(start);
+				avsubtitle_free(&subtitle);
+				return;
+			}
+			double duration = std::numeric_limits<double>::infinity();
+			if (!bitmapSubtitle)
+				duration = (subtitle.end_display_time - subtitle.start_display_time) / 1000.0;
+			if (!bitmapSubtitle && duration <= 0.0 && subtitlePacket->duration > 0)
 				duration = subtitlePacket->duration * av_q2d(streamInfo->time_base);
-			if (duration <= 0.0) {
-				const auto readableDuration = 1.5 + text.size() * 0.045;
+			if (!bitmapSubtitle && duration <= 0.0) {
+				const auto readableDuration = decodedSubtitle->format == VideoSubtitle::Format::Bitmap
+					? 7.0 : 1.5 + decodedSubtitle->text.size() * 0.045;
 				duration = std::clamp(readableDuration, 2.0, 7.0);
 			}
+			if (bitmapSubtitle) closeOpenBitmapSubtitle(start);
 			{
 				std::lock_guard lock(subtitleMutex);
 				while (!subtitleCues.empty() && subtitleCues.front().end <= presentedPosition.load())
 					subtitleCues.pop_front();
-				subtitleCues.push_back({ start, start + duration, text });
+				subtitleCues.push_back({ start, start + duration, std::move(decodedSubtitle) });
 				while (subtitleCues.size() > 256) subtitleCues.pop_front();
 			}
 		}
@@ -839,6 +939,7 @@ struct VideoPlayer::Impl {
 		}
 		avcodec_flush_buffers(codec);
 		if (audioCodec != nullptr) avcodec_flush_buffers(audioCodec);
+		if (subtitleCodec != nullptr) avcodec_flush_buffers(subtitleCodec);
 		if (audioResampler != nullptr) {
 			swr_close(audioResampler);
 			if (swr_init(audioResampler) < 0) {
@@ -935,6 +1036,8 @@ struct VideoPlayer::Impl {
 
 			const int readResult = av_read_frame(format, packet);
 			if (readResult == AVERROR_EOF) {
+				closeOpenBitmapSubtitle(totalDuration > 0.0
+					? totalDuration.load() : currentPosition.load());
 				const int flushResult = avcodec_send_packet(codec, nullptr);
 				if (flushResult < 0 && flushResult != AVERROR_EOF) {
 					setRuntimeError("FFmpeg could not finish decoding the video: " +
@@ -1366,16 +1469,22 @@ void VideoPlayer::cycleSubtitleTrack() {
 	impl->stateChanged.notify_all();
 }
 
-std::string VideoPlayer::subtitleText() const {
+std::shared_ptr<const VideoSubtitle> VideoPlayer::subtitle() const {
 	const double position = impl->presentedPosition.load();
 	std::lock_guard lock(impl->subtitleMutex);
 	while (!impl->subtitleCues.empty() && impl->subtitleCues.front().end <= position)
 		impl->subtitleCues.pop_front();
 	for (const auto& cue : impl->subtitleCues) {
 		if (cue.start > position) break;
-		if (position < cue.end) return cue.text;
+		if (position < cue.end) return cue.subtitle;
 	}
-	return {};
+	return nullptr;
+}
+
+std::string VideoPlayer::subtitleText() const {
+	const auto current = subtitle();
+	return current != nullptr && current->format == VideoSubtitle::Format::Text
+		? current->text : std::string{};
 }
 
 namespace {

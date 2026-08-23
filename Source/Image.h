@@ -56,6 +56,9 @@ public:
 	inline static SDL_GPUTexture* infoTexture = nullptr;
 	inline static SDL_GPUTexture* subtitleTexture = nullptr;
 	inline static SDL_GPUTexture* subtitleShadowTexture = nullptr;
+	inline static bool subtitleBitmap = false;
+	inline static glm::ivec2 subtitleBitmapPosition{};
+	inline static glm::ivec2 subtitleBitmapCanvasSize{};
 	inline static SDL_GPUTexture* menuTexture = nullptr;
 	inline static SDL_GPUTexture* sliderTexture = nullptr;
 	inline static SDL_GPUTexture* exportTexture = nullptr;
@@ -205,7 +208,8 @@ public:
 	static int updateVideoDepth(Context* context, const std::vector<std::uint16_t>& values,
 		int width, int height);
 	static void clearVideoDepth(Context* context);
-	static void updateVideoSubtitle(Context* context, const std::string& text);
+	static void updateVideoSubtitle(Context* context,
+		const std::shared_ptr<const VideoSubtitle>& subtitle);
 	static int draw(Context* context);
 	static int initNativeOutput(Context* context);
 	static bool nativeOutputAvailable();

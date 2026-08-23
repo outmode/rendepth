@@ -31,6 +31,20 @@ struct VideoFrame {
 	std::vector<std::uint8_t> inferenceRGBA;
 };
 
+struct VideoSubtitle {
+	enum class Format { Text, Bitmap };
+
+	Format format = Format::Text;
+	std::string text;
+	int canvasWidth = 0;
+	int canvasHeight = 0;
+	int x = 0;
+	int y = 0;
+	int width = 0;
+	int height = 0;
+	std::vector<std::uint8_t> rgba;
+};
+
 class VideoPlayer {
 public:
 	VideoPlayer();
@@ -60,6 +74,7 @@ public:
 	void cycleSubtitleTrack();
 	std::string audioLanguage() const;
 	std::string subtitleLanguage() const;
+	std::shared_ptr<const VideoSubtitle> subtitle() const;
 	std::string subtitleText() const;
 	bool playing() const;
 	bool ready() const;

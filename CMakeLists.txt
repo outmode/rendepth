@@ -389,7 +389,7 @@ if(RENDEPTH_ENABLE_FFMPEG)
             pkg_check_modules(DAV1D QUIET IMPORTED_TARGET "dav1d >= 0.5.0")
         endif()
         set(RENDEPTH_FFMPEG_COMMON_DECODERS
-                cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3,aac,aac_latm,ac3,alac,dca,eac3,flac,mp1,mp2,mp3,opus,pcm_alaw,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_mulaw,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_u8,truehd,vorbis,wavpack,wmalossless,wmapro,wmav1,wmav2,wmavoice,subrip,ass,mov_text,webvtt)
+				cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3,aac,aac_latm,ac3,alac,dca,eac3,flac,mp1,mp2,mp3,opus,pcm_alaw,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_mulaw,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_u8,truehd,vorbis,wavpack,wmalossless,wmapro,wmav1,wmav2,wmavoice,subrip,ass,mov_text,webvtt,pgssub)
         set(RENDEPTH_FFMPEG_COMMON_PARSERS
                 aac,aac_latm,ac3,dca,flac,mpegaudio,opus,vorbis)
         if(DAV1D_FOUND)

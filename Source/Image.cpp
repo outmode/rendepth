@@ -697,9 +697,10 @@ void Image::clearVideoDepth(Context* context) {
 	videoDepthTextureSize = {};
 }
 
-void Image::updateVideoSubtitle(Context* context, const std::string& text) {
+void Image::updateVideoSubtitle(Context* context,
+	const std::shared_ptr<const VideoSubtitle>& subtitle) {
 	if (context == nullptr) return;
-	if (text.empty()) {
+	auto clearSubtitleTextures = [&]() {
 		if (subtitleTexture != nullptr) {
 			SDL_ReleaseGPUTexture(context->device, subtitleTexture);
 			subtitleTexture = nullptr;
@@ -709,8 +710,39 @@ void Image::updateVideoSubtitle(Context* context, const std::string& text) {
 			subtitleShadowTexture = nullptr;
 		}
 		subtitleTextSize = {};
+		subtitleBitmap = false;
+		subtitleBitmapPosition = {};
+		subtitleBitmapCanvasSize = {};
+	};
+	if (subtitle == nullptr || (subtitle->format == VideoSubtitle::Format::Text && subtitle->text.empty())) {
+		clearSubtitleTextures();
 		return;
 	}
+	if (subtitle->format == VideoSubtitle::Format::Bitmap) {
+		if (subtitle->width <= 0 || subtitle->height <= 0 ||
+			subtitle->canvasWidth <= 0 || subtitle->canvasHeight <= 0 ||
+			subtitle->rgba.size() < static_cast<size_t>(subtitle->width) * subtitle->height * 4) {
+			clearSubtitleTextures();
+			return;
+		}
+		clearSubtitleTextures();
+		SDL_Surface* surface = SDL_CreateSurfaceFrom(subtitle->width, subtitle->height,
+			SDL_PIXELFORMAT_RGBA32, const_cast<std::uint8_t*>(subtitle->rgba.data()),
+			subtitle->width * 4);
+		if (surface == nullptr) return;
+		const int result = uploadTexture(context, surface, &subtitleTexture,
+			"PGS Subtitle Texture", false, false, false);
+		SDL_DestroySurface(surface);
+		if (result < 0) return;
+		subtitleBitmap = true;
+		subtitleBitmapPosition = { subtitle->x, subtitle->y };
+		subtitleBitmapCanvasSize = { subtitle->canvasWidth, subtitle->canvasHeight };
+		subtitleTextSize = { subtitle->width, subtitle->height };
+		return;
+	}
+
+	const auto& text = subtitle->text;
+	clearSubtitleTextures();
 	if (subtitleFont == nullptr) return;
 	const auto wrapWidth = std::max(256.0f, context->windowSize.x * 0.95f);
 	const auto outlineSize = 0;
@@ -2813,31 +2845,47 @@ int Image::draw(Context* context) {
 				}
 			}
 
-			if (!context->displayMenu && subtitleTexture != nullptr && subtitleShadowTexture != nullptr) {
+			if (!context->displayMenu && subtitleTexture != nullptr) {
 				bindPipeline(renderPass, spritePipeline);
-				const auto subtitleMargin = 24.0f * context->displayScale;
-				const auto subtitleCenter = glm::vec3(windowSize.x * 0.5f, windowSize.y, 0.0f) -
-					glm::vec3(0.0f, subtitleTextSize.y + subtitleMargin, 0.0f);
-				const auto subtitleShadowOffset = 1.5f * context->displayScale / aspectScale;
-				const auto subtitleSize = glm::vec3(subtitleTextSize, 1.0f);
-				for (const auto& offset : std::array<glm::vec2, 4>{
-					glm::vec2(-subtitleShadowOffset.x, 0.0f),
-					glm::vec2(subtitleShadowOffset.x, 0.0f),
-					glm::vec2(0.0f, -subtitleShadowOffset.y),
-					glm::vec2(0.0f, subtitleShadowOffset.y)}) {
-					SDL_GPUTextureSamplerBinding shadowBindings[1] = {{ .texture = subtitleShadowTexture, .sampler = imageSampler }};
-					SDL_BindGPUFragmentSamplers(renderPass, 0, &shadowBindings[0], 1);
-					setSpriteUniforms(subtitleCenter + glm::vec3(offset, 0.0f), subtitleSize,
-						glm::vec4(0.0f, 0.0f, 0.0f, 0.33f), 1.0f, 1, {0.0f, 0.0f}, {1.0f, 1.0f},
-						glm::vec2(0.5f), glm::vec3(aspectScale, 1.0f));
-					drawSprite(commandBuffer, renderPass);
-				}
 				SDL_GPUTextureSamplerBinding subtitleBindings[1] = {{ .texture = subtitleTexture, .sampler = imageSampler }};
 				SDL_BindGPUFragmentSamplers(renderPass, 0, &subtitleBindings[0], 1);
-				setSpriteUniforms(subtitleCenter, glm::vec3(subtitleTextSize, 1.0f),
-					viewColorWhiteSolid, 1.0f, 1, {0.0f, 0.0f}, {1.0f, 1.0f},
-					glm::vec2(0.5f), glm::vec3(aspectScale, 1.0f));
-				drawSprite(commandBuffer, renderPass);
+				if (subtitleBitmap) {
+					const auto canvasSize = glm::vec2(subtitleBitmapCanvasSize);
+					const auto bitmapSize = subtitleTextSize;
+					const auto subtitleScale = context->safeSize / canvasSize *
+						static_cast<float>(context->currentZoom);
+					const auto bitmapCenter = glm::vec2(subtitleBitmapPosition) + bitmapSize * 0.5f;
+					const auto sourceCenter = bitmapCenter - canvasSize * 0.5f;
+					const auto screenCenter = windowSize * 0.5f +
+						glm::vec2(context->offset.x, -context->offset.y) + sourceCenter * subtitleScale;
+					setSpriteUniforms(glm::vec3(screenCenter, 0.0f),
+						glm::vec3(bitmapSize * subtitleScale, 1.0f), viewColorWhiteSolid,
+						1.0f, 1, {0.0f, 0.0f}, {1.0f, 1.0f},
+						glm::vec2(0.5f), glm::vec3(aspectScale, 1.0f));
+					drawSprite(commandBuffer, renderPass);
+				} else if (subtitleShadowTexture != nullptr) {
+					const auto subtitleMargin = 24.0f * context->displayScale;
+					const auto subtitleCenter = glm::vec3(windowSize.x * 0.5f, windowSize.y, 0.0f) -
+						glm::vec3(0.0f, subtitleTextSize.y + subtitleMargin, 0.0f);
+					const auto subtitleShadowOffset = 1.5f * context->displayScale / aspectScale;
+					const auto subtitleSize = glm::vec3(subtitleTextSize, 1.0f);
+					for (const auto& offset : std::array<glm::vec2, 4>{
+						glm::vec2(-subtitleShadowOffset.x, 0.0f),
+						glm::vec2(subtitleShadowOffset.x, 0.0f),
+						glm::vec2(0.0f, -subtitleShadowOffset.y),
+						glm::vec2(0.0f, subtitleShadowOffset.y)}) {
+						SDL_GPUTextureSamplerBinding shadowBindings[1] = {{ .texture = subtitleShadowTexture, .sampler = imageSampler }};
+						SDL_BindGPUFragmentSamplers(renderPass, 0, &shadowBindings[0], 1);
+						setSpriteUniforms(subtitleCenter + glm::vec3(offset, 0.0f), subtitleSize,
+							glm::vec4(0.0f, 0.0f, 0.0f, 0.33f), 1.0f, 1, {0.0f, 0.0f}, {1.0f, 1.0f},
+							glm::vec2(0.5f), glm::vec3(aspectScale, 1.0f));
+						drawSprite(commandBuffer, renderPass);
+					}
+					SDL_BindGPUFragmentSamplers(renderPass, 0, &subtitleBindings[0], 1);
+					setSpriteUniforms(subtitleCenter, subtitleSize, viewColorWhiteSolid, 1.0f, 1,
+						{0.0f, 0.0f}, {1.0f, 1.0f}, glm::vec2(0.5f), glm::vec3(aspectScale, 1.0f));
+					drawSprite(commandBuffer, renderPass);
+				}
 			}
 
 			bindPipeline(renderPass, iconPipeline);

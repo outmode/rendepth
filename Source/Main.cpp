@@ -394,8 +394,8 @@ static void serviceVideo() {
 		if (selected.frame != nullptr) presentVideoFrame(selected.frame, selected.preview);
 	}
 	updateVideoSlider();
-	static std::string shownSubtitle;
-	const auto subtitle = videoPlayer.subtitleText();
+	static std::shared_ptr<const VideoSubtitle> shownSubtitle;
+	const auto subtitle = videoPlayer.subtitle();
 	if (subtitle != shownSubtitle) {
 		Image::updateVideoSubtitle(&context, subtitle);
 		shownSubtitle = subtitle;
