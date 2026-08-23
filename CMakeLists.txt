@@ -723,7 +723,9 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS
         "libc6, libstdc++6, libgcc-s1, libcurl4 | libcurl4t64, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0")
 set(CPACK_RPM_PACKAGE_LICENSE "MIT")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
-set(CPACK_RPM_PACKAGE_RELEASE 1)
+# Increment the RPM release for rebuilds of the same application version so
+# package managers do not treat a freshly built artifact as the old package.
+set(CPACK_RPM_PACKAGE_RELEASE 2)
 set(RENDEPTH_RPM_REQUIRES)
 if(RENDEPTH_ENABLE_FFMPEG AND DAV1D_FOUND)
     list(APPEND RENDEPTH_RPM_REQUIRES "libdav1d >= 0.5.0")

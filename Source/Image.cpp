@@ -408,8 +408,12 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData) {
 
 	SDL_SetWindowTitle(context->window, imageInfo.name.c_str());
 
-	uploadTexture(context, imageData, &imageTexture, "Image Texture");
-	blitBlurTexture(context, imageTexture, (Uint32)imageData->w, (Uint32)imageData->h);
+	// The image is already decoded before reaching this point. Submit the
+	// upload and let the GPU queue order it before rendering instead of blocking
+	// the UI thread on a fence during navigation.
+	uploadTexture(context, imageData, &imageTexture, "Image Texture", false, false);
+	blitBlurTexture(context, imageTexture, (Uint32)imageData->w,
+		(Uint32)imageData->h, false, false);
 	clearColorSolid = getBackgroundColor(imageData, 4, imageData->w, imageData->h);
 	SDL_DestroySurface(imageData);
 
@@ -2040,7 +2044,7 @@ SDL_GPUTexture* Image::refineDepthTextureGPU(Context* context, SDL_GPUTexture* c
 }
 
 void Image::blitBlurTexture(Context* context, SDL_GPUTexture* inputTexture,
-		Uint32 imageWidth, Uint32 imageHeight, bool nextSnapshotOnly) {
+		Uint32 imageWidth, Uint32 imageHeight, bool nextSnapshotOnly, bool waitForGpu) {
 	if (context == nullptr || inputTexture == nullptr) return;
 	const SDL_GPUTextureCreateInfo textureInfo = {
 		.type = SDL_GPU_TEXTURETYPE_2D,
@@ -2088,7 +2092,7 @@ void Image::blitBlurTexture(Context* context, SDL_GPUTexture* inputTexture,
 
 	if (!nextSnapshotOnly) captureSnapshot(blurTexture);
 	captureSnapshot(blurTextureNext);
-	if (nextSnapshotOnly) {
+	if (nextSnapshotOnly || !waitForGpu) {
 		SDL_SubmitGPUCommandBuffer(commandBuffer);
 	} else {
 		SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);

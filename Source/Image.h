@@ -231,7 +231,8 @@ public:
 	static SDL_GPUTexture* refineDepthTextureGPU(Context* context, SDL_GPUTexture* color,
 		SDL_GPUTexture* depth, int width, int height);
 	static void blitBlurTexture(Context* context, SDL_GPUTexture* inputTexture,
-		Uint32 imageWidth, Uint32 imageHeight, bool nextSnapshotOnly = false);
+		Uint32 imageWidth, Uint32 imageHeight, bool nextSnapshotOnly = false,
+		bool waitForGpu = true);
 	static int renderStereoImage(Context* context, StereoFormat stereoFormat,
 		SDL_GPUTexture* sourceTexture = nullptr);
 	static SDL_Surface* getExportTexture(Context* context);

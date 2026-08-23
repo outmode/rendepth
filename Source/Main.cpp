@@ -410,6 +410,7 @@ static int preloadDepthIndex = -1;
 static bool isSpeculativeDepth = false;
 static int pendingPreloadNavigation = -1;
 static bool preloadNavigationReady = false;
+static bool navigationLoadingIndicator = false;
 static constexpr double minimumSwitchTime2D = 0.125;
 static constexpr double minimumSwitchTime3D = 0.250;
 static constexpr double rapidBrowseIdleTime = 3.0;
@@ -602,7 +603,6 @@ void gotoPreviousImage(bool seekActiveVideo = true) {
 	if (doingPreload) {
 		if (asyncData.fileIndex == previousIndex) {
 			pendingPreloadNavigation = previousIndex;
-			getIcon(IconType::Loading).visibility = 0.0;
 		}
 		return;
 	}
@@ -610,6 +610,7 @@ void gotoPreviousImage(bool seekActiveVideo = true) {
 		queueRapidBrowseNavigation(true);
 		return;
 	}
+	navigationLoadingIndicator = true;
 	if (display3D) {
 		if (fileList[previousIndex].type == Color_Only &&
 			!isSupportedVideo(fileList[previousIndex].link)) {
@@ -649,7 +650,6 @@ void gotoNextImage(bool seekActiveVideo = true) {
 	if (doingPreload) {
 		if (asyncData.fileIndex == nextIndex) {
 			pendingPreloadNavigation = nextIndex;
-			getIcon(IconType::Loading).visibility = 0.0;
 		}
 		return;
 	}
@@ -657,6 +657,7 @@ void gotoNextImage(bool seekActiveVideo = true) {
 		queueRapidBrowseNavigation(false);
 		return;
 	}
+	navigationLoadingIndicator = true;
 	if (display3D) {
 		if (fileList[nextIndex].type == Color_Only &&
 			!isSupportedVideo(fileList[nextIndex].link)) {
@@ -1332,7 +1333,6 @@ static void resetDepthGeneration() {
 	// current conversion is still joined below, but its result must not restore
 	// an image after the user changes the depth settings.
 	activeDepthGeneration = ++nextDepthGeneration;
-	depthGenAlive = false;
 	isSpeculativeDepth = false;
 	nativeDepthEstimator.cancel();
 	waitForDepthThread();
@@ -3106,6 +3106,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		lastSwitchTime = getTimeNow();
 		fileIndex = loadedIndex;
 		loadImage(nullptr);
+		navigationLoadingIndicator = false;
 		if (display3D && fileList[fileIndex].type == Color_Only)
 			callDepthGen(fileIndex);
 	}
@@ -3126,6 +3127,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 					fileIndex = currentRandIndex;
 				}
 				loadImage(nullptr);
+				navigationLoadingIndicator = false;
 			} else {
 				switchedImage = false;
 			}
@@ -3209,9 +3211,10 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 			if (icon.state == IconState::Over) icon.visibility = iconTargetVisibility;
 			if (icon.state == IconState::Idle) iconTargetVisibility = 0.0;
 		} else {
-			const bool userWaitingForDepth = isConverting;
-			const bool userWaitingForPreload = pendingPreloadNavigation >= 0;
-			iconTargetVisibility = ((userWaitingForDepth || userWaitingForPreload) &&
+			// Do not reveal the spinner while a preload is being promoted. That
+			// handoff still performs synchronous image/GPU work; show it only once
+			// the active depth request has actually started.
+			iconTargetVisibility = ((isConverting || navigationLoadingIndicator) &&
 				!isPlayingSlideshow) ? 1.0 : 0.0;
 		}
 		icon.visibility = Utils::tween(icon.visibility, iconTargetVisibility, iconVisibilitySpeed * deltaAverage);
