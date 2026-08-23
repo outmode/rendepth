@@ -1883,7 +1883,9 @@ static Icon IconVideoCaption = {
 	}, []() { videoPlayer.cycleSubtitleTrack(); }, 1.0, false, false
 };
 
-static std::vector appIcons = { IconLoading, IconFullscreen, IconScreenCapture, IconOpen, IconBatch, IconSave,
+// Screen capture remains implemented but is temporarily unavailable from the
+// UI until after the 3.0.0 launch.
+static std::vector appIcons = { IconLoading, IconFullscreen, IconOpen, IconBatch, IconSave,
 	IconOptions, IconSettings, IconBack, IconForward, IconStereo3D,
 	IconStrength, IconDepth, IconOffset, IconPlay, IconVideoSeek, IconVideoVolume,
 	IconVideoAudio, IconVideoCaption, IconHelp, IconClose };
@@ -4197,10 +4199,15 @@ static void callDepthGen(int imageIndex, bool speculative) {
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 	if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
 	if (event->type == SDL_EVENT_WINDOW_DISPLAY_CHANGED) {
+		if (context.window == nullptr ||
+			event->window.windowID != SDL_GetWindowID(context.window))
+			return SDL_APP_CONTINUE;
 		refreshWindowSize();
 
-		auto currentDisplay = event->display.data1;
+		auto currentDisplay = static_cast<SDL_DisplayID>(event->window.data1);
+		if (currentDisplay == 0) return SDL_APP_CONTINUE;
 		auto displayMode = SDL_GetCurrentDisplayMode(currentDisplay);
+		if (displayMode == nullptr) return SDL_APP_CONTINUE;
 		Image::currentDisplay = currentDisplay;
 		auto virtualSize = glm::vec2(displayMode->w, displayMode->h) * displayMode->pixel_density;
 		context.virtualSize = virtualSize;
