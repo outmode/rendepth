@@ -99,10 +99,10 @@ set(SDLIMAGE_LBM OFF)
 set(SDLIMAGE_PCX OFF)
 set(SDLIMAGE_PNG ON)
 set(SDLIMAGE_PNM OFF)
-set(SDLIMAGE_QOI OFF)
+set(SDLIMAGE_QOI ON)
 set(SDLIMAGE_SVG OFF)
 set(SDLIMAGE_TGA ON)
-set(SDLIMAGE_TIF OFF)
+set(SDLIMAGE_TIF ON)
 set(SDLIMAGE_WEBP ${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS})
 set(SDLIMAGE_XCF OFF)
 set(SDLIMAGE_XPM OFF)
@@ -683,6 +683,16 @@ if(RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS)
             ThirdParty/SDL_image/external/libavif/LICENSE
             ThirdParty/SDL_image/external/libjxl/LICENSE
             ThirdParty/SDL_image/external/libwebp/COPYING
+            DESTINATION share/licenses/rendepth/optional)
+endif()
+if(TARGET tiff)
+    # SDL_image's vendored TIFF target is not installed transitively.
+    set_property(TARGET tiff PROPERTY PUBLIC_HEADER "")
+    install(TARGETS tiff
+            RUNTIME DESTINATION libexec/rendepth/Library
+            LIBRARY DESTINATION libexec/rendepth/Library
+            ARCHIVE DESTINATION libexec/rendepth/Library)
+    install(FILES ThirdParty/SDL_image/external/libtiff/LICENSE.md
             DESTINATION share/licenses/rendepth/optional)
 endif()
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/Assets/"

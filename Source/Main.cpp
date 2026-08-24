@@ -747,7 +747,7 @@ static std::string stringLower(std::string s) {
 }
 
 static const std::vector<std::string> supportedExts { ".jpeg", ".jpg", ".jps",
-	".png", ".pns", ".tga", ".bmp"
+	".png", ".pns", ".tga", ".bmp", ".tif", ".tiff", ".ico", ".cur", ".qoi"
 #if RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
 	, ".avif", ".jxl", ".webp"
 #endif
@@ -2140,13 +2140,13 @@ static constexpr const char* videoFilterExtensions =
 static constexpr const char* audioFilterExtensions =
 	"aac;flac;m4a;mp3;oga;ogg;opus;wav;wma";
 static constexpr const char* imageFilterExtensions =
-	"jpg;jpeg;jps;png;pns;tga;bmp"
+	"jpg;jpeg;jps;png;pns;tga;bmp;tif;tiff;ico;cur;qoi"
 #if RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
 	";avif;jxl;webp"
 #endif
 	;
 static constexpr const char* allMediaFilterExtensions =
-	"jpg;jpeg;jps;png;pns;tga;bmp"
+	"jpg;jpeg;jps;png;pns;tga;bmp;tif;tiff;ico;cur;qoi"
 #if RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
 	";avif;jxl;webp"
 #endif
