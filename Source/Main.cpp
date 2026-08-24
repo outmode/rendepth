@@ -25,6 +25,17 @@
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_dialog.h>
 #include <SDL3_image/SDL_image.h>
+#if RENDEPTH_USE_QOI_TEMPORARY_RGBD
+#define QOI_NO_STDIO
+#define QOI_IMPLEMENTATION
+#define QOI_MALLOC SDL_malloc
+#define QOI_FREE SDL_free
+#include "../ThirdParty/SDL_image/src/qoi.h"
+#undef QOI_FREE
+#undef QOI_MALLOC
+#undef QOI_IMPLEMENTATION
+#undef QOI_NO_STDIO
+#endif
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/matrix_decompose.hpp>
 #include "rapidjson/document.h"
@@ -3690,10 +3701,9 @@ static bool isInsideSliderTrack(const Icon& icon, const glm::vec2& aspectScale) 
 	const auto canvas = icon.canvas();
 	const auto center = getCoordinates(glm::vec4(canvas.position, canvas.alignment), aspectScale);
 	auto size = icon.slider.size * aspectScale * context.displayScale;
-	if (icon.type == IconType::VideoSeek)
-		// Keep the timeline graphics unchanged while making its centered hit
-		// region twice as tall for easier seeking.
-		size.y *= 2.0f;
+	// Keep the slider graphics unchanged while making every slider's centered
+	// hit region twice as tall for easier adjustment.
+	size.y *= 2.0f;
 	return context.mouse.x > center.x - size.x * 0.5f &&
 		context.mouse.x < center.x + size.x * 0.5f &&
 		context.mouse.y > center.y - size.y * 0.5f &&
@@ -4159,6 +4169,55 @@ static std::filesystem::path nativeDepthOutputPath(const std::filesystem::path& 
 		(input.stem().string() + "_rgbd.jpg");
 }
 
+#if RENDEPTH_USE_QOI_TEMPORARY_RGBD
+static bool saveQoiSurface(const SDL_Surface* surface,
+	const std::filesystem::path& outputPath) {
+	if (surface == nullptr || surface->format != SDL_PIXELFORMAT_RGBA32) return false;
+
+	const size_t rowBytes = static_cast<size_t>(surface->w) * 4;
+	const Uint8* pixels = static_cast<const Uint8*>(surface->pixels);
+	std::vector<Uint8> packedPixels;
+	if (surface->pitch != static_cast<int>(rowBytes)) {
+		packedPixels.resize(rowBytes * static_cast<size_t>(surface->h));
+		for (int y = 0; y < surface->h; ++y) {
+			SDL_memcpy(packedPixels.data() + static_cast<size_t>(y) * rowBytes,
+				pixels + static_cast<size_t>(y) * surface->pitch, rowBytes);
+		}
+		pixels = packedPixels.data();
+	}
+
+	const qoi_desc description{
+		static_cast<unsigned int>(surface->w),
+		static_cast<unsigned int>(surface->h),
+		4,
+		QOI_SRGB
+	};
+	int encodedSize = 0;
+	void* encoded = qoi_encode(pixels, &description, &encodedSize);
+	if (encoded == nullptr || encodedSize <= 0) {
+		if (encoded != nullptr) SDL_free(encoded);
+		return false;
+	}
+
+	SDL_IOStream* output = SDL_IOFromFile(outputPath.string().c_str(), "wb");
+	const size_t written = output == nullptr ? 0 :
+		SDL_WriteIO(output, encoded, static_cast<size_t>(encodedSize));
+	const bool closed = output == nullptr || SDL_CloseIO(output);
+	SDL_free(encoded);
+	return output != nullptr && written == static_cast<size_t>(encodedSize) && closed;
+}
+#endif
+
+static bool saveTemporaryRgbdSurface(SDL_Surface* surface,
+	const std::filesystem::path& outputPath) {
+#if RENDEPTH_USE_QOI_TEMPORARY_RGBD
+	return saveQoiSurface(surface, outputPath);
+#else
+	return surface != nullptr &&
+		IMG_SaveJPG(surface, outputPath.string().c_str(), 90);
+#endif
+}
+
 static std::filesystem::path runtimeDepthDirectory() {
 	static const auto directory = [] {
 		std::filesystem::path baseDirectory;
@@ -4193,7 +4252,13 @@ static std::filesystem::path runtimeDepthDirectory() {
 static std::filesystem::path runtimeDepthOutputPath(const std::filesystem::path& input) {
 	const auto directory = runtimeDepthDirectory();
 	return directory.empty() ? std::filesystem::path{} :
-		directory / (input.stem().string() + "_rgbd.jpg");
+		directory / (input.stem().string() + "_rgbd"
+#if RENDEPTH_USE_QOI_TEMPORARY_RGBD
+		+ ".qoi"
+#else
+		+ ".jpg"
+#endif
+		);
 }
 
 static int nativeSuperResolutionScale(const SDL_Surface* color) {
@@ -4380,7 +4445,7 @@ static int nativeDepthRun(void* ptr) {
 					if (output) {
 						const auto result = runtimeDepthOutputPath(batchRequest.input);
 						create_directories(result.parent_path());
-						IMG_SaveJPG(output, result.string().c_str(), 90);
+						saveTemporaryRgbdSurface(output, result);
 					}
 					SDL_DestroySurface(output);
 					SDL_DestroySurface(depthSurface);
@@ -4420,7 +4485,9 @@ static int nativeDepthRun(void* ptr) {
 	bool saved = false;
 	if (output && !result.empty()) {
 		create_directories(result.parent_path());
-		saved = IMG_SaveJPG(output, result.string().c_str(), 90);
+		saved = mode == REAL_TIME
+			? saveTemporaryRgbdSurface(output, result)
+			: IMG_SaveJPG(output, result.string().c_str(), 90);
 	}
 	SDL_DestroySurface(output);
 	SDL_DestroySurface(depthSurface);

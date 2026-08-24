@@ -89,6 +89,8 @@ set(SDLIMAGE_VENDORED ON)
 # for a lightweight test build when needed.
 option(RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
         "Build AVIF, JPEG XL, and WebP image support" ON)
+option(RENDEPTH_USE_QOI_TEMPORARY_RGBD
+        "Use QOI instead of JPEG for temporary RGB-D conversion files" ON)
 set(SDLIMAGE_AVIF ${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS})
 set(SDLIMAGE_BMP ON)
 # GIFs are treated as animated video and decoded by the FFmpeg pipeline.
@@ -298,7 +300,8 @@ endif()
 
 target_compile_definitions(Rendepth PUBLIC
         SDL_MAIN_USE_CALLBACKS
-        RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS=$<BOOL:${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS}>)
+        RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS=$<BOOL:${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS}>
+        RENDEPTH_USE_QOI_TEMPORARY_RGBD=$<BOOL:${RENDEPTH_USE_QOI_TEMPORARY_RGBD}>)
 
 target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp
 		Source/VideoDepthProcessor.cpp
