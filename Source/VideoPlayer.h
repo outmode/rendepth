@@ -59,7 +59,9 @@ public:
 	std::shared_ptr<VideoFrame> takeFrame(bool* preview = nullptr);
 	std::string takeError();
 	void setAudioBuffering(bool buffering);
+	SDL_Surface* takeAlbumArt();
 	bool hasAudio() const;
+	bool audioOnly() const;
 	bool audioReady() const;
 	double bufferedAudioDuration() const;
 	double audioDeviceLatency() const;

@@ -134,6 +134,7 @@ static bool activeVideo = false;
 static bool activeScreenCapture = false;
 static bool videoFrameLoaded = false;
 static bool videoDepthFrameLoaded = false;
+static SDL_Surface* audioAlbumArt = nullptr;
 static int activeVideoDepthModelOption = -1;
 static bool videoDepthRestartPending = false;
 static double getTimeNow();
@@ -144,8 +145,26 @@ static Icon& getIcon(IconType type);
 static void checkMouseState();
 static void refreshDisplay3D(StereoFormat type);
 
+static void clearAudioAlbumArt() {
+	SDL_DestroySurface(audioAlbumArt);
+	audioAlbumArt = nullptr;
+}
+
 static bool isSupportedVideo(const std::string& path) {
 	return VideoPlayer::supported(std::filesystem::path(path));
+}
+
+static bool isSupportedAudio(const std::string& path) {
+	auto extension = std::filesystem::path(path).extension().string();
+	std::transform(extension.begin(), extension.end(), extension.begin(),
+		[](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+	return extension == ".aac" || extension == ".flac" || extension == ".m4a" ||
+		extension == ".mp3" || extension == ".oga" || extension == ".ogg" ||
+		extension == ".opus" || extension == ".wav";
+}
+
+static bool isSupportedMedia(const std::string& path) {
+	return isSupportedVideo(path) || isSupportedAudio(path);
 }
 
 static void serviceVideo();
@@ -258,6 +277,7 @@ static void failVideoLoad(const std::string& error) {
 	}
 	stopVideoDepth();
 	videoPlayer.close();
+	clearAudioAlbumArt();
 	resetVideoPlaybackBuffer(false);
 	lastVideoFrame.reset();
 	activeVideo = false;
@@ -358,6 +378,16 @@ static void serviceScreenCapture() {
 
 static void serviceVideo() {
 	if (!activeVideo) return;
+	if (videoPlayer.audioOnly()) {
+		videoPlayer.update();
+		if (const std::string error = videoPlayer.takeError(); !error.empty()) {
+			failVideoLoad(error);
+			return;
+		}
+		getIcon(IconType::Play).image = videoPlayer.playing() ? IconType::Pause : IconType::Play;
+		updateVideoSlider();
+		return;
+	}
 	// Decode color frames at the requested output resolution rather than at
 	// the window size. The depth worker remains independent and continues to
 	// infer at its configured model resolution.
@@ -597,25 +627,26 @@ static std::string formatFileSize(std::uintmax_t size) {
 
 	return std::to_string(size).substr(0, 5) + units[unitIndex];
 }
-static void callDepthGen(int imageIndex, bool speculative = false);
+static void callDepthGen(int imageIndex, bool speculative = false,
+	SDL_Surface* inputSurface = nullptr);
 
 int previousFileIndex() {
 	if (fileList.empty() || fileIndex < 0) return -1;
-	const bool currentIsVideo = isSupportedVideo(fileList[fileIndex].link);
+	const bool currentIsVideo = isSupportedMedia(fileList[fileIndex].link);
 	for (int offset = 1; offset <= static_cast<int>(fileList.size()); ++offset) {
 		const int index = (fileIndex - offset + static_cast<int>(fileList.size())) %
 			static_cast<int>(fileList.size());
-		if (isSupportedVideo(fileList[index].link) == currentIsVideo) return index;
+		if (isSupportedMedia(fileList[index].link) == currentIsVideo) return index;
 	}
 	return fileIndex;
 }
 
 int nextFileIndex() {
 	if (fileList.empty() || fileIndex < 0) return -1;
-	const bool currentIsVideo = isSupportedVideo(fileList[fileIndex].link);
+	const bool currentIsVideo = isSupportedMedia(fileList[fileIndex].link);
 	for (int offset = 1; offset <= static_cast<int>(fileList.size()); ++offset) {
 		const int index = (fileIndex + offset) % static_cast<int>(fileList.size());
-		if (isSupportedVideo(fileList[index].link) == currentIsVideo) return index;
+		if (isSupportedMedia(fileList[index].link) == currentIsVideo) return index;
 	}
 	return fileIndex;
 }
@@ -691,7 +722,7 @@ void gotoPreviousImage(bool seekActiveVideo = true) {
 	navigationLoadingIndicator = true;
 	if (display3D) {
 		if (fileList[previousIndex].type == Color_Only &&
-			!isSupportedVideo(fileList[previousIndex].link)) {
+			!isSupportedMedia(fileList[previousIndex].link)) {
 			lastSwitchTime = getTimeNow();
 			fileIndex = previousIndex;
 			SDL_DestroySurface(fileList[fileIndex].preload);
@@ -738,7 +769,7 @@ void gotoNextImage(bool seekActiveVideo = true) {
 	navigationLoadingIndicator = true;
 	if (display3D) {
 		if (fileList[nextIndex].type == Color_Only &&
-			!isSupportedVideo(fileList[nextIndex].link)) {
+			!isSupportedMedia(fileList[nextIndex].link)) {
 			lastSwitchTime = getTimeNow();
 			fileIndex = nextIndex;
 			SDL_DestroySurface(fileList[fileIndex].preload);
@@ -780,7 +811,7 @@ int getRandImageIndex() {
 	auto randIndex = randImage(randGen);
 	auto randAttempts = 64;
 	while ((randIndex == fileIndex || randIndex == nextRandIndex ||
-		isStereoImage(fileList[randIndex].type) || isSupportedVideo(fileList[randIndex].path)) && --randAttempts > 0) {
+			isStereoImage(fileList[randIndex].type) || isSupportedMedia(fileList[randIndex].path)) && --randAttempts > 0) {
 		randIndex = randImage(randGen);
 	}
 	return randIndex;
@@ -835,7 +866,9 @@ static void toggleOptions();
 static void toggleStereo();
 static void toggleStereoSettings();
 static void parseFileList(const std::vector<std::string>& filesToLoad);
-static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int imageId = -1);
+static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int imageId = -1,
+	SDL_Surface* inputSurface = nullptr);
+static int loadAudioDepthImage();
 static int loadImage(void* ptr);
 static void conversionCompleted(const char* path, int imageId, std::uint64_t generation);
 static int nativeDepthRun(void* ptr);
@@ -1529,6 +1562,7 @@ static void stopVideoDepth(bool disable3D, bool clearTexture) {
 static bool startVideoDepth(bool preserveTexture) {
 	if ((!activeVideo && !activeScreenCapture) ||
 		(activeVideo && (!videoPlayer.ready() || fileList.empty()))) return false;
+	if (activeVideo && videoPlayer.audioOnly()) return false;
 	if (activeVideo && fileList[fileIndex].type != Color_Only) {
 		// Only untagged mono video can use inferred depth. Tagged native-stereo
 		// and already-converted RGB-D video must never start this model, even if
@@ -2110,7 +2144,7 @@ static void setVideoControlsVisible(bool visible) {
 		getIcon(IconType::Play).active = true;
 		volume.active = true;
 		getIcon(IconType::VideoAudio).active = true;
-		getIcon(IconType::VideoCaption).active = true;
+		getIcon(IconType::VideoCaption).active = !videoPlayer.audioOnly();
 	}
 }
 
@@ -2148,10 +2182,8 @@ static void updateVideoSlider() {
 
 static constexpr const char* videoFilterExtensions =
 	"mp4;m4v;mov;mkv;webm;avi;wmv;mpeg;mpg;gif";
-// Standalone audio loading is not implemented yet; keep its picker mask ready
-// for the future audio support work.
 static constexpr const char* audioFilterExtensions =
-	"aac;flac;m4a;mp3;oga;ogg;opus;wav;wma";
+	"aac;flac;m4a;mp3;oga;ogg;opus;wav";
 static constexpr const char* imageFilterExtensions =
 	"jpg;jpeg;jps;png;pns;tga;bmp;tif;tiff;ico;cur;qoi"
 #if RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
@@ -2164,7 +2196,7 @@ static constexpr const char* allMediaFilterExtensions =
 	";avif;jxl;webp"
 #endif
 	";mp4;m4v;mov;mkv;webm;avi;wmv;mpeg;mpg;gif"
-	";aac;flac;m4a;mp3;oga;ogg;opus;wav;wma";
+	";aac;flac;m4a;mp3;oga;ogg;opus;wav";
 
 static const SDL_DialogFileFilter filters[] = {
 	{ "All Media", allMediaFilterExtensions },
@@ -2186,7 +2218,7 @@ static void SDLCALL openFileCallback(void* userdata, const char* const* filelist
 	std::vector<std::string> fileNames{};
 
 	while (*filelist) {
-		if (isSupportedImage(*filelist) || isSupportedVideo(*filelist)) fileNames.push_back(*filelist);
+		if (isSupportedImage(*filelist) || isSupportedMedia(*filelist)) fileNames.push_back(*filelist);
 		filelist++;
 	}
 
@@ -2834,6 +2866,48 @@ void toggleStereo() {
 	}
 	if (fileList.empty()) return;
 	if (activeVideo) {
+		if (videoPlayer.audioOnly()) {
+			auto& audioFile = fileList[fileIndex];
+			if (display3D) {
+				// Return to the original album art while keeping the audio decoder
+				// and playback controls alive.
+				if (audioAlbumArt == nullptr) return;
+				auto* artwork = SDL_DuplicateSurface(audioAlbumArt);
+				if (artwork == nullptr) return;
+				if (Image::load(&context, audioFile, artwork, Color_Only) != 0) {
+					SDL_DestroySurface(artwork);
+					return;
+				}
+				audioFile.type = Color_Only;
+				setDisplay3D(false);
+				setStereoMode(Native);
+				Image::updateSize(&context);
+				checkMouseState();
+				return;
+			}
+
+			// A completed conversion can be reused without invoking the depth
+			// model again after switching back to the album-art view.
+			if (audioFile.path != audioFile.link &&
+				std::filesystem::exists(audioFile.path)) {
+				if (loadAudioDepthImage() == 0) {
+					setDisplay3D(true);
+					refreshDisplay3D(Color_Plus_Depth);
+					checkMouseState();
+				}
+				return;
+			}
+
+			if (audioAlbumArt == nullptr) return;
+			auto* depthInput = SDL_DuplicateSurface(audioAlbumArt);
+			if (depthInput == nullptr) return;
+			callDepthGen(fileIndex, false, depthInput);
+			// Keep the normal 2D presentation visible while depth is generated.
+			// The completion handoff will load the generated RGB-D image and turn
+			// stereo on, matching the still-image workflow.
+			refreshDisplay3D(Color_Only);
+			return;
+		}
 		if (fileList[fileIndex].type != Color_Only) {
 			setDisplay3D(!display3D);
 			context.imageType = fileList[fileIndex].type;
@@ -2951,7 +3025,7 @@ static void toggleMaximized() {
 static void pushFileInfo(const std::filesystem::path& filePath) {
 	auto extension = filePath.extension();
 	std::string fileName = filePath.string();
-	if (isSupportedImage(fileName) || isSupportedVideo(fileName)) {
+	if (isSupportedImage(fileName) || isSupportedMedia(fileName)) {
 		if (fileName.empty()) return;
 		if (filePath.filename().string().empty()) return;
 		auto modifiedTime = last_write_time(filePath);
@@ -2966,7 +3040,7 @@ static void pushFileInfo(const std::filesystem::path& filePath) {
 		info.date = std::format("{:%Y-%m-%d}", modifiedTime);
 		info.modified = modifiedTime;
 		info.preload = nullptr;
-		info.type = Core::getImageType(info.name);
+		info.type = isSupportedAudio(fileName) ? Color_Only : Core::getImageType(info.name);
 		if (info.type == Unknown_Format) info.type = Core::defaultImportFormat;
 		fileList.push_back(info);
 	}
@@ -3183,13 +3257,13 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 
 	if (!fileList.empty()) {
 		FileInfo emptyFile{};
-		FileInfo& initialImage = isSupportedVideo(fileList[fileIndex].link)
+		FileInfo& initialImage = isSupportedMedia(fileList[fileIndex].link)
 			? emptyFile : fileList[fileIndex];
 		if (Image::init(&context, initialImage) < 0) {
 			SDL_Log("Could Not Initialize Image.");
 			return SDL_APP_FAILURE;
 		}
-		if (isSupportedVideo(fileList[fileIndex].link)) {
+		if (isSupportedMedia(fileList[fileIndex].link)) {
 			doneLoadingImage = false;
 			loadImage(nullptr);
 		} else {
@@ -3234,9 +3308,82 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 static auto visibilitySpeed = 9.0;
 static auto visibilitySwitchMinimum = 0.75;
 
+static SDL_Surface* createAudioPlaceholder() {
+	constexpr int placeholderSize = 512;
+	auto* surface = SDL_CreateSurface(placeholderSize, placeholderSize,
+		SDL_PIXELFORMAT_ABGR8888);
+	if (surface == nullptr) return nullptr;
+	const auto gray = static_cast<Uint8>(std::lround(Image::clearColorDark.r * 255.0f));
+	SDL_FillSurfaceRect(surface, nullptr, SDL_MapSurfaceRGBA(surface, gray, gray, gray, 255));
+	return surface;
+}
+
+static int loadAudioDepthImage() {
+	if (!activeVideo || !videoPlayer.audioOnly() || fileList.empty()) return 1;
+	auto& audioFile = fileList[fileIndex];
+	if (audioFile.path.empty() || audioFile.path == audioFile.link) return 1;
+	auto* rgbd = Core::loadImageDirect(audioFile.path);
+	if (rgbd == nullptr) return 1;
+	const auto result = Image::load(&context, audioFile, rgbd, Color_Plus_Depth);
+	if (result != 0) {
+		SDL_DestroySurface(rgbd);
+		return result;
+	}
+	audioFile.type = Color_Plus_Depth;
+	return 0;
+}
+
 static int loadImage(void* ptr) {
 	currentVisibility = 0.0;
 	targetVisibility = 0.0;
+	if (activeVideo && videoPlayer.audioOnly() && !fileList.empty() &&
+		fileList[fileIndex].path != fileList[fileIndex].link) {
+		const auto result = loadAudioDepthImage();
+		if (result == 0) doneLoadingImage = true;
+		return result;
+	}
+	if (isSupportedAudio(fileList[fileIndex].link)) {
+		setShowStereoSettings(false);
+		if (activeVideo) {
+			stopVideoDepth(false);
+			videoPlayer.close();
+			clearAudioAlbumArt();
+			resetVideoPlaybackBuffer(false);
+			lastVideoFrame.reset();
+			activeVideo = false;
+			videoFrameLoaded = false;
+			setVideoControlsVisible(false);
+		}
+		setDisplay3D(false);
+		setStereoMode(Native);
+		std::string error;
+		videoPlayer.setVolume(currentVideoVolume);
+		if (!videoPlayer.open(fileList[fileIndex].link, error)) {
+			failVideoLoad(error);
+			return 1;
+		}
+		activeVideo = true;
+		fileList[fileIndex].type = Color_Only;
+		SDL_Surface* artwork = videoPlayer.takeAlbumArt();
+		if (artwork == nullptr) artwork = createAudioPlaceholder();
+		clearAudioAlbumArt();
+		if (artwork != nullptr) audioAlbumArt = SDL_DuplicateSurface(artwork);
+		FileInfo artworkInfo = fileList[fileIndex];
+		const int result = Image::load(&context, artworkInfo, artwork, Color_Only);
+		if (result != 0) {
+			SDL_DestroySurface(artwork);
+			videoPlayer.close();
+			activeVideo = false;
+			setVideoControlsVisible(false);
+			return result;
+		}
+		videoFrameLoaded = false;
+		videoFileTransitionActive = false;
+		setVideoControlsVisible(true);
+		getIcon(IconType::Play).image = videoPlayer.playing() ? IconType::Pause : IconType::Play;
+		doneLoadingImage = true;
+		return 0;
+	}
 	if (isSupportedVideo(fileList[fileIndex].link)) {
 		// Video controls and stereo settings occupy the same UI area.
 		// Close the stereo panel before showing controls for the new video.
@@ -3307,6 +3454,7 @@ static int loadImage(void* ptr) {
 		// source after it has been loaded.
 		stopVideoDepth(false);
 		videoPlayer.close();
+		clearAudioAlbumArt();
 		resetVideoPlaybackBuffer(false);
 		lastVideoFrame.reset();
 		activeVideo = false;
@@ -3938,6 +4086,7 @@ struct NativeDepthRequest {
 	int mode;
 	int imageId;
 	std::uint64_t generation;
+	SDL_Surface* surface = nullptr;
 };
 
 struct NativeDepthCompletion {
@@ -4436,6 +4585,7 @@ static int nativeDepthRun(void* ptr) {
 	const auto mode = request->mode;
 	const auto imageId = request->imageId;
 	const auto generation = request->generation;
+	auto* suppliedSurface = request->surface;
 	delete request;
 
 	const auto modelOption = std::clamp(
@@ -4447,6 +4597,7 @@ static int nativeDepthRun(void* ptr) {
 		config.modelPath = ModelDownloader::ensureAvailable(
 			modelDirectoryPath, depthModelFiles[modelOption], nativeDepthEstimatorError);
 		if (config.modelPath.empty()) {
+			SDL_DestroySurface(suppliedSurface);
 			std::cerr << "Native depth model download failed: "
 				<< nativeDepthEstimatorError << '\n';
 			depthGenerationError = true;
@@ -4468,6 +4619,7 @@ static int nativeDepthRun(void* ptr) {
 		}
 	}
 	if (!nativeDepthEstimatorLoaded) {
+		SDL_DestroySurface(suppliedSurface);
 		std::cerr << "Native depth model failed to load: "
 			<< nativeDepthEstimatorError << '\n';
 		depthGenerationError = true;
@@ -4509,14 +4661,16 @@ static int nativeDepthRun(void* ptr) {
 		return 0;
 	}
 
-	SDL_Surface* loaded = IMG_Load(inputPath.string().c_str());
-	if (!loaded) {
-		depthGenerationError = true;
-		depthGenAlive = false;
-		return 0;
+	SDL_Surface* color = suppliedSurface != nullptr
+		? SDL_ConvertSurface(suppliedSurface, SDL_PIXELFORMAT_RGBA32) : nullptr;
+	if (suppliedSurface != nullptr) SDL_DestroySurface(suppliedSurface);
+	if (color == nullptr && suppliedSurface == nullptr) {
+		SDL_Surface* loaded = IMG_Load(inputPath.string().c_str());
+		if (loaded != nullptr) {
+			color = SDL_ConvertSurface(loaded, SDL_PIXELFORMAT_RGBA32);
+			SDL_DestroySurface(loaded);
+		}
 	}
-	SDL_Surface* color = SDL_ConvertSurface(loaded, SDL_PIXELFORMAT_RGBA32);
-	SDL_DestroySurface(loaded);
 	if (!color) {
 		depthGenerationError = true;
 		depthGenAlive = false;
@@ -4607,7 +4761,8 @@ static void serviceDepthCompletions() {
 	}
 }
 
-static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int imageId) {
+static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int imageId,
+	SDL_Surface* inputSurface) {
 	waitForDepthThread();
 	if (!nativeDepthEstimatorLoaded) {
 		Core::drawText(&context, "Loading Depth Model, Please Wait",
@@ -4620,9 +4775,11 @@ static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int 
 	depthGenAlive = true;
 	activeDepthGeneration = ++nextDepthGeneration;
 	auto request = new NativeDepthRequest{
-		std::filesystem::path(fileFolderPath), genMode, imageId, activeDepthGeneration};
+		std::filesystem::path(fileFolderPath), genMode, imageId, activeDepthGeneration,
+		inputSurface};
 	depthGenThread = SDL_CreateThread(nativeDepthRun, "nativeDepthRun", request);
 	if (depthGenThread == nullptr) {
+		SDL_DestroySurface(request->surface);
 		delete request;
 		depthGenAlive = false;
 		isConverting = false;
@@ -4633,7 +4790,7 @@ static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int 
 	return 0;
 }
 
-static void callDepthGen(int imageIndex, bool speculative) {
+static void callDepthGen(int imageIndex, bool speculative, SDL_Surface* inputSurface) {
 	if (!speculative) {
 		// A preloaded image can be promoted to the current image while its
 		// speculative depth job is still finishing. From this point onward the
@@ -4643,7 +4800,8 @@ static void callDepthGen(int imageIndex, bool speculative) {
 		isSpeculativeDepth = false;
 		preloadDepthIndex = -1;
 	}
-	if (callDepthGenOnce(fileList[imageIndex].link, REAL_TIME, imageIndex) != 0 && speculative) {
+	if (callDepthGenOnce(fileList[imageIndex].link, REAL_TIME, imageIndex,
+		inputSurface) != 0 && speculative) {
 		isSpeculativeDepth = false;
 		preloadDepthIndex = -1;
 	}
@@ -4874,12 +5032,15 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 							}
 						} else if (icon.mode == IconMode::Slider) {
 							currentSlider = &icon;
-			if (activeVideo && icon.type == IconType::VideoSeek) {
+							if (activeVideo && icon.type == IconType::VideoSeek) {
 								videoSliderScrubbing = true;
 								videoSliderWasPlaying = videoPlayer.playing();
 								videoScrubLastPreviewTime =
 									getTimeNow() - videoScrubPreviewInterval;
-								videoPlayer.setPlaying(false);
+								// Audio-only seeks have no preview frame to display. Keep
+								// playback running while dragging instead of requiring the
+								// video preview pause/resume cycle.
+								if (!videoPlayer.audioOnly()) videoPlayer.setPlaying(false);
 							}
 							if (isInsideSliderTrack(icon, sliderAspectScale)) {
 								setSliderPercent(icon, getSliderPercentAtMouse(icon, sliderAspectScale));
@@ -4994,7 +5155,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		mouseLastActive = getTimeNow();
 	} else if (event->type == SDL_EVENT_DROP_FILE) {
 		std::string droppedFile = event->drop.data;
-		if (isSupportedImage(droppedFile) || isSupportedVideo(droppedFile)) {
+		if (isSupportedImage(droppedFile) || isSupportedMedia(droppedFile)) {
 			if (!isConverting && !doingPreload && !context.loading) {
 				float mouseX = 0.0f;
 				float mouseY = 0.0f;
@@ -5016,6 +5177,7 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result) {
 	stopVideoDepth();
 	screenCapture.stop();
 	videoPlayer.close();
+	clearAudioAlbumArt();
 	resetVideoPlaybackBuffer(false);
 	lastVideoFrame.reset();
 	activeVideo = false;

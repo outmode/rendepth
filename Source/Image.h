@@ -201,7 +201,8 @@ public:
 
 	static int init(Context* context, FileInfo& imageInfo);
 	static int reloadShader(Context* context);
-	static int load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData);
+	static int load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData,
+		StereoFormat forcedType = Unknown_Format);
 	static int updateVideoFrame(Context* context, const VideoFrame& frame, bool firstFrame,
 		int logicalWidth, int logicalHeight, bool updateBlur = true);
 	static void updateVideoBackgroundAnimation();

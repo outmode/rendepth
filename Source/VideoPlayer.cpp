@@ -3,6 +3,8 @@
 
 #include "VideoPlayer.h"
 
+#include <SDL3_image/SDL_image.h>
+
 #ifdef RENDEPTH_ENABLE_FFMPEG
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -94,6 +96,9 @@ struct VideoPlayer::Impl {
 	std::atomic<double> presentedPosition{0.0};
 	std::atomic<double> totalDuration{0.0};
 	std::atomic<double> audioVolume{1.0};
+	std::atomic<bool> audioSeekPending{false};
+	bool audioOnly = false;
+	SDL_Surface* albumArt = nullptr;
 	std::atomic<int> selectedAudioTrack{0};
 	std::atomic<int> requestedAudioTrack{-1};
 	std::vector<int> audioStreamIndices;
@@ -177,6 +182,25 @@ struct VideoPlayer::Impl {
 	static constexpr int audioChannels = 2;
 	static constexpr int audioBytesPerFrame = audioChannels * static_cast<int>(sizeof(float));
 	static constexpr int maxQueuedAudioBytes = audioSampleRate * audioBytesPerFrame * 3;
+
+	SDL_Surface* decodeAlbumArt() {
+		if (format == nullptr) return nullptr;
+		for (unsigned int index = 0; index < format->nb_streams; ++index) {
+			const auto* artStream = format->streams[index];
+			if (artStream->attached_pic.size <= 0 || artStream->attached_pic.data == nullptr)
+				continue;
+			SDL_IOStream* io = SDL_IOFromConstMem(artStream->attached_pic.data,
+				static_cast<size_t>(artStream->attached_pic.size));
+			if (io == nullptr) continue;
+			SDL_Surface* loaded = IMG_Load_IO(io, true);
+			if (loaded == nullptr) continue;
+			if (loaded->format == SDL_PIXELFORMAT_ABGR8888) return loaded;
+			SDL_Surface* result = SDL_ConvertSurface(loaded, SDL_PIXELFORMAT_ABGR8888);
+			SDL_DestroySurface(loaded);
+			if (result != nullptr) return result;
+		}
+		return nullptr;
+	}
 
 	bool prepareAudioDecoder() {
 		if (SDL_WasInit(SDL_INIT_AUDIO) == 0) return false;
@@ -440,11 +464,14 @@ struct VideoPlayer::Impl {
 			SDL_SetAudioStreamGain(openedAudio, state->volume.load());
 			queuedAudio.swap(state->pending);
 			state->pendingBytes = 0;
-		}
-		for (const auto& samples : queuedAudio) {
-			std::lock_guard lock(state->mutex);
-			if (state->closing || !SDL_PutAudioStreamData(openedAudio, samples.data(),
-				static_cast<int>(samples.size() * sizeof(float)))) break;
+			// Keep the state lock while transferring the pre-device queue. A seek
+			// clears the SDL stream under this same lock; releasing it between
+			// samples allowed a seek to clear the stream and then have this stale
+			// startup audio inserted afterwards.
+			for (const auto& samples : queuedAudio) {
+				if (state->closing || !SDL_PutAudioStreamData(openedAudio, samples.data(),
+					static_cast<int>(samples.size() * sizeof(float)))) break;
+			}
 		}
 		if (state->playing) startAudio(state);
 	}
@@ -480,32 +507,41 @@ struct VideoPlayer::Impl {
 	bool queueAudio(const float* samples, int sampleFrames) {
 		const auto state = audioState;
 		if (sampleFrames <= 0 || !isPlaying) return true;
+		if (audioSeekPending) return false;
 		const int sampleBytes = sampleFrames * audioBytesPerFrame;
+		// Video playback can keep decoding while its audio queue is full because
+		// video frames provide their own timing. Audio-only playback must retain
+		// every decoded sample, otherwise it can reach EOF several seconds early
+		// and the loop handler will seek back to the beginning.
+		const bool waitForAudioSpace = audioOnly;
 		const auto waitStart = std::chrono::steady_clock::now();
 		for (;;) {
 			bool waitForSpace = false;
 			{
 				std::lock_guard lock(state->mutex);
-				if (state->closing || !isPlaying) return false;
+				if (state->closing || !isPlaying || audioSeekPending) return false;
 				if (state->output == nullptr) {
 					if (state->pendingBytes + sampleBytes <= maxQueuedAudioBytes) {
 						state->pending.emplace_back(samples, samples +
 							static_cast<size_t>(sampleFrames) * audioChannels);
 						state->pendingBytes += sampleBytes;
+					} else {
+						waitForSpace = waitForAudioSpace;
 					}
-					return true;
+					if (!waitForSpace) return true;
 				}
-				if (SDL_GetAudioStreamQueued(state->output) <= maxQueuedAudioBytes) {
+				if (state->output != nullptr &&
+					SDL_GetAudioStreamQueued(state->output) <= maxQueuedAudioBytes) {
 					if (!SDL_PutAudioStreamData(state->output, samples, sampleBytes)) {
 						setRuntimeError(std::string("Could not queue video audio: ") + SDL_GetError());
 						return false;
 					}
 					return true;
 				}
-				waitForSpace = true;
+				if (state->output != nullptr) waitForSpace = true;
 			}
 			if (!waitForSpace) return true;
-			if (std::chrono::steady_clock::now() - waitStart >
+			if (!waitForAudioSpace && std::chrono::steady_clock::now() - waitStart >
 				std::chrono::milliseconds(100))
 				return true;
 			if (stopRequested || !isPlaying || interrupted()) return false;
@@ -518,7 +554,7 @@ struct VideoPlayer::Impl {
 
 	bool interrupted() {
 		std::lock_guard lock(stateMutex);
-		return stopRequested || requestedSeek.has_value();
+		return stopRequested || requestedSeek.has_value() || audioSeekPending;
 	}
 
 	bool disableHardwareDecoding() {
@@ -929,7 +965,8 @@ struct VideoPlayer::Impl {
 	}
 
 	bool applySeek(const SeekRequest& request, std::optional<double>& seekFloor,
-			std::optional<double>& audioSeekFloor) {
+				std::optional<double>& audioSeekFloor) {
+		if (audioOnly || !audioStreamIndices.empty()) audioSeekPending = true;
 		const int64_t target = static_cast<int64_t>(
 			(request.seconds + streamStart) / av_q2d(stream->time_base));
 		const int result = av_seek_frame(format, streamIndex, target, AVSEEK_FLAG_BACKWARD);
@@ -937,7 +974,7 @@ struct VideoPlayer::Impl {
 			setRuntimeError("FFmpeg seek failed: " + ffmpegError(result));
 			return false;
 		}
-		avcodec_flush_buffers(codec);
+		if (codec != nullptr) avcodec_flush_buffers(codec);
 		if (audioCodec != nullptr) avcodec_flush_buffers(audioCodec);
 		if (subtitleCodec != nullptr) avcodec_flush_buffers(subtitleCodec);
 		if (audioResampler != nullptr) {
@@ -947,9 +984,10 @@ struct VideoPlayer::Impl {
 				return false;
 			}
 		}
-		codec->skip_frame = request.fastPreview ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
+		if (codec != nullptr)
+			codec->skip_frame = request.fastPreview ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
 		av_packet_unref(packet);
-		av_frame_unref(frame);
+		if (frame != nullptr) av_frame_unref(frame);
 		if (audioFrame != nullptr) av_frame_unref(audioFrame);
 		{
 			std::lock_guard lock(audioState->mutex);
@@ -973,7 +1011,16 @@ struct VideoPlayer::Impl {
 		audioState->buffering = true;
 		seekFloor = request.seconds;
 		audioSeekFloor = audioCodec != nullptr ? std::optional(request.seconds) : std::nullopt;
+		audioSeekPending = false;
 		return true;
+	}
+
+	double queuedAudioDuration() const {
+		std::lock_guard lock(audioState->mutex);
+		int bytes = audioState->pendingBytes;
+		if (audioState->output != nullptr)
+			bytes = std::max(0, SDL_GetAudioStreamQueued(audioState->output));
+		return bytes / static_cast<double>(audioSampleRate * audioBytesPerFrame);
 	}
 
 	void decodeLoop() {
@@ -982,7 +1029,7 @@ struct VideoPlayer::Impl {
 			// Do not join this thread: some backends never return from device open.
 			std::thread(&Impl::initializeAudioDevice, state).detach();
 		}
-		prepareSubtitleDecoder();
+		if (!audioOnly) prepareSubtitleDecoder();
 		bool clockValid = false;
 		auto clockOrigin = std::chrono::steady_clock::now();
 		double mediaOrigin = 0.0;
@@ -1025,17 +1072,65 @@ struct VideoPlayer::Impl {
 				if (stopRequested) break;
 				seek.swap(requestedSeek);
 			}
-			if (seek.has_value()) {
-				if (!applySeek(*seek, seekFloor, audioSeekFloor)) break;
-				discardAudio = seek->fastPreview;
+				if (seek.has_value()) {
+					if (!applySeek(*seek, seekFloor, audioSeekFloor)) break;
+				// Fast previews are meaningful for video frames only. Audio-only
+				// seeks must still queue samples as soon as playback resumes, or the
+				// decoder will run to EOF silently and restart at zero.
+				discardAudio = !audioOnly && seek->fastPreview;
 				clockValid = false;
-				seekPreviewPending = !isPlaying.load();
-				fastPreviewPending = seek->fastPreview;
+				// Audio has no preview frame to publish while scrubbing is paused.
+				// Leave the decoder parked at the requested position until playback
+				// resumes instead of reading to EOF and entering the loop path.
+				seekPreviewPending = !audioOnly && !isPlaying.load();
+				fastPreviewPending = !audioOnly && seek->fastPreview;
 			}
 			if (!isPlaying && !seekPreviewPending) continue;
 
 			const int readResult = av_read_frame(format, packet);
 			if (readResult == AVERROR_EOF) {
+				if (audioOnly) {
+					const int flushResult = audioCodec != nullptr
+						? avcodec_send_packet(audioCodec, nullptr) : AVERROR(EIO);
+					if (audioCodec == nullptr) {
+						setRuntimeError("Audio playback is unavailable.");
+						break;
+					}
+					if (flushResult >= 0 && !receiveAudioFrames(audioSeekFloor, false)) {
+						if (interrupted()) continue;
+						break;
+					}
+					if (totalDuration > 0.0) {
+						const auto drainDeadline = std::chrono::steady_clock::now() +
+							std::chrono::duration<double>(std::max(2.0, totalDuration.load() + 1.0));
+						while (isPlaying && queuedAudioDuration() > 0.02 &&
+							std::chrono::steady_clock::now() < drainDeadline) {
+							std::unique_lock lock(stateMutex);
+							const bool interrupted = stateChanged.wait_for(lock,
+								std::chrono::milliseconds(20), [&] {
+									return stopRequested || !isPlaying || requestedSeek.has_value();
+								});
+							if (interrupted) break;
+						}
+						if (!isPlaying || interrupted()) continue;
+						// Queue the automatic restart through the same seek path as user
+						// requests. A seek arriving at the loop boundary must replace this
+						// restart rather than being applied before it and then overwritten.
+						{
+							std::lock_guard lock(stateMutex);
+							if (requestedSeek.has_value()) continue;
+							playbackGeneration.fetch_add(1);
+							requestedSeek = SeekRequest{0.0, false};
+						}
+						stateChanged.notify_all();
+						continue;
+					}
+					atEnd = true;
+					isPlaying = false;
+					audioState->playing = false;
+					if (totalDuration > 0.0) currentPosition = totalDuration.load();
+					continue;
+				}
 				closeOpenBitmapSubtitle(totalDuration > 0.0
 					? totalDuration.load() : currentPosition.load());
 				const int flushResult = avcodec_send_packet(codec, nullptr);
@@ -1069,7 +1164,7 @@ struct VideoPlayer::Impl {
 				break;
 			}
 
-			if (packet->stream_index == streamIndex) {
+			if (!audioOnly && packet->stream_index == streamIndex) {
 				bool packetHandled = false;
 				for (int attempt = 0; attempt < 2 && !packetHandled; ++attempt) {
 					const int sendResult = avcodec_send_packet(codec, packet);
@@ -1147,10 +1242,23 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 	const AVCodec* decoder = nullptr;
 	impl->streamIndex = av_find_best_stream(
 		impl->format, AVMEDIA_TYPE_VIDEO, -1, -1, &decoder, 0);
+	if (impl->streamIndex >= 0 &&
+		impl->format->streams[impl->streamIndex]->attached_pic.size > 0) {
+		impl->streamIndex = -1;
+		decoder = nullptr;
+	}
 	if (impl->streamIndex < 0 || decoder == nullptr) {
-		error = "FFmpeg could not find a supported video stream.";
-		close();
-		return false;
+		decoder = nullptr;
+		impl->streamIndex = av_find_best_stream(
+			impl->format, AVMEDIA_TYPE_AUDIO, -1, -1, &decoder, 0);
+		if (impl->streamIndex < 0 || decoder == nullptr) {
+			error = "FFmpeg could not find a supported audio or video stream.";
+			close();
+			return false;
+		}
+		impl->audioOnly = true;
+	} else {
+		impl->audioOnly = false;
 	}
 	impl->stream = impl->format->streams[impl->streamIndex];
 	impl->audioStreamIndices.clear();
@@ -1198,7 +1306,7 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 	impl->requestedAudioTrack = -1;
 	impl->selectedSubtitleTrack = noSubtitleTrack;
 	impl->requestedSubtitleTrack = noSubtitleRequest;
-	if (impl->stream->codecpar->codec_id == AV_CODEC_ID_AV1) {
+	if (!impl->audioOnly && impl->stream->codecpar->codec_id == AV_CODEC_ID_AV1) {
 		decoder = avcodec_find_decoder_by_name("libdav1d");
 		if (decoder == nullptr) {
 			error = "FFmpeg was built without the libdav1d AV1 decoder.";
@@ -1206,41 +1314,43 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 			return false;
 		}
 	}
-	impl->codec = avcodec_alloc_context3(decoder);
-	if (impl->codec == nullptr) {
-		error = "FFmpeg could not allocate the video decoder.";
-		close();
-		return false;
-	}
-	result = avcodec_parameters_to_context(impl->codec, impl->stream->codecpar);
-	impl->videoDecoder = decoder;
-	impl->hardwareDecodeState.failed = false;
-	impl->hardwareDecodeState.attempted = false;
-	impl->retryVideoPacketAfterHardwareFallback = false;
-	impl->codec->opaque = &impl->hardwareDecodeState;
-	impl->codec->thread_count = static_cast<int>(
-		std::clamp(std::thread::hardware_concurrency(), 1u, 16u));
-	impl->codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-	if (av_hwdevice_ctx_create(&impl->hwDeviceContext, AV_HWDEVICE_TYPE_VAAPI,
-		nullptr, nullptr, 0) >= 0) {
-		impl->codec->hw_device_ctx = av_buffer_ref(impl->hwDeviceContext);
-		impl->codec->get_format = selectHardwareFormat;
-		SDL_Log("Video: VA-API hardware decoding enabled.");
-	}
-	if (result >= 0)
-		result = avcodec_open2(impl->codec, decoder, nullptr);
-	if (result < 0 && impl->hwDeviceContext != nullptr &&
-		impl->disableHardwareDecoding()) {
-		result = 0;
-	}
-	if (result < 0) {
-		error = "FFmpeg could not start the video decoder: " + ffmpegError(result);
-		close();
-		return false;
+	if (!impl->audioOnly) {
+		impl->codec = avcodec_alloc_context3(decoder);
+		if (impl->codec == nullptr) {
+			error = "FFmpeg could not allocate the video decoder.";
+			close();
+			return false;
+		}
+		result = avcodec_parameters_to_context(impl->codec, impl->stream->codecpar);
+		impl->videoDecoder = decoder;
+		impl->hardwareDecodeState.failed = false;
+		impl->hardwareDecodeState.attempted = false;
+		impl->retryVideoPacketAfterHardwareFallback = false;
+		impl->codec->opaque = &impl->hardwareDecodeState;
+		impl->codec->thread_count = static_cast<int>(
+			std::clamp(std::thread::hardware_concurrency(), 1u, 16u));
+		impl->codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+		if (av_hwdevice_ctx_create(&impl->hwDeviceContext, AV_HWDEVICE_TYPE_VAAPI,
+			nullptr, nullptr, 0) >= 0) {
+			impl->codec->hw_device_ctx = av_buffer_ref(impl->hwDeviceContext);
+			impl->codec->get_format = selectHardwareFormat;
+			SDL_Log("Video: VA-API hardware decoding enabled.");
+		}
+		if (result >= 0)
+			result = avcodec_open2(impl->codec, decoder, nullptr);
+		if (result < 0 && impl->hwDeviceContext != nullptr &&
+			impl->disableHardwareDecoding()) {
+			result = 0;
+		}
+		if (result < 0) {
+			error = "FFmpeg could not start the video decoder: " + ffmpegError(result);
+			close();
+			return false;
+		}
 	}
 	impl->packet = av_packet_alloc();
-	impl->frame = av_frame_alloc();
-	if (impl->packet == nullptr || impl->frame == nullptr) {
+	impl->frame = impl->audioOnly ? nullptr : av_frame_alloc();
+	if (impl->packet == nullptr || (!impl->audioOnly && impl->frame == nullptr)) {
 		error = "FFmpeg could not allocate decoder buffers.";
 		close();
 		return false;
@@ -1252,18 +1362,21 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 		impl->totalDuration = static_cast<double>(impl->format->duration) / AV_TIME_BASE;
 	else if (impl->stream->duration != AV_NOPTS_VALUE && impl->stream->duration > 0)
 		impl->totalDuration = impl->stream->duration * av_q2d(impl->stream->time_base);
+	if (impl->audioOnly) impl->albumArt = impl->decodeAlbumArt();
 
-	const AVRational frameRate = av_guess_frame_rate(impl->format, impl->stream, nullptr);
-	if (frameRate.num > 0 && frameRate.den > 0)
-		impl->fallbackFrameDuration = av_q2d(av_inv_q(frameRate));
+	if (!impl->audioOnly) {
+		const AVRational frameRate = av_guess_frame_rate(impl->format, impl->stream, nullptr);
+		if (frameRate.num > 0 && frameRate.den > 0)
+			impl->fallbackFrameDuration = av_q2d(av_inv_q(frameRate));
+	}
 
 	impl->stopRequested = false;
 	impl->isPlaying = true;
 	impl->audioState->playing = true;
 	impl->isReady = true;
 	impl->atEnd = false;
-	impl->videoWidth = impl->codec->width;
-	impl->videoHeight = impl->codec->height;
+	impl->videoWidth = impl->audioOnly ? 0 : impl->codec->width;
+	impl->videoHeight = impl->audioOnly ? 0 : impl->codec->height;
 	impl->decodeThread = std::thread(&Impl::decodeLoop, impl.get());
 	return true;
 #endif
@@ -1282,6 +1395,8 @@ void VideoPlayer::close() {
 		impl->runtimeError.clear();
 	}
 #ifdef RENDEPTH_ENABLE_FFMPEG
+	SDL_DestroySurface(impl->albumArt);
+	impl->albumArt = nullptr;
 	impl->audioState->shutdown();
 	impl->audioState = std::make_shared<Impl::AudioState>();
 	impl->audioState->volume = static_cast<float>(impl->audioVolume.load());
@@ -1303,6 +1418,8 @@ void VideoPlayer::close() {
 	avformat_close_input(&impl->format);
 	impl->stream = nullptr;
 	impl->streamIndex = -1;
+	impl->audioOnly = false;
+	impl->videoDecoder = nullptr;
 	impl->audioStreamIndices.clear();
 	impl->subtitleStreamIndices.clear();
 	impl->selectedAudioTrack = 0;
@@ -1324,6 +1441,7 @@ void VideoPlayer::close() {
 #endif
 	impl->isPlaying = false;
 	impl->isReady = false;
+	impl->audioSeekPending = false;
 	impl->atEnd = false;
 	impl->currentPosition = 0.0;
 	impl->presentedPosition = 0.0;
@@ -1349,12 +1467,19 @@ void VideoPlayer::setPlaying(bool playing) {
 
 void VideoPlayer::setAudioBuffering(bool buffering) {
 #ifdef RENDEPTH_ENABLE_FFMPEG
+	if (!buffering && impl->audioSeekPending) return;
 	impl->audioState->buffering = buffering;
 	if (buffering) Impl::pauseAudio(impl->audioState);
 	else if (impl->audioState->playing) Impl::startAudio(impl->audioState);
 #else
 	(void)buffering;
 #endif
+}
+
+SDL_Surface* VideoPlayer::takeAlbumArt() {
+	auto result = impl->albumArt;
+	impl->albumArt = nullptr;
+	return result;
 }
 
 bool VideoPlayer::hasAudio() const {
@@ -1364,6 +1489,8 @@ bool VideoPlayer::hasAudio() const {
 	return false;
 #endif
 }
+
+bool VideoPlayer::audioOnly() const { return impl->audioOnly; }
 
 bool VideoPlayer::audioReady() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
@@ -1403,8 +1530,9 @@ double VideoPlayer::audioDeviceLatency() const {
 
 double VideoPlayer::audioPlaybackPosition() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
+	if (impl->audioSeekPending) return -1.0;
 	std::lock_guard lock(impl->audioState->mutex);
-	if (impl->audioState->output == nullptr || !impl->audioState->started ||
+	if (impl->audioSeekPending || impl->audioState->output == nullptr || !impl->audioState->started ||
 		impl->audioState->buffering) return -1.0;
 	const int queuedBytes = SDL_GetAudioStreamQueued(impl->audioState->output);
 	if (queuedBytes < 0) return -1.0;
@@ -1556,18 +1684,47 @@ void VideoPlayer::seek(double seconds, bool fastPreview) {
 	if (!impl->isReady) return;
 	seconds = std::clamp(seconds, 0.0,
 		impl->totalDuration > 0.0 ? impl->totalDuration.load() : seconds);
+	#ifdef RENDEPTH_ENABLE_FFMPEG
+	const bool hasAudioPlayback = impl->audioOnly || !impl->audioStreamIndices.empty();
+	#endif
 	{
 		std::lock_guard lock(impl->stateMutex);
+		#ifdef RENDEPTH_ENABLE_FFMPEG
+		if (hasAudioPlayback) impl->audioSeekPending = true;
+		#endif
 		impl->playbackGeneration.fetch_add(1);
 		impl->requestedSeek = Impl::SeekRequest{seconds, fastPreview};
 		impl->currentPosition = seconds;
 		impl->presentedPosition = seconds;
 		impl->atEnd = false;
 	}
+	#ifdef RENDEPTH_ENABLE_FFMPEG
+	if (hasAudioPlayback) {
+		std::lock_guard lock(impl->audioState->mutex);
+		impl->audioState->buffering = true;
+		impl->audioState->pending.clear();
+		impl->audioState->pendingBytes = 0;
+		if (impl->audioState->output != nullptr) {
+			SDL_PauseAudioStreamDevice(impl->audioState->output);
+			SDL_ClearAudioStream(impl->audioState->output);
+			impl->audioState->started = false;
+		}
+	}
+	#endif
 	impl->stateChanged.notify_all();
 }
 
-void VideoPlayer::update() {}
+void VideoPlayer::update() {
+#ifdef RENDEPTH_ENABLE_FFMPEG
+	if (!impl->audioOnly) return;
+	if (impl->audioSeekPending) return;
+	if (impl->isPlaying && impl->audioState->buffering &&
+		bufferedAudioDuration() >= 0.12)
+		setAudioBuffering(false);
+	const double playbackPosition = audioPlaybackPosition();
+	if (playbackPosition >= 0.0) impl->presentedPosition = playbackPosition;
+#endif
+}
 
 std::shared_ptr<VideoFrame> VideoPlayer::takeFrame(bool* preview) {
 	std::lock_guard lock(impl->stateMutex);

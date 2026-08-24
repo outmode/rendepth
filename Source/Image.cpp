@@ -357,7 +357,8 @@ glm::vec4 Image::getBackgroundColor(SDL_Surface* surface, int size, int width, i
 	return result;
 }
 
-int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData) {
+int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData,
+		StereoFormat forcedType) {
 	if (imageInfo.path.empty()) {
 		SDL_SetWindowTitle(context->window, context->appName);
 		Core::drawText(context, "Drag & Drop or Click Load Icon", helpFont,
@@ -396,8 +397,12 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData) {
 	context->loading = false;
 	context->fileLink = imageInfo.link;
 	context->fileName = imageInfo.base;
-	imageInfo.type = Core::getImageType(imageInfo.path);
-	if (imageInfo.type == Unknown_Format) imageInfo.type = Core::defaultImportFormat;
+	if (forcedType != Unknown_Format) {
+		imageInfo.type = forcedType;
+	} else {
+		imageInfo.type = Core::getImageType(imageInfo.path);
+		if (imageInfo.type == Unknown_Format) imageInfo.type = Core::defaultImportFormat;
+	}
 	context->imageType = imageInfo.type;
 	if (context->imageType == Light_Field_LKG) {
 		auto gridSize = Core::getGridInfo(imageInfo.base);
