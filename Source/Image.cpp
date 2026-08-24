@@ -2295,6 +2295,7 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 			imageDataFrag.imageSize = context->imageSize;
 			imageDataFrag.type = context->imageType;
 			imageDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;
+			imageDataFrag.packedOutput = stereoFormat == Color_Plus_Depth ? 1 : 0;
 			imageDataFrag.gridSize = context->gridSize;
 			auto singleImageAspect = singleImageSize.x / singleImageSize.y;
 			imageDataVert.displayImageAspect = glm::vec3(singleImageAspect, singleImageAspect, 1.0);
@@ -2315,6 +2316,7 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 	}
 
 	SDL_EndGPURenderPass(renderPass);
+	imageDataFrag.packedOutput = 0;
 
 	SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
 	if (fence == nullptr) {
@@ -2498,6 +2500,7 @@ void Image::setSpriteUniforms(glm::vec3 position, glm::vec3 size, glm::vec4 colo
 }
 
 int Image::draw(Context* context) {
+	imageDataFrag.packedOutput = 0;
 	updateVideoBackgroundAnimation();
 	if (nativeOutputEnabled) {
 		nativeOutputSourceReady = imageTexture != nullptr;

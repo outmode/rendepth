@@ -419,9 +419,13 @@ static void serviceVideo() {
 	bool previewFrame = false;
 	if (auto frame = videoPlayer.takeFrame(&previewFrame)) {
 		if (previewFrame) {
-			resetVideoPlaybackBuffer();
+			const bool preserveDepthPresentation = activeVideo && display3D &&
+				videoDepthProcessor.running() && videoDepthFrameLoaded;
+			resetVideoPlaybackBuffer(false, !preserveDepthPresentation);
 			videoPlaybackGeneration = frame->generation;
 			presentVideoFrame(frame, true);
+			if (preserveDepthPresentation)
+				videoDepthProcessor.submit(frame);
 		} else if (!videoPlayer.playing()) {
 			// A normal pause may deliver one final decoded frame. Clear stale
 			// presentation data, but retain the inferred depth texture so the
@@ -1908,15 +1912,23 @@ static void seekVideoFromSlider() {
 }
 
 static void seekVideo(double seconds, bool fastPreview) {
+	const bool preserveDepthPresentation = activeVideo && display3D &&
+		videoDepthProcessor.running() && videoDepthFrameLoaded;
 	if (videoDepthProcessor.running()) {
 		videoDepthProcessor.reset();
 		videoDepthBlend.clear();
-		Image::clearVideoDepth(&context);
-		if (!fileList.empty()) context.imageType = fileList[fileIndex].type;
-		setVideoDepthFallbackMode();
+		videoDepthTransitionGeneration = 0;
+		if (!preserveDepthPresentation) {
+			Image::clearVideoDepth(&context);
+			if (!fileList.empty()) context.imageType = fileList[fileIndex].type;
+			setVideoDepthFallbackMode();
+		}
 	}
-	resetVideoPlaybackBuffer();
-	lastVideoFrame.reset();
+	// Keep the current 3D source and presentation alive until the newly sought
+	// frame has its own depth map. The normal-generation path will hold the new
+	// color frame until serviceVideoDepth has produced a matching result.
+	resetVideoPlaybackBuffer(false, !preserveDepthPresentation);
+	if (!preserveDepthPresentation) lastVideoFrame.reset();
 	videoPlayer.seek(seconds, fastPreview);
 }
 

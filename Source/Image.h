@@ -110,7 +110,7 @@ public:
 		int force;
 		float blurMix;
 		int separateDepth;
-		int depthPadding0;
+		int packedOutput;
 		int depthPadding1;
 		int depthPadding2;
 	};

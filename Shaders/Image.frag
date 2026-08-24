@@ -44,7 +44,7 @@ layout (set = 3, binding = 0) uniform ImageDataFrag {
 	int force;
 	float blurMix;
 	int separateDepth;
-	int depthPadding0;
+	int packedOutput;
 	int depthPadding1;
 	int depthPadding2;
 };
@@ -375,7 +375,22 @@ void main() {
 		}
 		imageColor.a = 1.0;
 	} else if (mode == Native) {
-		imageColor = getColor(imageTexture, fragUV);
+		if (packedOutput == 1 && type == Color_Plus_Depth && separateDepth == 1) {
+			// Inferred video depth is stored separately from the RGB texture. The
+			// exported RGB-D image still needs the packed layout used by embedded
+			// RGB-D images: full-resolution color on the left and depth on the
+			// right, rather than stretching the color texture across both halves.
+			if (fragUV.x < 0.5) {
+				imageColor = getColor(imageTexture,
+					vec2(fragUV.x * 2.0, fragUV.y));
+			} else {
+				const vec2 packedDepthUV = vec2((fragUV.x - 0.5) * 2.0, fragUV.y);
+				const float depthValue = getRawDepth(depthTexture, packedDepthUV);
+				imageColor = vec4(vec3(depthValue), 1.0);
+			}
+		} else {
+			imageColor = getColor(imageTexture, fragUV);
+		}
 	} else if (mode == Light_Field) {
 		if (type == Color_Plus_Depth) {
 			imageColor = getColor(imageTexture, separateDepth == 1 ? fragUV :
