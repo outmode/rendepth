@@ -1303,8 +1303,12 @@ Choice ChoiceSlideshow {
 
 Choice ChoiceTags {
 	"Default 3D Detection",
-	{ "Color Only", "Anaglyph", "SBS Full", "SBS Half" },
+	{ "SBS Full", "SBS Half", "TAB Full", "TAB Half", "Color Only", "Anaglyph" },
 };
+
+static constexpr int defaultDetectionOrderVersion = 2;
+static constexpr const char* defaultDetectionOrderVersionKey =
+	"default3DDetectionOrderVersion";
 
 Choice ChoiceEyes {
 	"Swap Eyes",
@@ -1322,7 +1326,7 @@ static std::unordered_map<std::string, int> menuSelection = {
 	{ ChoiceBackground.label, 0 },
 	{ ChoiceSorting.label, 0 },
 	{ ChoiceSlideshow.label, 0 },
-	{ ChoiceTags.label, 0 },
+	{ ChoiceTags.label, 4 },
 	{ ChoiceEyes.label, 0 },
 };
 
@@ -1397,7 +1401,8 @@ static bool addStereoTag(const std::string& link, const std::string& tag) {
 	return success;
 }
 
-static std::array importTags = { Color_Only, Color_Anaglyph, Side_By_Side_Full, Side_By_Side_Half };
+static std::array importTags = { Side_By_Side_Full, Side_By_Side_Half,
+	Top_And_Bottom_Full, Top_And_Bottom_Half, Color_Only, Color_Anaglyph };
 static void changeImport(int option, bool init) {
 	Core::defaultImportFormat = importTags[option];
 	if (!init && Core::defaultImportFormat == Color_Only) {
@@ -2400,6 +2405,8 @@ void saveOptions() {
 	nameCache.push_back(borderlessSetting);
 	document.AddMember("modelDirectory", rapidjson::Value(modelDirectory.c_str(), allocator), allocator);
 	document.AddMember("videoVolume", currentVideoVolume, allocator);
+	document.AddMember(rapidjson::GenericStringRef(defaultDetectionOrderVersionKey),
+		defaultDetectionOrderVersion, allocator);
 
     rapidjson::StringBuffer output;
     rapidjson::PrettyWriter writer(output);
@@ -2428,11 +2435,19 @@ void loadOptions() {
 	dataBuffer[dataSize] = '\0';
 	if (document.Parse(dataBuffer).HasParseError()) return;
 	if (!document.IsObject()) return;
+	const bool legacyDefaultDetectionOrder =
+		!document.HasMember(defaultDetectionOrderVersionKey) ||
+		!document[defaultDetectionOrderVersionKey].IsInt() ||
+		document[defaultDetectionOrderVersionKey].GetInt() < defaultDetectionOrderVersion;
+	static constexpr std::array<int, 6> migratedDefaultDetectionIndices = { 4, 5, 0, 1, 2, 3 };
 
 	for (auto& setting : menuSelection) {
 		auto settingName = setting.first.c_str();
 		if (document.HasMember(settingName)) {
 			setting.second = document[settingName].GetInt();
+			if (legacyDefaultDetectionOrder && setting.first == ChoiceTags.label &&
+				setting.second >= 0 && setting.second < static_cast<int>(migratedDefaultDetectionIndices.size()))
+				setting.second = migratedDefaultDetectionIndices[setting.second];
 			if (menuCallback[settingName]) menuCallback[settingName](setting.second);
 		}
 	}
@@ -3404,11 +3419,13 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		switchedImage = false;
 		lastSlideshowTime = timeNow;
 		menuChoices[8].active = true;
-		menuSelection[ChoiceTags.label] = 0;
-		if (Core::defaultImportFormat == Color_Only) menuSelection[ChoiceTags.label] = 0;
-		else if (Core::defaultImportFormat == Color_Anaglyph) menuSelection[ChoiceTags.label] = 1;
-		else if (Core::defaultImportFormat == Side_By_Side_Full) menuSelection[ChoiceTags.label] = 2;
-		else if (Core::defaultImportFormat == Side_By_Side_Half) menuSelection[ChoiceTags.label] = 3;
+		menuSelection[ChoiceTags.label] = 4;
+		if (Core::defaultImportFormat == Side_By_Side_Full) menuSelection[ChoiceTags.label] = 0;
+		else if (Core::defaultImportFormat == Side_By_Side_Half) menuSelection[ChoiceTags.label] = 1;
+		else if (Core::defaultImportFormat == Top_And_Bottom_Full) menuSelection[ChoiceTags.label] = 2;
+		else if (Core::defaultImportFormat == Top_And_Bottom_Half) menuSelection[ChoiceTags.label] = 3;
+		else if (Core::defaultImportFormat == Color_Only) menuSelection[ChoiceTags.label] = 4;
+		else if (Core::defaultImportFormat == Color_Anaglyph) menuSelection[ChoiceTags.label] = 5;
 		if (!activeVideo) {
 			if (isPlayingSlideshow) preloadImage(nextRandIndex);
 			else preloadImage();
@@ -3672,7 +3689,11 @@ static bool isInsideSliderTrack(const Icon& icon, const glm::vec2& aspectScale) 
 	if (icon.mode != IconMode::Slider || icon.slider.size.x <= 0.0f) return false;
 	const auto canvas = icon.canvas();
 	const auto center = getCoordinates(glm::vec4(canvas.position, canvas.alignment), aspectScale);
-	const auto size = icon.slider.size * aspectScale * context.displayScale;
+	auto size = icon.slider.size * aspectScale * context.displayScale;
+	if (icon.type == IconType::VideoSeek)
+		// Keep the timeline graphics unchanged while making its centered hit
+		// region twice as tall for easier seeking.
+		size.y *= 2.0f;
 	return context.mouse.x > center.x - size.x * 0.5f &&
 		context.mouse.x < center.x + size.x * 0.5f &&
 		context.mouse.y > center.y - size.y * 0.5f &&

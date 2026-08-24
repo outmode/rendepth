@@ -78,6 +78,8 @@ layout (set = 3, binding = 0) uniform ImageDataFrag {
 #define Stereo_Free_View_Grid 6
 #define Stereo_Free_View_LRL 7
 #define Light_Field_LKG 8
+#define Top_And_Bottom_Full 9
+#define Top_And_Bottom_Half 10
 
 const float stereoScale = 25000.0;
 const float zNear = 0.1;
@@ -324,6 +326,9 @@ void main() {
 		vec2 tempUV = monoUV;
 		monoUV = depthUV;
 		depthUV = tempUV;
+	} else if (type == Top_And_Bottom_Full || type == Top_And_Bottom_Half) {
+		monoUV = vec2(fragUV.x, fragUV.y * 0.5);
+		depthUV = vec2(monoUV.x, monoUV.y + 0.5);
 	} else if (type == Stereo_Free_View_Grid) {
 		monoUV = fragUV * 0.5;
 		depthUV = vec2(monoUV.x + 0.5, monoUV.y);
@@ -423,7 +428,8 @@ void main() {
 			}
 		} else if (type == Side_By_Side_Full || type == Side_By_Side_Half ||
 				type == Side_By_Side_Swap || type == Stereo_Free_View_Grid ||
-				type == Stereo_Free_View_LRL) {
+				type == Stereo_Free_View_LRL ||
+				type == Top_And_Bottom_Full || type == Top_And_Bottom_Half) {
 			vec3 leftColor = getColor(imageTexture, monoUV).rgb;
 			vec3 rightColor = getColor(imageTexture, depthUV).rgb;
 			imageColor.rgb = combineStereoViews(leftColor, rightColor);

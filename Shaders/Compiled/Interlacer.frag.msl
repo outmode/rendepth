@@ -78,7 +78,7 @@ struct InterlacerData
     int sourceType;
 };
 
-constant spvUnsafeArray<float, 5> _358 = spvUnsafeArray<float, 5>({ 0.125, 0.25, 0.375, 0.5, 0.625 });
+constant spvUnsafeArray<float, 5> _377 = spvUnsafeArray<float, 5>({ 0.125, 0.25, 0.375, 0.5, 0.625 });
 
 struct main0_out
 {
@@ -139,6 +139,23 @@ float3 sampleMono(thread const float2& uv, constant InterlacerData& _62, texture
                 {
                     sourceUV.x *= 0.333000004291534423828125;
                 }
+                else
+                {
+                    bool _156 = _62.sourceType == 9;
+                    bool _164;
+                    if (!_156)
+                    {
+                        _164 = _62.sourceType == 10;
+                    }
+                    else
+                    {
+                        _164 = _156;
+                    }
+                    if (_164)
+                    {
+                        sourceUV.y *= 0.5;
+                    }
+                }
             }
         }
     }
@@ -162,16 +179,16 @@ float2 clampEdge(thread float2& inUV, thread const float2& minUV, thread const f
 static inline __attribute__((always_inline))
 float getDepth(texture2d<float> tex, sampler texSmplr, thread const float2& uv, constant InterlacerData& _62, texture2d<float> depthTexture, sampler depthTextureSmplr)
 {
-    float _165;
+    float _184;
     if (_62.separateDepth != 0)
     {
-        _165 = depthTexture.sample(depthTextureSmplr, fast::clamp(uv, float2(0.0), float2(1.0))).x;
+        _184 = depthTexture.sample(depthTextureSmplr, fast::clamp(uv, float2(0.0), float2(1.0))).x;
     }
     else
     {
-        _165 = tex.sample(texSmplr, fast::clamp(uv, float2(0.0), float2(1.0))).x;
+        _184 = tex.sample(texSmplr, fast::clamp(uv, float2(0.0), float2(1.0))).x;
     }
-    float depthSample = 1.0 - _165;
+    float depthSample = 1.0 - _184;
     float ndc = (depthSample * 2.0) - 1.0;
     float linearDepth = 20.0 / (100.09999847412109375 - (ndc * 99.90000152587890625));
     linearDepth /= 99.90000152587890625;
@@ -188,36 +205,36 @@ float getParallax(thread float& depth, constant InterlacerData& _62)
 static inline __attribute__((always_inline))
 float3 sampleRgbd(thread const float2& uv, thread const int& view, constant InterlacerData& _62, texture2d<float> quiltTexture, sampler quiltTextureSmplr, texture2d<float> depthTexture, sampler depthTextureSmplr)
 {
-    float2 _252;
+    float2 _271;
     if (_62.separateDepth != 0)
     {
-        _252 = uv;
+        _271 = uv;
     }
     else
     {
-        _252 = float2(uv.x * 0.5, uv.y);
+        _271 = float2(uv.x * 0.5, uv.y);
     }
-    float2 colorUV = _252;
-    float2 _268;
+    float2 colorUV = _271;
+    float2 _287;
     if (_62.separateDepth != 0)
     {
-        _268 = uv;
+        _287 = uv;
     }
     else
     {
-        _268 = float2((uv.x * 0.5) + 0.5, uv.y);
+        _287 = float2((uv.x * 0.5) + 0.5, uv.y);
     }
-    float2 depthUV = _268;
-    float _285;
+    float2 depthUV = _287;
+    float _304;
     if (_62.viewCount > 1)
     {
-        _285 = (float(view) / float(_62.viewCount - 1)) - 0.5;
+        _304 = (float(view) / float(_62.viewCount - 1)) - 0.5;
     }
     else
     {
-        _285 = 0.0;
+        _304 = 0.0;
     }
-    float normalizedView = _285;
+    float normalizedView = _304;
     float viewAmount = abs(normalizedView) * 2.0;
     float aspect = _62._imageSize.x / _62._imageSize.y;
     float2 minUVDepth = select(float2(0.500999987125396728515625, 0.0), float2(0.001000000047497451305389404296875, 0.0), bool2(_62.separateDepth != 0));
@@ -225,29 +242,29 @@ float3 sampleRgbd(thread const float2& uv, thread const int& view, constant Inte
     float2 param = depthUV;
     float2 param_1 = minUVDepth;
     float2 param_2 = maxUVDepth;
-    float2 _334 = clampEdge(param, param_1, param_2);
-    float2 param_3 = _334;
+    float2 _353 = clampEdge(param, param_1, param_2);
+    float2 param_3 = _353;
     float centerDepth = getDepth(quiltTexture, quiltTextureSmplr, param_3, _62, depthTexture, depthTextureSmplr);
     float minDepth = centerDepth;
     float offsetSign = (normalizedView < 0.0) ? 1.0 : (-1.0);
     for (int i = 0; i < 5; i++)
     {
-        float depthOffset = ((((_358[i] * _62.stereoStrength) * viewAmount) / aspect) / 4000.0) + (((_62.stereoOffset * (-8.0)) * viewAmount) / aspect);
+        float depthOffset = ((((_377[i] * _62.stereoStrength) * viewAmount) / aspect) / 4000.0) + (((_62.stereoOffset * (-8.0)) * viewAmount) / aspect);
         float2 param_4 = depthUV + float2(offsetSign * depthOffset, 0.0);
         float2 param_5 = minUVDepth;
         float2 param_6 = maxUVDepth;
-        float2 _396 = clampEdge(param_4, param_5, param_6);
-        float2 param_7 = _396;
+        float2 _415 = clampEdge(param_4, param_5, param_6);
+        float2 param_7 = _415;
         minDepth = fast::min(minDepth, getDepth(quiltTexture, quiltTextureSmplr, param_7, _62, depthTexture, depthTextureSmplr));
     }
     float param_8 = minDepth;
-    float _411 = getParallax(param_8, _62);
-    float parallax = ((((_62.stereoStrength * viewAmount) / aspect) * _411) / 4000.0) + (((_62.stereoOffset * (-8.0)) * viewAmount) / aspect);
+    float _430 = getParallax(param_8, _62);
+    float parallax = ((((_62.stereoStrength * viewAmount) / aspect) * _430) / 4000.0) + (((_62.stereoOffset * (-8.0)) * viewAmount) / aspect);
     float2 param_9 = colorUV + float2(offsetSign * parallax, 0.0);
     float2 param_10 = float2(0.001000000047497451305389404296875, 0.0);
     float2 param_11 = select(float2(0.499000012874603271484375, 1.0), float2(0.999000012874603271484375, 1.0), bool2(_62.separateDepth != 0));
-    float2 _438 = clampEdge(param_9, param_10, param_11);
-    colorUV = _438;
+    float2 _457 = clampEdge(param_9, param_10, param_11);
+    colorUV = _457;
     return quiltTexture.sample(quiltTextureSmplr, colorUV, level(0.0)).xyz;
 }
 
@@ -258,16 +275,16 @@ float3 sampleView(thread float2& uv, thread const float& phase, constant Interla
     {
         if (_62.sourceRgbd != 0)
         {
-            float2 _461;
+            float2 _479;
             if (_62.separateDepth != 0)
             {
-                _461 = uv;
+                _479 = uv;
             }
             else
             {
-                _461 = float2(uv.x * 0.5, uv.y);
+                _479 = float2(uv.x * 0.5, uv.y);
             }
-            return quiltTexture.sample(quiltTextureSmplr, _461, level(0.0)).xyz;
+            return quiltTexture.sample(quiltTextureSmplr, _479, level(0.0)).xyz;
         }
         if (_62.sourceFlat != 0)
         {
@@ -322,17 +339,17 @@ fragment main0_out main0(main0_in in [[stage_in]], constant InterlacerData& _62 
     basePhase -= _62.center;
     float2 param = in.fragUV;
     float param_1 = basePhase - _62.subpixelPhase;
-    float3 _633 = sampleView(param, param_1, _62, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
+    float3 _650 = sampleView(param, param_1, _62, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
     float3 color;
-    color.x = _633.x;
+    color.x = _650.x;
     float2 param_2 = in.fragUV;
     float param_3 = basePhase;
-    float3 _640 = sampleView(param_2, param_3, _62, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
-    color.y = _640.y;
+    float3 _657 = sampleView(param_2, param_3, _62, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
+    color.y = _657.y;
     float2 param_4 = in.fragUV;
     float param_5 = basePhase + _62.subpixelPhase;
-    float3 _650 = sampleView(param_4, param_5, _62, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
-    color.z = _650.z;
+    float3 _667 = sampleView(param_4, param_5, _62, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
+    color.z = _667.z;
     out.outColor = float4(color, 1.0);
     return out;
 }

@@ -42,6 +42,8 @@ const int Side_By_Side_Swap = 4;
 const int Side_By_Side_Half = 5;
 const int Stereo_Free_View_Grid = 6;
 const int Stereo_Free_View_LRL = 7;
+const int Top_And_Bottom_Full = 9;
+const int Top_And_Bottom_Half = 10;
 
 float luminance(vec3 color) {
 	return dot(vec3(0.30, 0.59, 0.11), color);
@@ -62,6 +64,9 @@ vec3 sampleMono(vec2 uv) {
 		sourceUV.x *= 0.5;
 	else if (sourceType == Stereo_Free_View_LRL)
 		sourceUV.x *= 0.333;
+	else if (sourceType == Top_And_Bottom_Full || sourceType == Top_And_Bottom_Half) {
+		sourceUV.y *= 0.5;
+	}
 	return textureLod(quiltTexture, sourceUV, 0.0).rgb;
 }
 

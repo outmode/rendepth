@@ -61,6 +61,8 @@ enum StereoFormat {
 	Stereo_Free_View_Grid,
 	Stereo_Free_View_LRL,
 	Light_Field_LKG,
+	Top_And_Bottom_Full,
+	Top_And_Bottom_Half,
 	Unknown_Format
 };
 
@@ -96,6 +98,8 @@ static inline std::vector<std::pair<std::string, StereoFormat>> tagType = {
 	{ "_rgb", Color_Only },
 	{ "_sbs_half_width", Side_By_Side_Half },
 	{ "_sbs", Side_By_Side_Full },
+	{ "_tab_half_height", Top_And_Bottom_Half },
+	{ "_tab", Top_And_Bottom_Full },
 	{ "_free_view_lrl", Stereo_Free_View_LRL },
 	{ "_free_view", Stereo_Free_View_Grid },
 	{ "_qs", Light_Field_LKG },

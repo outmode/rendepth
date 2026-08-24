@@ -52,6 +52,8 @@ namespace {
 		if (type == Color_Plus_Depth || type == Side_By_Side_Full ||
 			type == Side_By_Side_Swap) {
 			packedSize.x *= 0.5f;
+		} else if (type == Top_And_Bottom_Full) {
+			packedSize.y *= 0.5f;
 		} else if (type == Light_Field_LKG && gridSize.x > 0.0f && gridSize.y > 0.0f) {
 			packedSize.x /= gridSize.x;
 			packedSize.y /= gridSize.y;
@@ -972,6 +974,8 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 		if (imageInfo.type == Color_Plus_Depth || imageInfo.type == Side_By_Side_Full ||
 			imageInfo.type == Side_By_Side_Swap) {
 			firstImageSize.x /= 2.0;
+		} else if (imageInfo.type == Top_And_Bottom_Full) {
+			firstImageSize.y /= 2.0;
 		} else if (imageInfo.type == Light_Field_LKG) {
 			auto gridSize = Core::getGridInfo(imageInfo.base);
 			context->gridSize = gridSize;
