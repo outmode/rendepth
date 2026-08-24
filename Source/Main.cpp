@@ -506,10 +506,10 @@ static double getMinimumSwitchTime() {
 static DepthEstimator nativeDepthEstimator;
 static bool nativeDepthEstimatorLoaded = false;
 static std::string nativeDepthEstimatorError;
-static std::array<SuperResolution, 2> nativeSuperResolution;
-static std::array<bool, 2> nativeSuperResolutionAttempted{};
-static std::array<bool, 2> nativeSuperResolutionLoaded{};
-static std::array<std::string, 2> nativeSuperResolutionError{};
+static SuperResolution nativeSuperResolution;
+static bool nativeSuperResolutionAttempted = false;
+static bool nativeSuperResolutionLoaded = false;
+static std::string nativeSuperResolutionError;
 static std::mutex nativeSuperResolutionMutex;
 static std::uint64_t nextDepthGeneration = 0;
 static std::uint64_t activeDepthGeneration = 0;
@@ -1371,10 +1371,12 @@ static std::array exportFormats = {
 	Stereo_Free_View_Grid, Stereo_Free_View_LRL, Light_Field_LKG };
 static std::array exportTags = { "anaglyph",  "rgbd", "sbs", "sbs_half_width",
 	"free_view", "free_view_lrl", "qs" };
+static const std::string& getExportDisplayName();
 static void changeExport(int option) {
 	option = std::clamp(option, 0, static_cast<int>(exportFormats.size()) - 1);
 	exportFormat = exportFormats[option];
 	exportTag = exportTags[option];
+	checkMouseState();
 }
 
 static const std::string& getExportDisplayName() {
@@ -2214,6 +2216,19 @@ static void openFolder() {
 	SDL_ShowOpenFolderDialog(openFolderCallback, &openFolderResult, context.window, nullptr, false);
 }
 
+static std::string formatVideoTimeTag(double presentationTime) {
+	if (!std::isfinite(presentationTime) || presentationTime < 0.0) return {};
+
+	const auto totalMilliseconds = static_cast<long long>(
+		std::llround(presentationTime * 1000.0));
+	const auto hours = totalMilliseconds / (60 * 60 * 1000);
+	const auto minutes = (totalMilliseconds / (60 * 1000)) % 60;
+	const auto seconds = (totalMilliseconds / 1000) % 60;
+	const auto milliseconds = totalMilliseconds % 1000;
+	return std::format("_t{:02}h{:02}m{:02}s{:03}ms", hours, minutes,
+		seconds, milliseconds);
+}
+
 static void saveFile() {
 	doingFileOp = true;
 	// The save callback can run between video-frame updates. Refresh the GPU
@@ -2264,6 +2279,10 @@ static void saveFile() {
 		}
 
 		outFileName = removeFileTags(context.fileName);
+		if (activeVideo && lastVideoFrame != nullptr &&
+			lastVideoFrame->generation == videoPlayer.generation()) {
+			outFileName += formatVideoTimeTag(lastVideoFrame->presentationTime);
+		}
 		const std::filesystem::path outFilePath = outFileName + "_" + exportTag +
 			gridInfo + ".jpg";
 		outputPathString = (exportDir / outFilePath).string();
@@ -3329,6 +3348,7 @@ static void serviceDeferredMediaLoad() {
 	parseFileList(files);
 	updateStereoIcon();
 	loadImage(nullptr);
+	checkMouseState();
 }
 
 SDL_AppResult SDL_AppIterate(void* appstate) {
@@ -3755,12 +3775,17 @@ void checkMouseState() {
 		auto displayXD = !(context.displayMenu && icon.type == IconType::Stereo_3D);
 		auto displaySave = true;
 		if (!fileList.empty()) {
-			displaySave = !(icon.type == IconType::Save && ((fileList[fileIndex].type == Color_Only ||
-				fileList[fileIndex].type == Color_Anaglyph) || (fileList[fileIndex].type != Color_Plus_Depth &&
-				exportFormat == Color_Plus_Depth)));
+			const bool videoDepthReady = activeVideo && videoDepthFrameLoaded;
+			displaySave = !(icon.type == IconType::Save &&
+			(((fileList[fileIndex].type == Color_Only ||
+				fileList[fileIndex].type == Color_Anaglyph) && !videoDepthReady) ||
+				(fileList[fileIndex].type != Color_Plus_Depth &&
+					exportFormat == Color_Plus_Depth && !videoDepthReady)));
 		}
 		if (withinArea(context.mouse, getCoordinates(icon.canvas().topLeft, aspectScale),
 			getCoordinates(icon.canvas().bottomRight, aspectScale))) {
+			if (icon.type == IconType::Folder)
+				icon.label = "Batch Convert to " + getExportDisplayName();
 			icon.state = IconState::Near;
 			const bool videoOnlyControl = icon.type == IconType::VideoSeek ||
 				icon.type == IconType::VideoVolume || icon.type == IconType::VideoAudio ||
@@ -4218,6 +4243,33 @@ static bool saveTemporaryRgbdSurface(SDL_Surface* surface,
 #endif
 }
 
+static void cleanupStaleRuntimeDepthDirectories(
+	const std::filesystem::path& runtimeRoot) {
+	std::error_code error;
+	if (!std::filesystem::is_directory(runtimeRoot, error)) return;
+
+	const auto now = std::filesystem::file_time_type::clock::now();
+	constexpr auto maximumAge = std::chrono::hours(24);
+	for (const auto& entry :
+		std::filesystem::directory_iterator(runtimeRoot, error)) {
+		if (error) break;
+
+		std::error_code entryError;
+		if (!entry.is_directory(entryError)) continue;
+		const auto name = entry.path().filename().string();
+		if (name.rfind("Rendepth-", 0) != 0) continue;
+
+		const auto modified = entry.last_write_time(entryError);
+		if (entryError || modified > now || now - modified <= maximumAge) continue;
+
+		std::filesystem::remove_all(entry.path(), entryError);
+		if (entryError) {
+			SDL_Log("Could not remove stale runtime depth directory %s: %s",
+				entry.path().string().c_str(), entryError.message().c_str());
+		}
+	}
+}
+
 static std::filesystem::path runtimeDepthDirectory() {
 	static const auto directory = [] {
 		std::filesystem::path baseDirectory;
@@ -4235,9 +4287,12 @@ static std::filesystem::path runtimeDepthDirectory() {
 			return std::filesystem::path{};
 		}
 
+		const auto runtimeRoot = baseDirectory / "Runtime";
+		cleanupStaleRuntimeDepthDirectories(runtimeRoot);
+
 		const auto sessionId = std::to_string(
 			std::chrono::high_resolution_clock::now().time_since_epoch().count());
-		const auto directory = baseDirectory / "Runtime" / ("Rendepth-" + sessionId);
+		const auto directory = runtimeRoot / ("Rendepth-" + sessionId);
 		std::error_code createError;
 		std::filesystem::create_directories(directory, createError);
 		if (createError) {
@@ -4264,8 +4319,7 @@ static std::filesystem::path runtimeDepthOutputPath(const std::filesystem::path&
 static int nativeSuperResolutionScale(const SDL_Surface* color) {
 	if (color == nullptr) return 0;
 	const int longestSide = std::max(color->w, color->h);
-	if (longestSide <= 512) return 3;
-	if (longestSide <= 720) return 2;
+	if (longestSide <= 720) return 4;
 	return 0;
 }
 
@@ -4275,38 +4329,36 @@ static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
 	std::lock_guard lock(nativeSuperResolutionMutex);
 	const int scale = nativeSuperResolutionScale(color);
 	if (scale == 0) return color;
-	const size_t modelIndex = scale == 3 ? 1 : 0;
 
-	if (!nativeSuperResolutionAttempted[modelIndex]) {
-		nativeSuperResolutionAttempted[modelIndex] = true;
+	if (!nativeSuperResolutionAttempted) {
+		nativeSuperResolutionAttempted = true;
 		SuperResolution::Config config;
 		const auto modelDirectoryPath = modelDirectory.empty()
 			? homePath / "Models" : std::filesystem::path(modelDirectory);
 		config.modelPath = ModelDownloader::ensureAvailable(
-			modelDirectoryPath, scale == 3 ? "IMDN_x3.onnx" : "IMDN_x2.onnx",
-			nativeSuperResolutionError[modelIndex]);
+			modelDirectoryPath, "RFDN_x4.onnx", nativeSuperResolutionError);
 	#ifdef RENDEPTH_ENABLE_CUDA
 		config.provider = DepthEstimator::Provider::CUDA;
 	#elif defined(RENDEPTH_ENABLE_ROCM)
 		config.provider = DepthEstimator::Provider::ROCM;
 	#endif
 		if (!config.modelPath.empty())
-			nativeSuperResolutionLoaded[modelIndex] = nativeSuperResolution[modelIndex].load(
-				config, nativeSuperResolutionError[modelIndex]);
-		if (nativeSuperResolutionLoaded[modelIndex])
-			SDL_Log("Native IMDN x%d model loaded at %s using %s provider.", scale,
+			nativeSuperResolutionLoaded = nativeSuperResolution.load(
+				config, nativeSuperResolutionError);
+		if (nativeSuperResolutionLoaded)
+			SDL_Log("Native RFDN x%d model loaded at %s using %s provider.", scale,
 				config.modelPath.string().c_str(),
-				nativeSuperResolution[modelIndex].providerName().c_str());
+				nativeSuperResolution.providerName().c_str());
 		else
-			SDL_Log("Native IMDN x%d model unavailable; using original color: %s", scale,
-				nativeSuperResolutionError[modelIndex].c_str());
+			SDL_Log("Native RFDN x%d model unavailable; using original color: %s", scale,
+				nativeSuperResolutionError.c_str());
 	}
-	if (!nativeSuperResolutionLoaded[modelIndex]) return color;
+	if (!nativeSuperResolutionLoaded) return color;
 
 	std::string error;
-	SDL_Surface* result = nativeSuperResolution[modelIndex].predict(color, error);
+	SDL_Surface* result = nativeSuperResolution.predict(color, error);
 	if (result == nullptr) {
-		SDL_Log("Native IMDN x%d inference failed; using original color: %s", scale,
+		SDL_Log("Native RFDN x%d inference failed; using original color: %s", scale,
 			error.c_str());
 		return color;
 	}
@@ -4944,6 +4996,14 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		std::string droppedFile = event->drop.data;
 		if (isSupportedImage(droppedFile) || isSupportedVideo(droppedFile)) {
 			if (!isConverting && !doingPreload && !context.loading) {
+				float mouseX = 0.0f;
+				float mouseY = 0.0f;
+				SDL_GetMouseState(&mouseX, &mouseY);
+				context.mouse.x = mouseX * Image::mouseScale;
+				context.mouse.y = mouseY * Image::mouseScale;
+				mouseLeftWindow = false;
+				mouseLastActive = getTimeNow();
+				showCustomCursor(true);
 				deferMediaLoad({droppedFile});
 			}
 		}
@@ -4963,8 +5023,8 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result) {
 	resetDepthGeneration();
 	nativeDepthEstimator.unload();
 	nativeDepthEstimatorLoaded = false;
-	for (auto& superResolution : nativeSuperResolution) superResolution.unload();
-	nativeSuperResolutionLoaded.fill(false);
+	nativeSuperResolution.unload();
+	nativeSuperResolutionLoaded = false;
 	const auto runtimeDirectory = runtimeDepthDirectory();
 	if (!runtimeDirectory.empty()) {
 		std::error_code cleanupError;

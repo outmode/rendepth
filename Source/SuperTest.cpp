@@ -22,7 +22,7 @@ static bool isImagePath(const std::filesystem::path& path) {
 
 static bool processImage(SuperResolution& estimator,
 	const std::filesystem::path& inputPath, const std::filesystem::path& outputPath,
-	int repeats) {
+	int repeats, const std::string& modelName) {
 	SDL_Surface* input = IMG_Load(inputPath.string().c_str());
 	if (input == nullptr) {
 		std::cerr << inputPath << ": image load failed: " << SDL_GetError() << '\n';
@@ -46,7 +46,8 @@ static bool processImage(SuperResolution& estimator,
 	if (!saved)
 		std::cerr << outputPath << ": image save failed: " << SDL_GetError() << '\n';
 	else
-		std::cout << inputPath << " -> " << outputPath << " provider="
+		std::cout << inputPath << " -> " << outputPath << " model=" << modelName
+			<< " provider="
 			<< estimator.providerName() << " input=" << input->w << 'x' << input->h
 			<< " output=" << output->w << 'x' << output->h
 			<< " average_ms=" << elapsed << '\n';
@@ -59,7 +60,7 @@ int main(int argc, char** argv) {
 	if (argc < 4) {
 		std::cerr << "Usage: SuperTest <model.onnx> <input-file-or-directory> "
 			"<output-file-or-directory> "
-			"[--provider auto|cpu|cuda|rocm] [--repeat N]\n";
+			"[--provider auto|cpu|cuda|rocm] [--repeat N] [--name rfdn|ecbsr]\n";
 		return 2;
 	}
 	if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -68,6 +69,7 @@ int main(int argc, char** argv) {
 	}
 	SuperResolution::Config config;
 	config.modelPath = argv[1];
+	std::string modelName = config.modelPath.stem().string();
 	int repeats = 1;
 	for (int i = 4; i < argc; ++i) {
 		const std::string option = argv[i];
@@ -79,6 +81,8 @@ int main(int argc, char** argv) {
 			else { std::cerr << "Unknown provider: " << provider << '\n'; return 2; }
 		} else if (option == "--repeat" && i + 1 < argc) {
 			repeats = std::max(1, std::stoi(argv[++i]));
+		} else if (option == "--name" && i + 1 < argc) {
+			modelName = argv[++i];
 		} else {
 			std::cerr << "Unknown option: " << option << '\n';
 			return 2;
@@ -117,7 +121,7 @@ int main(int argc, char** argv) {
 		int failures = 0;
 		for (const auto& imagePath : inputs) {
 			const auto destination = outputPath / imagePath.filename();
-			if (!processImage(estimator, imagePath, destination, repeats)) ++failures;
+			if (!processImage(estimator, imagePath, destination, repeats, modelName)) ++failures;
 		}
 		SDL_Quit();
 		return failures == 0 ? 0 : 1;
@@ -128,7 +132,7 @@ int main(int argc, char** argv) {
 	}
 	if (!outputPath.parent_path().empty())
 		std::filesystem::create_directories(outputPath.parent_path(), filesystemError);
-	const bool success = processImage(estimator, inputPath, outputPath, repeats);
+	const bool success = processImage(estimator, inputPath, outputPath, repeats, modelName);
 	SDL_Quit();
 	return success ? 0 : 1;
 }
