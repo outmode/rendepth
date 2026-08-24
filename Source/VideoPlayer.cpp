@@ -1116,7 +1116,8 @@ bool VideoPlayer::supported(const std::filesystem::path& path) {
 	const auto extension = lowerExtension(path);
 	return extension == ".mp4" || extension == ".m4v" || extension == ".mov" ||
 		extension == ".mkv" || extension == ".webm" || extension == ".avi" ||
-		extension == ".wmv" || extension == ".mpeg" || extension == ".mpg";
+		extension == ".wmv" || extension == ".mpeg" || extension == ".mpg" ||
+		extension == ".gif";
 }
 
 VideoPlayer::VideoPlayer() : impl(std::make_unique<Impl>()) {}

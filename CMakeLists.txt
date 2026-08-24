@@ -85,11 +85,16 @@ set(SDL_SENSOR OFF)
 set(SDL_TEST_LIBRARY OFF)
 
 set(SDLIMAGE_VENDORED ON)
-set(SDLIMAGE_AVIF OFF)
+# Modern image codecs are grouped behind one switch so they can be disabled
+# for a lightweight test build when needed.
+option(RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
+        "Build AVIF, JPEG XL, and WebP image support" ON)
+set(SDLIMAGE_AVIF ${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS})
 set(SDLIMAGE_BMP ON)
+# GIFs are treated as animated video and decoded by the FFmpeg pipeline.
 set(SDLIMAGE_GIF OFF)
 set(SDLIMAGE_JPG ON)
-set(SDLIMAGE_JXL OFF)
+set(SDLIMAGE_JXL ${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS})
 set(SDLIMAGE_LBM OFF)
 set(SDLIMAGE_PCX OFF)
 set(SDLIMAGE_PNG ON)
@@ -98,7 +103,7 @@ set(SDLIMAGE_QOI OFF)
 set(SDLIMAGE_SVG OFF)
 set(SDLIMAGE_TGA ON)
 set(SDLIMAGE_TIF OFF)
-set(SDLIMAGE_WEBP OFF)
+set(SDLIMAGE_WEBP ${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS})
 set(SDLIMAGE_XCF OFF)
 set(SDLIMAGE_XPM OFF)
 set(SDLIMAGE_XV OFF)
@@ -291,7 +296,9 @@ if(RENDEPTH_COMPILE_SHADERS)
     add_dependencies(Rendepth Shaders)
 endif()
 
-target_compile_definitions(Rendepth PUBLIC SDL_MAIN_USE_CALLBACKS)
+target_compile_definitions(Rendepth PUBLIC
+        SDL_MAIN_USE_CALLBACKS
+        RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS=$<BOOL:${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS}>)
 
 target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp
 		Source/VideoDepthProcessor.cpp
@@ -389,9 +396,9 @@ if(RENDEPTH_ENABLE_FFMPEG)
             pkg_check_modules(DAV1D QUIET IMPORTED_TARGET "dav1d >= 0.5.0")
         endif()
         set(RENDEPTH_FFMPEG_COMMON_DECODERS
-				cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3,aac,aac_latm,ac3,alac,dca,eac3,flac,mp1,mp2,mp3,opus,pcm_alaw,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_mulaw,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_u8,truehd,vorbis,wavpack,wmalossless,wmapro,wmav1,wmav2,wmavoice,subrip,ass,mov_text,webvtt,pgssub)
+				cinepak,dnxhd,ffv1,gif,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3,aac,aac_latm,ac3,alac,dca,eac3,flac,mp1,mp2,mp3,opus,pcm_alaw,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_mulaw,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_u8,truehd,vorbis,wavpack,wmalossless,wmapro,wmav1,wmav2,wmavoice,subrip,ass,mov_text,webvtt,pgssub)
         set(RENDEPTH_FFMPEG_COMMON_PARSERS
-                aac,aac_latm,ac3,dca,flac,mpegaudio,opus,vorbis)
+                aac,aac_latm,ac3,dca,flac,gif,mpegaudio,opus,vorbis)
         if(DAV1D_FOUND)
             set(RENDEPTH_FFMPEG_DAV1D_OPTIONS
                     --enable-libdav1d
@@ -430,6 +437,8 @@ if(RENDEPTH_ENABLE_FFMPEG)
             BINARY_DIR "${RENDEPTH_FFMPEG_BUILD}"
             CONFIGURE_COMMAND
                 "${CMAKE_SOURCE_DIR}/ThirdParty/FFmpeg/configure"
+                "--cc=${CMAKE_C_COMPILER}"
+                "--host-cc=${CMAKE_C_COMPILER}"
                 "--prefix=${RENDEPTH_FFMPEG_PREFIX}"
                 --disable-programs
                 --disable-doc
@@ -450,7 +459,7 @@ if(RENDEPTH_ENABLE_FFMPEG)
                 --enable-swresample
                 --enable-swscale
                 --enable-protocol=file
-                --enable-demuxer=avi,asf,matroska,mov,mpegps,mpegts,mpegvideo
+                --enable-demuxer=avi,asf,gif,matroska,mov,mpegps,mpegts,mpegvideo
                 --enable-parser=${RENDEPTH_FFMPEG_COMMON_PARSERS}
                 ${RENDEPTH_FFMPEG_DAV1D_OPTIONS}
                 ${RENDEPTH_FFMPEG_VAAPI_OPTIONS}
@@ -651,6 +660,31 @@ install(TARGETS SDL3-shared SDL3_image-shared SDL3_ttf-shared glm
         RUNTIME DESTINATION libexec/rendepth/Library
         LIBRARY DESTINATION libexec/rendepth/Library
         ARCHIVE DESTINATION libexec/rendepth/Library)
+if(RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS)
+    # SDL_image is included as a subdirectory, so its optional dependency
+    # targets are not installed by SDLIMAGE_INSTALL. Install the shared codec
+    # libraries with the application package as well.
+    set(RENDEPTH_MODERN_IMAGE_TARGETS)
+    foreach(RENDEPTH_IMAGE_TARGET IN ITEMS
+            avif dav1d aom jxl brotlicommon brotlidec brotlienc
+            webp webpdemux libwebpmux)
+        if(TARGET ${RENDEPTH_IMAGE_TARGET})
+            list(APPEND RENDEPTH_MODERN_IMAGE_TARGETS ${RENDEPTH_IMAGE_TARGET})
+        endif()
+    endforeach()
+    set_property(TARGET ${RENDEPTH_MODERN_IMAGE_TARGETS} PROPERTY PUBLIC_HEADER "")
+    install(TARGETS ${RENDEPTH_MODERN_IMAGE_TARGETS}
+            RUNTIME DESTINATION libexec/rendepth/Library
+            LIBRARY DESTINATION libexec/rendepth/Library
+            ARCHIVE DESTINATION libexec/rendepth/Library)
+    install(FILES
+            ThirdParty/SDL_image/external/aom/LICENSE
+            ThirdParty/SDL_image/external/dav1d/COPYING
+            ThirdParty/SDL_image/external/libavif/LICENSE
+            ThirdParty/SDL_image/external/libjxl/LICENSE
+            ThirdParty/SDL_image/external/libwebp/COPYING
+            DESTINATION share/licenses/rendepth/optional)
+endif()
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/Assets/"
         DESTINATION libexec/rendepth/Assets)
 if(WIN32)

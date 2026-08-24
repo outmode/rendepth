@@ -86,6 +86,12 @@ static double videoBufferStartedAt = -1.0;
 static double videoPresentationWallOrigin = 0.0;
 static double videoPresentationMediaOrigin = 0.0;
 static std::uint64_t videoPlaybackGeneration = 0;
+// During a playback-generation transition, keep presenting the previous
+// frame until the first matching depth map for the new generation is ready.
+static std::uint64_t videoDepthGeneration = 0;
+static std::uint64_t videoDepthTransitionGeneration = 0;
+static bool videoFileTransitionActive = false;
+static bool videoFileTransitionNeedsDepth = false;
 // Keep enough decoded media ahead of the audio clock for depth inference to
 // finish without making color or audio wait on the depth worker.
 static constexpr double videoDepthLookaheadDuration = 0.1;
@@ -125,6 +131,7 @@ static void setVideoControlsVisible(bool visible);
 static void finishSliderDrag();
 static Icon& getIcon(IconType type);
 static void checkMouseState();
+static void refreshDisplay3D(StereoFormat type);
 
 static bool isSupportedVideo(const std::string& path) {
 	return VideoPlayer::supported(std::filesystem::path(path));
@@ -134,8 +141,8 @@ static void serviceVideo();
 static void serviceScreenCapture();
 static void serviceVideoDepth();
 static void resetVideoPlaybackBuffer(bool holdAudio = true, bool clearDepth = true);
-static bool startVideoDepth();
-static void stopVideoDepth(bool disable3D = true);
+static bool startVideoDepth(bool preserveTexture = false);
+static void stopVideoDepth(bool disable3D = true, bool clearTexture = true);
 static void seekVideo(double seconds, bool fastPreview = false);
 static void failVideoLoad(const std::string& error);
 static bool skipVideoBy(double seconds);
@@ -261,6 +268,8 @@ static void resetVideoPlaybackBuffer(bool holdAudio, bool clearDepth) {
 	if (clearDepth && videoDepthProcessor.running()) {
 		Image::clearVideoDepth(&context);
 		videoDepthFrameLoaded = false;
+		videoDepthGeneration = 0;
+		videoDepthTransitionGeneration = 0;
 		if (!fileList.empty()) context.imageType = fileList[fileIndex].type;
 	}
 	if (holdAudio && videoPlayer.ready()) videoPlayer.setAudioBuffering(true);
@@ -270,7 +279,19 @@ static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool pre
 	if (frame == nullptr) return;
 	lastVideoFrame = frame;
 	if (activeVideo) videoPlayer.setPresentedPosition(frame->presentationTime);
-	if (!videoFrameLoaded) {
+	const bool completingVideoFileTransition = videoFileTransitionActive &&
+		activeVideo && frame->generation == videoPlaybackGeneration;
+	const bool firstFrame = !videoFrameLoaded || completingVideoFileTransition;
+	if (firstFrame) {
+		const bool transitionNeedsDepth = completingVideoFileTransition &&
+			videoFileTransitionNeedsDepth;
+		if (completingVideoFileTransition && !transitionNeedsDepth) {
+			// A source-stereo replacement does not use the previous video's inferred
+			// depth map. Retain it until this frame is ready, then switch atomically.
+			Image::clearVideoDepth(&context);
+			videoDepthFrameLoaded = false;
+			videoDepthGeneration = 0;
+		}
 		context.imageType = activeScreenCapture ? Color_Only : fileList[fileIndex].type;
 		if (context.imageType == Light_Field_LKG)
 			context.gridSize = Core::getGridInfo(fileList[fileIndex].base);
@@ -282,6 +303,12 @@ static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool pre
 		Image::updateVideoFrame(&context, *frame, true,
 			activeScreenCapture ? frame->width : videoPlayer.width(),
 			activeScreenCapture ? frame->height : videoPlayer.height(), true);
+		if (completingVideoFileTransition && transitionNeedsDepth && videoDepthFrameLoaded) {
+			context.imageType = Color_Plus_Depth;
+			refreshDisplay3D(Color_Plus_Depth);
+			videoFileTransitionActive = false;
+			videoFileTransitionNeedsDepth = false;
+		}
 		context.infoText = activeScreenCapture ? "Live screen capture" : Core::getFileText(fileList[fileIndex], context.imageSize);
 		videoFrameLoaded = true;
 		if (activeScreenCapture) {
@@ -291,6 +318,10 @@ static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool pre
 			doneLoadingImage = true;
 		}
 		checkMouseState();
+		if (completingVideoFileTransition) {
+			videoFileTransitionActive = false;
+			videoFileTransitionNeedsDepth = false;
+		}
 	} else {
 		Image::updateVideoFrame(&context, *frame, false,
 			videoPlayer.width(), videoPlayer.height(), !preview);
@@ -340,8 +371,14 @@ static void serviceVideo() {
 			presentVideoFrame(frame, true);
 		} else {
 			if (frame->generation != videoPlaybackGeneration) {
-				resetVideoPlaybackBuffer();
+				const bool holdForDepth = display3D && videoDepthProcessor.running() &&
+					lastVideoFrame != nullptr;
+				// A loop/seek starts a new media generation. Keep the previous
+				// depth texture alive while the replacement generation is prepared.
+				resetVideoPlaybackBuffer(false, !holdForDepth);
 				videoPlaybackGeneration = frame->generation;
+				if (holdForDepth)
+					videoDepthTransitionGeneration = frame->generation;
 			}
 			if (videoBufferStartedAt < 0.0) videoBufferStartedAt = now;
 			bufferedVideoFrames.push_back({frame, false});
@@ -386,12 +423,22 @@ static void serviceVideo() {
 		const double presentationTime = audioPosition >= 0.0 ? audioPosition :
 			videoPresentationMediaOrigin + (now - videoPresentationWallOrigin);
 		BufferedVideoFrame selected;
+		auto canPresent = [](const std::shared_ptr<VideoFrame>& candidate) {
+			return !display3D || videoDepthTransitionGeneration == 0 ||
+				candidate->generation != videoDepthTransitionGeneration ||
+				videoDepthGeneration == candidate->generation;
+		};
 		while (!bufferedVideoFrames.empty() &&
 			bufferedVideoFrames.front().frame->presentationTime <= presentationTime + 0.001) {
+			if (!canPresent(bufferedVideoFrames.front().frame)) break;
 			selected = std::move(bufferedVideoFrames.front());
 			bufferedVideoFrames.pop_front();
 		}
-		if (selected.frame != nullptr) presentVideoFrame(selected.frame, selected.preview);
+		if (selected.frame != nullptr) {
+			if (selected.frame->generation == videoDepthTransitionGeneration)
+				videoDepthTransitionGeneration = 0;
+			presentVideoFrame(selected.frame, selected.preview);
+		}
 	}
 	updateVideoSlider();
 	static std::shared_ptr<const VideoSubtitle> shownSubtitle;
@@ -680,7 +727,11 @@ static std::string stringLower(std::string s) {
 }
 
 static const std::vector<std::string> supportedExts { ".jpeg", ".jpg", ".jps",
-	".png", ".pns", ".tga", ".bmp" };
+	".png", ".pns", ".tga", ".bmp"
+#if RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
+	, ".avif", ".jxl", ".webp"
+#endif
+};
 bool isSupportedImage(const std::string& path) {
 	auto filePath = std::filesystem::path(path);
 	auto fileExt = stringLower(filePath.extension().string());
@@ -899,6 +950,33 @@ Icon IconLoading = {
 	false
 };
 
+Icon IconMinimize = {
+	IconType::Minimize,
+	IconType::Minimize,
+	IconGroup::None,
+	IconMode::Button,
+	IconState::Idle,
+	"Minimize Window",
+	style.getColor(Style::Color::White, Style::Alpha::Solid),
+	[]()->Canvas {
+		return {
+			sizeStandard,
+{ -(positionEdge + style.getIconRadius(Style::getCurrentScale()) + style.getIconGutter(Style::getCurrentScale()) +
+	style.getIconSpacer(Style::getCurrentScale()) * 2.0),
+	style.getIconRadius(Style::getCurrentScale()) + style.getIconSpacer(Style::getCurrentScale()) + style.getInfo(Style::getCurrentScale()) },
+			alignRightTop,
+			{-positionEdge * 3.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0},
+			{0.0, positionEdge * 3.0 + style.getInfo(Style::getCurrentScale()),
+				1.0, 0.0}};
+	},
+	[]() {
+		SDL_MinimizeWindow(context.window);
+	},
+	1.0,
+	false,
+	false
+};
+
 Icon IconFullscreen = {
 	IconType::Fullscreen,
 	IconType::Fullscreen,
@@ -910,9 +988,11 @@ Icon IconFullscreen = {
 	[]()->Canvas {
 		return {
 			sizeStandard,
-{ -(positionEdge + style.getIconRadius(Style::getCurrentScale()) + style.getIconGutter(Style::getCurrentScale()) +
-	style.getIconSpacer(Style::getCurrentScale()) * 2.0),
-	style.getIconRadius(Style::getCurrentScale()) + style.getIconSpacer(Style::getCurrentScale()) + style.getInfo(Style::getCurrentScale()) },
+	{ -(positionEdge + style.getIconRadius(Style::getCurrentScale()) + style.getIconGutter(Style::getCurrentScale()) +
+		style.getIconSpacer(Style::getCurrentScale()) * 2.0),
+		style.getIconRadius(Style::getCurrentScale()) * 3.0 +
+		style.getIconSpacer(Style::getCurrentScale()) * 2.0 +
+		style.getInfo(Style::getCurrentScale()) },
 			alignRightTop,
 			{-positionEdge * 3.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0},
 			{0.0, positionEdge * 3.0 + style.getInfo(Style::getCurrentScale()),
@@ -992,10 +1072,7 @@ Icon IconHelp = {
 	[]()->Canvas {
 		return {
 			sizeStandard,
-	{ -(positionEdge + style.getIconRadius(Style::getCurrentScale()) +
-		style.getIconGutter(Style::getCurrentScale()) +
-		style.getIconSpacer(Style::getCurrentScale()) * 2.0),
-		style.getIconRadius(Style::getCurrentScale()) * 3.0 +
+	{ -positionEdge, style.getIconRadius(Style::getCurrentScale()) * 3.0 +
 		style.getIconSpacer(Style::getCurrentScale()) * 2.0 +
 		style.getInfo(Style::getCurrentScale()) },
 			alignRightTop,
@@ -1364,13 +1441,19 @@ static void setVideoDepthFallbackMode() {
 		setStereoMode(Native);
 }
 
-static void stopVideoDepth(bool disable3D) {
+static void stopVideoDepth(bool disable3D, bool clearTexture) {
 	videoPlayer.setInferenceSize(0);
 	videoDepthProcessor.stop();
 	bufferedVideoDepthFrames.clear();
 	videoDepthBlend.clear();
-	Image::clearVideoDepth(&context);
-	videoDepthFrameLoaded = false;
+	videoDepthTransitionGeneration = 0;
+	if (clearTexture) {
+		Image::clearVideoDepth(&context);
+		videoDepthFrameLoaded = false;
+		videoDepthGeneration = 0;
+	}
+	videoFileTransitionActive = false;
+	videoFileTransitionNeedsDepth = false;
 	activeVideoDepthModelOption = -1;
 	videoDepthRestartPending = false;
 	if (activeScreenCapture)
@@ -1383,10 +1466,10 @@ static void stopVideoDepth(bool disable3D) {
 	}
 }
 
-static bool startVideoDepth() {
+static bool startVideoDepth(bool preserveTexture) {
 	if ((!activeVideo && !activeScreenCapture) || (activeVideo && !videoPlayer.ready()) ||
 		(!activeScreenCapture && fileList.empty())) return false;
-	stopVideoDepth(false);
+	stopVideoDepth(false, !preserveTexture);
 	const int modelOption = std::clamp(menuSelection[ChoiceModel.label], 0,
 		static_cast<int>(videoDepthModelFiles.size()) - 1);
 	VideoDepthProcessor::Config config;
@@ -1459,15 +1542,32 @@ static void serviceVideoDepth() {
 	}
 
 	std::unique_ptr<VideoDepthFrame> selected;
-	if (lastVideoFrame != nullptr) {
+	std::shared_ptr<VideoFrame> depthReference = lastVideoFrame;
+	if (videoDepthTransitionGeneration != 0) {
+		// The old color frame is intentionally still displayed. Use the first
+		// buffered frame from the new generation as the depth worker's target so
+		// its result can be uploaded before the color frame is released.
+		depthReference.reset();
+		for (const auto& buffered : bufferedVideoFrames) {
+			if (buffered.frame->generation == videoDepthTransitionGeneration) {
+				depthReference = buffered.frame;
+				break;
+			}
+			if (buffered.frame->generation > videoDepthTransitionGeneration) break;
+		}
+	}
+	if (depthReference != nullptr) {
 		// Only use depth at or immediately before the displayed color frame. A
 		// future depth map can make moving silhouettes visibly misregister.
-		const double selectionTime = lastVideoFrame->presentationTime + 0.001;
+		const double selectionTime = depthReference->presentationTime + 0.001;
+		const bool transitionDepth = videoDepthTransitionGeneration != 0 &&
+			depthReference->generation == videoDepthTransitionGeneration;
 		while (!bufferedVideoDepthFrames.empty() &&
-			bufferedVideoDepthFrames.front()->generation != lastVideoFrame->generation)
+			bufferedVideoDepthFrames.front()->generation < depthReference->generation)
 			bufferedVideoDepthFrames.pop_front();
 		while (!bufferedVideoDepthFrames.empty() &&
-			bufferedVideoDepthFrames.front()->presentationTime <= selectionTime) {
+			bufferedVideoDepthFrames.front()->generation == depthReference->generation &&
+			(transitionDepth || bufferedVideoDepthFrames.front()->presentationTime <= selectionTime)) {
 			selected = std::move(bufferedVideoDepthFrames.front());
 			bufferedVideoDepthFrames.pop_front();
 		}
@@ -1496,6 +1596,7 @@ static void serviceVideoDepth() {
 			sampleVideoDepthBlend(now);
 		}
 		videoDepthBlend.presentationTime = selectedPresentationTime;
+		videoDepthGeneration = selected->generation;
 		upload = true;
 	} else if (videoDepthBlend.active &&
 		(now - videoDepthBlend.lastUploadTime >= uploadInterval)) {
@@ -1509,20 +1610,24 @@ static void serviceVideoDepth() {
 		return;
 	}
 	videoDepthBlend.lastUploadTime = now;
+	const bool deferVideoFileTransition = activeVideo && videoFileTransitionActive &&
+		videoDepthTransitionGeneration != 0;
 	if (!videoDepthFrameLoaded) {
 		SDL_Log("Video depth stream ready: %dx%d at %.3f seconds.",
 			videoDepthBlend.width, videoDepthBlend.height,
 			videoDepthBlend.presentationTime);
 		videoDepthFrameLoaded = true;
-		checkMouseState();
-		context.imageType = Color_Plus_Depth;
-		// Capture has no file-backed source type to refresh from. Once the first
-		// inferred map is uploaded, make the capture source explicitly RGB-D and
-		// keep the requested 3D view enabled.
-		if (activeScreenCapture && !display3D) setDisplay3D(true);
-		if (display3D) refreshDisplay3D(Color_Plus_Depth);
+		if (!deferVideoFileTransition) {
+			checkMouseState();
+			context.imageType = Color_Plus_Depth;
+			// Capture has no file-backed source type to refresh from. Once the first
+			// inferred map is uploaded, make the capture source explicitly RGB-D and
+			// keep the requested 3D view enabled.
+			if (activeScreenCapture && !display3D) setDisplay3D(true);
+			if (display3D) refreshDisplay3D(Color_Plus_Depth);
+		}
 	}
-	context.imageType = Color_Plus_Depth;
+	if (!deferVideoFileTransition) context.imageType = Color_Plus_Depth;
 }
 
 static void changeModel(int option, bool init) {
@@ -1885,7 +1990,7 @@ static Icon IconVideoCaption = {
 
 // Screen capture remains implemented but is temporarily unavailable from the
 // UI until after the 3.0.0 launch.
-static std::vector appIcons = { IconLoading, IconFullscreen, IconOpen, IconBatch, IconSave,
+static std::vector appIcons = { IconLoading, IconMinimize, IconFullscreen, IconOpen, IconBatch, IconSave,
 	IconOptions, IconSettings, IconBack, IconForward, IconStereo3D,
 	IconStrength, IconDepth, IconOffset, IconPlay, IconVideoSeek, IconVideoVolume,
 	IconVideoAudio, IconVideoCaption, IconHelp, IconClose };
@@ -1966,16 +2071,31 @@ static void updateVideoSlider() {
 		setSliderPercent(timeline, videoPlayer.position() / videoPlayer.duration());
 }
 
+static constexpr const char* videoFilterExtensions =
+	"mp4;m4v;mov;mkv;webm;avi;wmv;mpeg;mpg;gif";
+// Standalone audio loading is not implemented yet; keep its picker mask ready
+// for the future audio support work.
+static constexpr const char* audioFilterExtensions =
+	"aac;flac;m4a;mp3;oga;ogg;opus;wav;wma";
+static constexpr const char* imageFilterExtensions =
+	"jpg;jpeg;jps;png;pns;tga;bmp"
+#if RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
+	";avif;jxl;webp"
+#endif
+	;
+static constexpr const char* allMediaFilterExtensions =
+	"jpg;jpeg;jps;png;pns;tga;bmp"
+#if RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
+	";avif;jxl;webp"
+#endif
+	";mp4;m4v;mov;mkv;webm;avi;wmv;mpeg;mpg;gif"
+	";aac;flac;m4a;mp3;oga;ogg;opus;wav;wma";
+
 static const SDL_DialogFileFilter filters[] = {
-	{ "All Media",  "jpg;jpeg;jps;png;pns;tga;bmp;mp4;m4v;mov;mkv;webm;avi;wmv;mpeg;mpg" },
-	{ "Videos", "mp4;m4v;mov;mkv;webm;avi;wmv;mpeg;mpg" },
-	{ "All Images",  "jpg;jpeg;jps;png;pns;tga;bmp" },
-	{ "JPG Images", "jpg;jpeg" },
-	{ "JPS Images", "jps" },
-	{ "PNG Images",  "png" },
-	{ "PNS Images",  "pns" },
-	{ "TGA Images",  "tga" },
-	{ "BMP Images",  "bmp" }
+	{ "All Media", allMediaFilterExtensions },
+	{ "Just Images", imageFilterExtensions },
+	{ "Just Videos", videoFilterExtensions },
+	{ "Just Audio", audioFilterExtensions }
 };
 
 static void SDLCALL openFileCallback(void* userdata, const char* const* filelist, int filter) {
@@ -3018,11 +3138,16 @@ static int loadImage(void* ptr) {
 		// Video controls and stereo settings occupy the same UI area.
 		// Close the stereo panel before showing controls for the new video.
 		setShowStereoSettings(false);
-		// Keep 3D enabled when replacing a video. Color-only videos need a new
-		// depth worker when one was not already active.
-		const bool preserveVideo3D = activeVideo && display3D;
-		const bool preserveVideoDepth = preserveVideo3D &&
+		// Keep the current 3D presentation visible while the replacement video
+		// initializes. This applies to both source-stereo and inferred-depth video.
+		const bool preserveVideo3D = activeVideo && display3D && videoFrameLoaded &&
+			lastVideoFrame != nullptr;
+		const bool replacementNeedsDepth = preserveVideo3D &&
+			fileList[fileIndex].type == Color_Only;
+		const bool preserveVideoDepth = preserveVideo3D && replacementNeedsDepth &&
 			videoDepthProcessor.running();
+		const bool preserveDepthTexture = preserveVideo3D && videoDepthFrameLoaded;
+		const auto previousImageType = context.imageType;
 		std::string error;
 		if (preserveVideoDepth) {
 			// The model is independent of the video decoder. Drop pending output
@@ -3030,27 +3155,41 @@ static int loadImage(void* ptr) {
 			// loaded estimator alive.
 			videoDepthProcessor.reset();
 		} else {
-			stopVideoDepth(false);
+			// A source-stereo replacement does not need the old depth worker, but
+			// its texture must remain until the replacement frame is uploaded.
+			stopVideoDepth(false, !preserveDepthTexture);
 		}
+		context.imageType = previousImageType;
 		videoPlayer.close();
-		resetVideoPlaybackBuffer(false);
-		lastVideoFrame.reset();
+		resetVideoPlaybackBuffer(false, !preserveDepthTexture);
+		if (!preserveVideo3D) lastVideoFrame.reset();
 		videoPlayer.setVolume(currentVideoVolume);
 		activeVideo = videoPlayer.open(fileList[fileIndex].link, error);
-		videoFrameLoaded = false;
 		if (!activeVideo) {
 			failVideoLoad(error);
 			return 1;
 		}
 		if (preserveVideo3D && !preserveVideoDepth &&
 			fileList[fileIndex].type == Color_Only)
-			startVideoDepth();
-		resetVideoPlaybackBuffer(false);
+			startVideoDepth(preserveDepthTexture);
+		resetVideoPlaybackBuffer(false, !preserveDepthTexture);
+		context.imageType = previousImageType;
+		videoFrameLoaded = preserveVideo3D;
+		videoFileTransitionActive = preserveVideo3D;
+		videoFileTransitionNeedsDepth = replacementNeedsDepth &&
+			videoDepthProcessor.running();
+		videoDepthTransitionGeneration = videoFileTransitionNeedsDepth
+			? videoPlayer.generation() : 0;
 		setVideoControlsVisible(true);
 		getIcon(IconType::Play).image = IconType::Pause;
 		SDL_SetWindowTitle(context.window, fileList[fileIndex].name.c_str());
 		Image::displayHelp = false;
 		Image::displayInfo = false;
+		if (preserveVideo3D) {
+			currentVisibility = 1.0;
+			targetVisibility = 1.0;
+		}
+		doneLoadingImage = false;
 		context.loading = true;
 		return 0;
 	}
@@ -3474,6 +3613,7 @@ void checkMouseState() {
 			(icon.type == IconType::File || icon.type == IconType::Folder ||
 				icon.type == IconType::Save));
 		auto displayOpen = !((icon.type != IconType::File && icon.type != IconType::Close &&
+			icon.type != IconType::Minimize &&
 			icon.type != IconType::Crop)
 			&& fileList.empty() && !activeScreenCapture);
 		auto displayMenu = !(context.displayMenu && (icon.type == IconType::Forward || icon.type == IconType::Back ||
@@ -4394,7 +4534,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 							languageButtonClicked = icon.type == IconType::VideoAudio ||
 								icon.type == IconType::VideoCaption;
 							if (isPlayingSlideshow && (icon.type != IconType::Forward &&
-								icon.type != IconType::Back)) {
+								icon.type != IconType::Back && icon.type != IconType::Minimize)) {
 								if (icon.type == IconType::Stereo_3D) {
 									if (currentStereoMode == Depth_Zoom) {
 										preferredStereoMode = defaultStereoMode;
