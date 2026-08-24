@@ -144,7 +144,7 @@ public:
 		float stereoStrength;
 		float stereoDepth;
 		float stereoOffset;
-		int reserved3;
+		int sourceType;
 	};
 
 	struct IconDataVert {

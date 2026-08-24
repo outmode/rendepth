@@ -147,6 +147,10 @@ static void seekVideo(double seconds, bool fastPreview = false);
 static void failVideoLoad(const std::string& error);
 static bool skipVideoBy(double seconds);
 static glm::ivec2 getNativeDepthSize(int sourceWidth, int sourceHeight);
+static SDL_Surface* prepareNativeColorSurface(SDL_Surface* color,
+	StereoFormat sourceType);
+static std::shared_ptr<VideoFrame> prepareVideoFrameForDisplay(
+	const std::shared_ptr<VideoFrame>& frame);
 
 glm::vec2 windowSize{};
 auto switchedImage = false;
@@ -234,6 +238,7 @@ std::string currentInfoLabel;
 Style style;
 
 std::vector<FileInfo> fileList{};
+static std::vector<std::string> deferredMediaFiles{};
 auto fileIndex = 0;
 static void failVideoLoad(const std::string& error) {
 	if (!error.empty()) {
@@ -278,6 +283,8 @@ static void resetVideoPlaybackBuffer(bool holdAudio, bool clearDepth) {
 static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool preview) {
 	if (frame == nullptr) return;
 	lastVideoFrame = frame;
+	const auto processedFrame = prepareVideoFrameForDisplay(frame);
+	const VideoFrame& displayFrame = processedFrame != nullptr ? *processedFrame : *frame;
 	if (activeVideo) videoPlayer.setPresentedPosition(frame->presentationTime);
 	const bool completingVideoFileTransition = videoFileTransitionActive &&
 		activeVideo && frame->generation == videoPlaybackGeneration;
@@ -300,9 +307,9 @@ static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool pre
 		Image::displayHelp = false;
 		SDL_SetWindowTitle(context.window, activeScreenCapture ? "Rendepth - Screen Capture" : fileList[fileIndex].name.c_str());
 		context.fileLink = activeScreenCapture ? "screen-capture" : fileList[fileIndex].link;
-		Image::updateVideoFrame(&context, *frame, true,
-			activeScreenCapture ? frame->width : videoPlayer.width(),
-			activeScreenCapture ? frame->height : videoPlayer.height(), true);
+		Image::updateVideoFrame(&context, displayFrame, true,
+			activeScreenCapture ? displayFrame.width : videoPlayer.width(),
+			activeScreenCapture ? displayFrame.height : videoPlayer.height(), true);
 		if (completingVideoFileTransition && transitionNeedsDepth && videoDepthFrameLoaded) {
 			context.imageType = Color_Plus_Depth;
 			refreshDisplay3D(Color_Plus_Depth);
@@ -323,7 +330,7 @@ static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool pre
 			videoFileTransitionNeedsDepth = false;
 		}
 	} else {
-		Image::updateVideoFrame(&context, *frame, false,
+		Image::updateVideoFrame(&context, displayFrame, false,
 			videoPlayer.width(), videoPlayer.height(), !preview);
 	}
 }
@@ -343,6 +350,18 @@ static void serviceVideo() {
 	// Decode color frames at the requested output resolution rather than at
 	// the window size. The depth worker remains independent and continues to
 	// infer at its configured model resolution.
+	const int sourceMaxDimension = std::max(videoPlayer.width(), videoPlayer.height());
+	const bool prepareVideoColor = !fileList.empty() &&
+		fileList[fileIndex].type != Color_Only &&
+		fileList[fileIndex].type != Color_Plus_Depth &&
+		sourceMaxDimension > 0 && sourceMaxDimension <= 1280;
+	if (prepareVideoColor) {
+		// Keep a source-resolution RGBA copy available for the shared color
+		// pipeline. Depth inference can still resize this same copy internally.
+		videoPlayer.setInferenceSize(1280, 60.0);
+	} else if (!videoDepthProcessor.running()) {
+		videoPlayer.setInferenceSize(0);
+	}
 	const auto videoOutputSize = getNativeDepthSize(videoPlayer.width(), videoPlayer.height());
 	if (videoOutputSize.x > 0 && videoOutputSize.y > 0)
 		videoPlayer.setOutputSize(videoOutputSize.x, videoOutputSize.y);
@@ -480,6 +499,7 @@ static std::array<SuperResolution, 2> nativeSuperResolution;
 static std::array<bool, 2> nativeSuperResolutionAttempted{};
 static std::array<bool, 2> nativeSuperResolutionLoaded{};
 static std::array<std::string, 2> nativeSuperResolutionError{};
+static std::mutex nativeSuperResolutionMutex;
 static std::uint64_t nextDepthGeneration = 0;
 static std::uint64_t activeDepthGeneration = 0;
 
@@ -809,6 +829,8 @@ static int loadImage(void* ptr);
 static void conversionCompleted(const char* path, int imageId, std::uint64_t generation);
 static int nativeDepthRun(void* ptr);
 static void serviceNativeGpuUpscale();
+static void deferMediaLoad(const std::vector<std::string>& files);
+static void serviceDeferredMediaLoad();
 static void serviceDepthCompletions();
 
 struct NativeGpuUpscaleRequest;
@@ -1378,9 +1400,29 @@ static bool addStereoTag(const std::string& link, const std::string& tag) {
 static std::array importTags = { Color_Only, Color_Anaglyph, Side_By_Side_Full, Side_By_Side_Half };
 static void changeImport(int option, bool init) {
 	Core::defaultImportFormat = importTags[option];
+	if (!init && Core::defaultImportFormat == Color_Only) {
+		// Changing the fallback to color-only must leave 3D before reparsing the
+		// current file. Otherwise an untagged file is reclassified as Color_Only
+		// while display3D is still true and is accidentally sent to conversion.
+		setDisplay3D(false);
+	}
 	if (!init && !fileList.empty()) {
+		const bool restoreVideoPosition = activeVideo;
+		const double videoPosition = restoreVideoPosition ? videoPlayer.position() : 0.0;
+		const bool videoWasPlaying = restoreVideoPosition && videoPlayer.playing();
 		parseFileList({ fileList[fileIndex].link });
+		if (Core::defaultImportFormat == Color_Only && !fileList.empty())
+			refreshDisplay3D(fileList[fileIndex].type);
 		loadImage(nullptr);
+		if (restoreVideoPosition && activeVideo) {
+			videoPlayer.setPlaying(videoWasPlaying);
+			videoPlayer.seek(videoPosition, !videoWasPlaying);
+			// seek() starts a new decoder generation. Keep the frame and depth
+			// transition state aligned with that generation after the reload.
+			resetVideoPlaybackBuffer(false, false);
+			if (videoFileTransitionNeedsDepth)
+				videoDepthTransitionGeneration = videoPlaybackGeneration;
+		}
 	}
 }
 
@@ -1467,8 +1509,15 @@ static void stopVideoDepth(bool disable3D, bool clearTexture) {
 }
 
 static bool startVideoDepth(bool preserveTexture) {
-	if ((!activeVideo && !activeScreenCapture) || (activeVideo && !videoPlayer.ready()) ||
-		(!activeScreenCapture && fileList.empty())) return false;
+	if ((!activeVideo && !activeScreenCapture) ||
+		(activeVideo && (!videoPlayer.ready() || fileList.empty()))) return false;
+	if (activeVideo && fileList[fileIndex].type != Color_Only) {
+		// Only untagged mono video can use inferred depth. Tagged native-stereo
+		// and already-converted RGB-D video must never start this model, even if
+		// a stale toggle or model-restart request reaches this function.
+		stopVideoDepth(false);
+		return false;
+	}
 	stopVideoDepth(false, !preserveTexture);
 	const int modelOption = std::clamp(menuSelection[ChoiceModel.label], 0,
 		static_cast<int>(videoDepthModelFiles.size()) - 1);
@@ -1524,6 +1573,11 @@ static void sampleVideoDepthBlend(double now) {
 
 static void serviceVideoDepth() {
 	if (!activeVideo && !activeScreenCapture) return;
+	if (activeVideo && (fileList.empty() || fileList[fileIndex].type != Color_Only)) {
+		if (videoDepthProcessor.running() || videoDepthFrameLoaded)
+			stopVideoDepth(false);
+		return;
+	}
 	if (const auto error = videoDepthProcessor.takeError(); !error.empty()) {
 		SDL_Log("Video depth inference failed: %s", error.c_str());
 		stopVideoDepth();
@@ -1631,8 +1685,11 @@ static void serviceVideoDepth() {
 }
 
 static void changeModel(int option, bool init) {
-	if (!init && activeVideo && display3D)
-		videoDepthRestartPending = option != activeVideoDepthModelOption;
+	if (!init && activeVideo) {
+		videoDepthRestartPending = display3D && !fileList.empty() &&
+			fileList[fileIndex].type == Color_Only &&
+			option != activeVideoDepthModelOption;
+	}
 	qualityMode = depthQuality[option];
 	depthSize = depthSizes[option];
 	if (!init) {
@@ -2116,8 +2173,7 @@ static void SDLCALL openFileCallback(void* userdata, const char* const* filelist
 	}
 
 	if (!fileNames.empty()) {
-		parseFileList(fileNames);
-		loadImage(nullptr);
+		deferMediaLoad(fileNames);
 	}
 
 	doingFileOp = false;
@@ -2410,7 +2466,6 @@ void loadOptions() {
 		videoPlayer.setVolume(currentVideoVolume);
 	}
 
-	Core::defaultImportFormat = Color_Only;
 }
 
 static void updateStereoIcon() {
@@ -2478,7 +2533,10 @@ static void refreshDisplay3D(StereoFormat type) {
 			type == Light_Field_LKG;
 		Image::setNativeOutputActive(&context, true);
 		if (!display3D || !supportedSource) {
-			if (!supportedSource) setDisplay3D(false);
+			// Native stereo and other tagged sources are intentionally shown as
+			// mono on the light-field output, but remain in the user's 3D state
+			// so loading another compatible source does not reset the mode.
+			if (!supportedSource && type == Color_Only) setDisplay3D(false);
 			setStereoMode(type == Color_Only ? Native : Mono);
 			return;
 		}
@@ -3138,6 +3196,8 @@ static int loadImage(void* ptr) {
 		// Video controls and stereo settings occupy the same UI area.
 		// Close the stereo panel before showing controls for the new video.
 		setShowStereoSettings(false);
+		const bool preserveMonoVideo3D = display3D &&
+			fileList[fileIndex].type == Color_Only;
 		// Keep the current 3D presentation visible while the replacement video
 		// initializes. This applies to both source-stereo and inferred-depth video.
 		const bool preserveVideo3D = activeVideo && display3D && videoFrameLoaded &&
@@ -3172,6 +3232,9 @@ static int loadImage(void* ptr) {
 		if (preserveVideo3D && !preserveVideoDepth &&
 			fileList[fileIndex].type == Color_Only)
 			startVideoDepth(preserveDepthTexture);
+		else if (preserveMonoVideo3D)
+			startVideoDepth();
+		if (preserveMonoVideo3D) keep3DForDepthReload = true;
 		resetVideoPlaybackBuffer(false, !preserveDepthTexture);
 		context.imageType = previousImageType;
 		videoFrameLoaded = preserveVideo3D;
@@ -3194,7 +3257,10 @@ static int loadImage(void* ptr) {
 		return 0;
 	}
 	if (activeVideo) {
-		stopVideoDepth();
+		// Preserve the user's 3D state while changing from a video to an image.
+		// refreshDisplay3D() will select the correct presentation for the new
+		// source after it has been loaded.
+		stopVideoDepth(false);
 		videoPlayer.close();
 		resetVideoPlaybackBuffer(false);
 		lastVideoFrame.reset();
@@ -3202,10 +3268,41 @@ static int loadImage(void* ptr) {
 		videoFrameLoaded = false;
 		setVideoControlsVisible(false);
 	}
-	auto result = Image::load(&context, fileList[fileIndex], fileList[fileIndex].preload);
-	fileList[fileIndex].preload = nullptr;
+	auto& currentFile = fileList[fileIndex];
+	auto sourceType = Core::getImageType(currentFile.path);
+	if (sourceType == Unknown_Format) sourceType = currentFile.type;
+	if (sourceType == Unknown_Format) sourceType = Core::defaultImportFormat;
+	SDL_Surface* imageData = currentFile.preload;
+	if (imageData == nullptr)
+		imageData = Core::loadImageDirect(currentFile.path);
+	if (imageData != nullptr)
+		imageData = prepareNativeColorSurface(imageData, sourceType);
+	auto result = Image::load(&context, currentFile, imageData);
+	currentFile.preload = nullptr;
 	doneLoadingImage = true;
+	if (result == 0 && display3D && sourceType == Color_Only && !isConverting) {
+		// Keep 3D active while the existing image conversion path produces the
+		// RGB-D replacement. The new color source is already visible, and the
+		// completion handoff will refresh it with the converted source.
+		keep3DForDepthReload = true;
+		callDepthGen(fileIndex);
+	}
 	return result;
+}
+
+static void deferMediaLoad(const std::vector<std::string>& files) {
+	if (files.empty()) return;
+	deferredMediaFiles = files;
+}
+
+static void serviceDeferredMediaLoad() {
+	if (deferredMediaFiles.empty() || isConverting || doingPreload || context.loading)
+		return;
+	if (isPlayingSlideshow) cancelSlideshow();
+	auto files = std::move(deferredMediaFiles);
+	parseFileList(files);
+	updateStereoIcon();
+	loadImage(nullptr);
 }
 
 SDL_AppResult SDL_AppIterate(void* appstate) {
@@ -3214,6 +3311,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		finishSliderDrag();
 	}
 	serviceNativeGpuUpscale();
+	serviceDeferredMediaLoad();
 	serviceVideo();
 	Image::updateVideoBackgroundAnimation();
 	serviceScreenCapture();
@@ -3807,6 +3905,15 @@ struct NativeGpuUpscaleRequest {
 static SDL_Surface* upscaleNativeSurfaceOnRenderThread(SDL_Surface* source,
 		int width, int height, const SDL_Surface* guide = nullptr) {
 	if (source == nullptr) return nullptr;
+	if (SDL_IsMainThread()) {
+		// App callbacks and video presentation run on the render thread. They
+		// cannot wait for serviceNativeGpuUpscale(), which is only reached at
+		// the frame boundary. Execute directly when the caller can safely own
+		// the GPU work; background depth workers use the queued path below.
+		return guide != nullptr
+			? Image::refineDepthSurfaceGPU(&context, guide, source, width, height)
+			: Image::upscaleSurfaceGPU(&context, source, width, height);
+	}
 	NativeGpuUpscaleRequest request{.source = source, .guide = guide,
 		.width = width, .height = height};
 	{
@@ -4077,11 +4184,9 @@ static int nativeSuperResolutionScale(const SDL_Surface* color) {
 }
 
 static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
-	const std::filesystem::path& inputPath) {
-	const auto imageType = Core::getImageType(inputPath);
-	// Untagged images are resolved to Color_Only when they enter the file list,
-	// but getImageType() returns Unknown_Format when inspecting the raw path.
-	if (color == nullptr || (imageType != Color_Only && imageType != Unknown_Format)) return color;
+	StereoFormat sourceType) {
+	if (color == nullptr || sourceType == Color_Plus_Depth) return color;
+	std::lock_guard lock(nativeSuperResolutionMutex);
 	const int scale = nativeSuperResolutionScale(color);
 	if (scale == 0) return color;
 	const size_t modelIndex = scale == 3 ? 1 : 0;
@@ -4119,6 +4224,70 @@ static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
 			error.c_str());
 		return color;
 	}
+	SDL_DestroySurface(color);
+	return result;
+}
+
+static SDL_Surface* upscaleNativeColorSurface(SDL_Surface* color) {
+	if (color == nullptr) return color;
+	const auto outputSize = getNativeDepthSize(color->w, color->h);
+	if (outputSize.x == color->w && outputSize.y == color->h) return color;
+	SDL_Surface* result = upscaleNativeSurfaceOnRenderThread(
+		color, outputSize.x, outputSize.y);
+	if (result == nullptr) {
+		SDL_Log("GPU color upscale failed; using the available color resolution.");
+		return color;
+	}
+	SDL_DestroySurface(color);
+	return result;
+}
+
+static SDL_Surface* prepareNativeColorSurface(SDL_Surface* color,
+	StereoFormat sourceType) {
+	if (color == nullptr || sourceType == Color_Plus_Depth) return color;
+	color = maybeSuperResolveNativeColor(color, sourceType);
+	return upscaleNativeColorSurface(color);
+}
+
+static std::shared_ptr<VideoFrame> prepareVideoFrameForDisplay(
+	const std::shared_ptr<VideoFrame>& frame) {
+	if (!activeVideo || frame == nullptr || fileList.empty() ||
+		fileList[fileIndex].type == Color_Plus_Depth ||
+		(fileList[fileIndex].type == Color_Only && videoDepthProcessor.running()) ||
+		frame->width <= 0 || frame->height <= 0 ||
+		frame->inferenceWidth != frame->width ||
+		frame->inferenceHeight != frame->height ||
+		frame->inferenceRGBA.size() < static_cast<size_t>(frame->width) *
+			frame->height * 4) return nullptr;
+
+	SDL_Surface* source = SDL_CreateSurfaceFrom(frame->inferenceWidth,
+		frame->inferenceHeight, SDL_PIXELFORMAT_RGBA32,
+		const_cast<std::uint8_t*>(frame->inferenceRGBA.data()),
+		frame->inferenceWidth * 4);
+	if (source == nullptr) return nullptr;
+	SDL_Surface* color = SDL_ConvertSurface(source, SDL_PIXELFORMAT_RGBA32);
+	SDL_DestroySurface(source);
+	if (color == nullptr) return nullptr;
+	// Video color must use the GPU upscale/filter path, but SR is reserved for
+	// still images and native image conversion.
+	color = upscaleNativeColorSurface(color);
+
+	auto result = std::make_shared<VideoFrame>();
+	result->format = VideoFrame::Format::RGBA;
+	result->colorSpace = frame->colorSpace;
+	result->fullRange = frame->fullRange;
+	result->width = frame->width;
+	result->height = frame->height;
+	result->outputWidth = color->w;
+	result->outputHeight = color->h;
+	result->presentationTime = frame->presentationTime;
+	result->generation = frame->generation;
+	result->planes[0].resize(static_cast<size_t>(color->w) * color->h * 4);
+	for (int y = 0; y < color->h; ++y)
+		SDL_memcpy(result->planes[0].data() + static_cast<size_t>(y) * color->w * 4,
+			static_cast<const std::uint8_t*>(color->pixels) +
+				static_cast<size_t>(y) * color->pitch,
+			static_cast<size_t>(color->w) * 4);
 	SDL_DestroySurface(color);
 	return result;
 }
@@ -4177,7 +4346,8 @@ static int nativeDepthRun(void* ptr) {
 				SDL_Surface* color = SDL_ConvertSurface(loaded, SDL_PIXELFORMAT_RGBA32);
 				SDL_DestroySurface(loaded);
 				if (!color) continue;
-				color = maybeSuperResolveNativeColor(color, batchRequest.input);
+				color = maybeSuperResolveNativeColor(color,
+					Core::getImageType(batchRequest.input));
 				std::string error;
 				auto depth = nativeDepthEstimator.predict(color, error);
 				if (depth.valid()) {
@@ -4214,7 +4384,7 @@ static int nativeDepthRun(void* ptr) {
 		depthGenAlive = false;
 		return 0;
 	}
-	color = maybeSuperResolveNativeColor(color, inputPath);
+	color = maybeSuperResolveNativeColor(color, Core::getImageType(inputPath));
 
 	std::string error;
 	auto depth = nativeDepthEstimator.predict(color, error);
@@ -4686,11 +4856,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		std::string droppedFile = event->drop.data;
 		if (isSupportedImage(droppedFile) || isSupportedVideo(droppedFile)) {
 			if (!isConverting && !doingPreload && !context.loading) {
-				if (isPlayingSlideshow) cancelSlideshow();
-				parseFileList({ droppedFile });
-				setDisplay3D(false);
-				updateStereoIcon();
-				loadImage(nullptr);
+				deferMediaLoad({droppedFile});
 			}
 		}
 	}

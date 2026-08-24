@@ -3026,7 +3026,7 @@ int Image::drawNativeOutput(Context* context) {
 	interlacerDataFrag.stereoStrength = (float)context->stereoStrength;
 	interlacerDataFrag.stereoDepth = (float)context->stereoDepth;
 	interlacerDataFrag.stereoOffset = (float)context->stereoOffset;
-	interlacerDataFrag.reserved3 = 0;
+	interlacerDataFrag.sourceType = context->imageType;
 	if (outputSizeChanged) {
 		SDL_Log("Native phase: X=%.8f Y=%.8f center=%.8f subpixel=%.8f "
 			"origin=%d view=%s",
