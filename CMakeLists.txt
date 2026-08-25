@@ -31,7 +31,7 @@ else()
     set(RENDEPTH_ENABLE_ROCM ON)
     set(RENDEPTH_ENABLE_CUDA OFF)
 endif()
-set(RENDEPTH_BUILD_DEPTH_TEST OFF)
+set(RENDEPTH_BUILD_DEPTH_TEST ON)
 set(RENDEPTH_BUILD_SUPER_TEST ON)
 set(RENDEPTH_COMPILE_SHADERS OFF)
 
@@ -562,10 +562,43 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
                         "RENDEPTH_CUDNN_BIN_DIR must contain cudnn64_9.dll when RENDEPTH_ENABLE_CUDA=ON")
             endif()
             file(GLOB RENDEPTH_CUDA_RUNTIME_DLLS "${RENDEPTH_CUDNN_BIN_DIR}/*.dll")
+            find_package(CUDAToolkit QUIET)
+            set(RENDEPTH_CUDA_BIN_DIRS)
+            if(CUDAToolkit_BIN_DIR)
+                list(APPEND RENDEPTH_CUDA_BIN_DIRS "${CUDAToolkit_BIN_DIR}")
+            endif()
+            if(DEFINED ENV{CUDA_PATH})
+                list(APPEND RENDEPTH_CUDA_BIN_DIRS "$ENV{CUDA_PATH}/bin")
+            endif()
+            if(RENDEPTH_CUDA_BIN_DIRS)
+                list(REMOVE_DUPLICATES RENDEPTH_CUDA_BIN_DIRS)
+            endif()
+            set(RENDEPTH_CUDA_TOOLKIT_DLLS)
+            foreach(cuda_bin_dir IN LISTS RENDEPTH_CUDA_BIN_DIRS)
+                if(EXISTS "${cuda_bin_dir}")
+                    file(GLOB _cuda_dlls
+                            "${cuda_bin_dir}/cublas64_*.dll"
+                            "${cuda_bin_dir}/cublasLt64_*.dll"
+                            "${cuda_bin_dir}/cudart64_*.dll"
+                            "${cuda_bin_dir}/cufft64_*.dll"
+                            "${cuda_bin_dir}/cufftw64_*.dll"
+                            "${cuda_bin_dir}/curand64_*.dll"
+                            "${cuda_bin_dir}/cusolver64_*.dll"
+                            "${cuda_bin_dir}/cusparse64_*.dll")
+                    list(APPEND RENDEPTH_CUDA_TOOLKIT_DLLS ${_cuda_dlls})
+                endif()
+            endforeach()
+            if(RENDEPTH_CUDA_TOOLKIT_DLLS)
+                list(REMOVE_DUPLICATES RENDEPTH_CUDA_TOOLKIT_DLLS)
+            endif()
+            list(APPEND RENDEPTH_CUDA_RUNTIME_DLLS ${RENDEPTH_CUDA_TOOLKIT_DLLS})
         endif()
+        set(RENDEPTH_RUNTIME_DLLS
+                ${RENDEPTH_ONNXRUNTIME_RUNTIME_DLLS}
+                ${RENDEPTH_CUDA_RUNTIME_DLLS})
         add_custom_command(TARGET Rendepth POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        ${RENDEPTH_ONNXRUNTIME_RUNTIME_DLLS} ${RENDEPTH_CUDA_RUNTIME_DLLS}
+                        ${RENDEPTH_RUNTIME_DLLS}
                         "$<TARGET_FILE_DIR:Rendepth>")
     elseif(APPLE)
         target_link_libraries(Rendepth PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/libonnxruntime.dylib")
@@ -607,6 +640,10 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
                     "${RENDEPTH_ROCM_DIR}/lib")
         elseif(WIN32)
             target_link_libraries(DepthTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/onnxruntime.lib")
+            add_custom_command(TARGET DepthTest POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            ${RENDEPTH_RUNTIME_DLLS}
+                            "$<TARGET_FILE_DIR:DepthTest>")
         elseif(APPLE)
             target_link_libraries(DepthTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/libonnxruntime.dylib")
         else()
@@ -640,6 +677,10 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
             set_property(TARGET SuperTest APPEND PROPERTY BUILD_RPATH "${RENDEPTH_ROCM_DIR}/lib")
         elseif(WIN32)
             target_link_libraries(SuperTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/onnxruntime.lib")
+            add_custom_command(TARGET SuperTest POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            ${RENDEPTH_RUNTIME_DLLS}
+                            "$<TARGET_FILE_DIR:SuperTest>")
         elseif(APPLE)
             target_link_libraries(SuperTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/libonnxruntime.dylib")
         else()

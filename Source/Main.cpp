@@ -2477,8 +2477,10 @@ void saveOptions() {
 	document.AddMember(rapidjson::GenericStringRef(borderlessSetting),
 		Image::useBorderlessWindow, allocator);
 	nameCache.push_back(borderlessSetting);
-	document.AddMember("modelDirectory", rapidjson::Value(modelDirectory.c_str(), allocator), allocator);
-	document.AddMember("videoVolume", currentVideoVolume, allocator);
+	rapidjson::Value modelDirValue;
+	modelDirValue.SetString(modelDirectory.c_str(), allocator);
+	document.AddMember(rapidjson::StringRef("modelDirectory"), modelDirValue, allocator);
+	document.AddMember(rapidjson::StringRef("videoVolume"), currentVideoVolume, allocator);
 	document.AddMember(rapidjson::GenericStringRef(defaultDetectionOrderVersionKey),
 		defaultDetectionOrderVersion, allocator);
 
@@ -4649,7 +4651,7 @@ static int nativeDepthRun(void* ptr) {
 				SDL_DestroySurface(loaded);
 				if (!color) continue;
 				color = maybeSuperResolveNativeColor(color,
-					Core::getImageType(batchRequest.input));
+					Core::getImageType(batchRequest.input.string()));
 				std::string error;
 				auto depth = nativeDepthEstimator.predict(color, error);
 				if (depth.valid()) {
@@ -4688,7 +4690,7 @@ static int nativeDepthRun(void* ptr) {
 		depthGenAlive = false;
 		return 0;
 	}
-	color = maybeSuperResolveNativeColor(color, Core::getImageType(inputPath));
+	color = maybeSuperResolveNativeColor(color, Core::getImageType(inputPath.string()));
 
 	std::string error;
 	auto depth = nativeDepthEstimator.predict(color, error);

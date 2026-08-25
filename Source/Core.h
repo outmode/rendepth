@@ -285,6 +285,7 @@ public:
 	static glm::vec2 getTextSize(TTF_Font* font, const std::string& text);
 	static std::string getFileText(const FileInfo& imageInfo, glm::vec2 imageSize);
 	static StereoFormat getImageType(const std::string& file);
+	static StereoFormat getImageType(const std::filesystem::path& file) { return getImageType(file.string()); }
 	static glm::vec3 getGridInfo(const std::string& file);
 	static void drawText(Context* context, const std::string& text, TTF_Font* font,
 		SDL_GPUTexture*& texture, glm::vec2& size, const std::string& name);
