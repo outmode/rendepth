@@ -80,6 +80,16 @@ public:
 	std::string subtitleText() const;
 	bool playing() const;
 	bool ready() const;
+	bool isBluray() const;
+	bool isDvd() const;
+	bool hasChapters() const;
+	int currentChapter() const;
+	int chapterCount() const;
+	double chapterTime(int chapterIndex) const;
+	void nextChapter();
+	void previousChapter();
+	void seekChapter(int chapterIndex);
+	std::string discTitle() const;
 	double position() const;
 	double duration() const;
 	std::uint64_t generation() const;

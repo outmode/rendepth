@@ -194,7 +194,7 @@ VideoDepthFrame VideoDepthProcessor::stabilize(const DepthEstimator::Result& dep
 	std::vector<float> normalized(depth.values.size());
 	for (size_t index = 0; index < depth.values.size(); ++index) {
 		const float value = std::isfinite(depth.values[index]) ? depth.values[index] : smoothedLow;
-		normalized[index] = 1.0f - std::clamp((value - smoothedLow) / range, 0.0f, 1.0f);
+		normalized[index] = std::clamp((value - smoothedLow) / range, 0.0f, 1.0f);
 	}
 	applyLightGaussianBlur(normalized, depth.width, depth.height);
 	result.width = depth.width;

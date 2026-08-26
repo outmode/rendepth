@@ -207,8 +207,8 @@ int main(int argc, char** argv) {
 			for (int x = 0; x < depth.width; ++x) {
 				const float normalized = range > std::numeric_limits<float>::epsilon()
 					? (depth.values[static_cast<size_t>(y * depth.width + x)] - minimum) / range : 0.0f;
-				const Uint8 value = static_cast<Uint8>((1.0f -
-					std::clamp(normalized, 0.0f, 1.0f)) * 255.0f);
+				const Uint8 value = static_cast<Uint8>(
+					std::clamp(normalized, 0.0f, 1.0f) * 255.0f);
 				lowResolution[static_cast<size_t>(y * depth.width + x)] =
 					SDL_MapRGBA(format, nullptr, value, value, value, 255);
 			}
@@ -252,8 +252,8 @@ int main(int argc, char** argv) {
 				depth.values, depth.width, depth.height, sourceX, sourceY);
 			const float normalized = range > std::numeric_limits<float>::epsilon()
 				? (resizedValue - minimum) / range : 0.0f;
-			const Uint8 value = static_cast<Uint8>((1.0f -
-				std::clamp(normalized, 0.0f, 1.0f)) * 255.0f);
+			const Uint8 value = static_cast<Uint8>(
+				std::clamp(normalized, 0.0f, 1.0f) * 255.0f);
 			pixels[static_cast<size_t>(y * sourceWidth + x)] = SDL_MapRGBA(format, nullptr, value, value, value, 255);
 		}
 	}

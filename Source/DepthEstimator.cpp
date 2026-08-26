@@ -103,7 +103,7 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 			if (name == "sky") nextState->metric = true;
 		}
 		if (nextState->outputName.empty()) {
-			error = "DA3 model has no output tensors.";
+			error = "Depth model has no output tensors.";
 			return false;
 		}
 
@@ -169,7 +169,7 @@ DepthEstimator::Result DepthEstimator::predict(const SDL_Surface* image, std::st
 			static_cast<size_t>(processHeight) ||
 		static_cast<size_t>(processWidth) * static_cast<size_t>(processHeight) >
 			std::numeric_limits<size_t>::max() / 3) {
-		error = "DA3 model produced invalid input dimensions: " +
+		error = "Depth model produced invalid input dimensions: " +
 			std::to_string(processWidth) + "x" + std::to_string(processHeight) + ".";
 		return result;
 	}
@@ -274,7 +274,7 @@ DepthEstimator::Result DepthEstimator::predict(const SDL_Surface* image, std::st
 		auto outputs = state->session->Run(state->runOptions, inputNames, &inputTensor, 1,
 			outputNames, 1);
 		if (outputs.empty() || !outputs[0].IsTensor()) {
-			error = "DA3 model did not return a tensor output.";
+			error = "Depth model did not return a tensor output.";
 			return result;
 		}
 		const auto outputInfo = outputs[0].GetTensorTypeAndShapeInfo();
@@ -283,7 +283,7 @@ DepthEstimator::Result DepthEstimator::predict(const SDL_Surface* image, std::st
 			if (outputShape[2] <= 0 || outputShape[3] <= 0 ||
 				outputShape[2] > std::numeric_limits<int>::max() ||
 				outputShape[3] > std::numeric_limits<int>::max()) {
-				error = "DA3 depth output has dynamic or invalid dimensions.";
+				error = "Depth output has dynamic or invalid dimensions.";
 				return result;
 			}
 			result.height = static_cast<int>(outputShape[2]);
@@ -292,19 +292,19 @@ DepthEstimator::Result DepthEstimator::predict(const SDL_Surface* image, std::st
 			if (outputShape[1] <= 0 || outputShape[2] <= 0 ||
 				outputShape[1] > std::numeric_limits<int>::max() ||
 				outputShape[2] > std::numeric_limits<int>::max()) {
-				error = "DA3 depth output has dynamic or invalid dimensions.";
+				error = "Depth output has dynamic or invalid dimensions.";
 				return result;
 			}
 			result.height = static_cast<int>(outputShape[1]);
 			result.width = static_cast<int>(outputShape[2]);
 		} else {
-			error = "DA3 depth output must have shape [1, 1, H, W] or [1, H, W].";
+			error = "Depth output must have shape [1, 1, H, W] or [1, H, W].";
 			return result;
 		}
 		const size_t outputSize = static_cast<size_t>(result.width) *
 			static_cast<size_t>(result.height);
 		if (outputSize != static_cast<size_t>(result.width) * static_cast<size_t>(result.height)) {
-			error = "DA3 depth output dimensions do not match its tensor size.";
+			error = "Depth output dimensions do not match its tensor size.";
 			return result;
 		}
 		const float* outputData = outputs[0].GetTensorData<float>();
@@ -331,7 +331,7 @@ DepthEstimator::Result DepthEstimator::predict(const SDL_Surface* image, std::st
 			std::copy_n(outputData + static_cast<size_t>(cropY0 + y) * result.width + cropX0,
 				croppedWidth, croppedValues.data() + static_cast<size_t>(y) * croppedWidth);
 		}
-		// DA3 can emit extreme-valued pixels immediately inside the letterbox
+		// Depth models can emit extreme-valued pixels immediately inside the letterbox
 		// crop. Reuse the nearest interior pixels as a two-pixel gutter on every
 		// side without changing the output dimensions.
 		constexpr int gutter = 2;
