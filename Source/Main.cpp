@@ -237,8 +237,6 @@ bool prevNextKeyDown = false;
 Icon* currentSlider = nullptr;
 static bool videoSliderScrubbing = false;
 static bool videoSliderWasPlaying = false;
-static double videoScrubLastPreviewTime = 0.0;
-static constexpr double videoScrubPreviewInterval = 0.075;
 static bool videoControlsVisible = false;
 auto currentSliderValue = 0.0;
 auto showingStereoSettings = false;
@@ -2026,15 +2024,7 @@ static float videoControlCenter(float precedingWidth, float controlWidth) {
 static void seekVideoFromSlider() {
 	if (!activeVideo || currentSlider == nullptr) return;
 	const double target = getSliderPercent(*currentSlider) * videoPlayer.duration();
-	if (!videoSliderScrubbing) {
-		seekVideo(target);
-		return;
-	}
-	const double now = getTimeNow();
-	if (now - videoScrubLastPreviewTime >= videoScrubPreviewInterval) {
-		seekVideo(target, true);
-		videoScrubLastPreviewTime = now;
-	}
+	seekVideo(target, videoSliderScrubbing);
 }
 
 static void seekVideo(double seconds, bool fastPreview) {
@@ -5257,8 +5247,6 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 							if (activeVideo && icon.type == IconType::VideoSeek) {
 								videoSliderScrubbing = true;
 								videoSliderWasPlaying = videoPlayer.playing();
-								videoScrubLastPreviewTime =
-									getTimeNow() - videoScrubPreviewInterval;
 								// Audio-only seeks have no preview frame to display. Keep
 								// playback running while dragging instead of requiring the
 								// video preview pause/resume cycle.

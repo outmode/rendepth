@@ -642,7 +642,7 @@ struct VideoPlayer::Impl {
 		const bool pausedSeekFrame = seekPreviewPending;
 		const bool fastPreviewFrame = fastPreviewPending;
 		if (pausedSeekFrame) {
-			if (interrupted()) return false;
+			if (stopRequested) return false;
 			clockValid = false;
 		} else if (!waitForPresentation(position, clockValid,
 			clockOrigin, mediaOrigin)) {
@@ -860,7 +860,7 @@ struct VideoPlayer::Impl {
 			}
 		}
 
-		if (frameGeneration != playbackGeneration.load()) return true;
+		if (frameGeneration != playbackGeneration.load() && !pausedSeekFrame) return true;
 		{
 			std::lock_guard lock(stateMutex);
 			pendingFrame = std::move(converted);
@@ -992,7 +992,7 @@ struct VideoPlayer::Impl {
 			}
 		}
 		if (codec != nullptr)
-			codec->skip_frame = request.fastPreview ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
+			codec->skip_frame = request.fastPreview ? AVDISCARD_NONKEY : AVDISCARD_DEFAULT;
 		av_packet_unref(packet);
 		if (frame != nullptr) av_frame_unref(frame);
 		if (audioFrame != nullptr) av_frame_unref(audioFrame);
@@ -1016,7 +1016,7 @@ struct VideoPlayer::Impl {
 		audioQueuePositionValid = false;
 		atEnd = false;
 		audioState->buffering = true;
-		seekFloor = request.seconds;
+		seekFloor = request.fastPreview ? std::nullopt : std::optional(request.seconds);
 		audioSeekFloor = audioCodec != nullptr ? std::optional(request.seconds) : std::nullopt;
 		audioSeekPending = false;
 		return true;
@@ -1077,10 +1077,12 @@ struct VideoPlayer::Impl {
 						seekPreviewPending;
 				});
 				if (stopRequested) break;
-				seek.swap(requestedSeek);
+				if (!seekPreviewPending || (requestedSeek.has_value() && !requestedSeek->fastPreview)) {
+					seek.swap(requestedSeek);
+				}
 			}
-				if (seek.has_value()) {
-					if (!applySeek(*seek, seekFloor, audioSeekFloor)) break;
+			if (seek.has_value()) {
+				if (!applySeek(*seek, seekFloor, audioSeekFloor)) break;
 				// Fast previews are meaningful for video frames only. Audio-only
 				// seeks must still queue samples as soon as playback resumes, or the
 				// decoder will run to EOF silently and restart at zero.
@@ -1193,19 +1195,27 @@ struct VideoPlayer::Impl {
 				}
 				av_packet_unref(packet);
 			} else if (packet->stream_index == audioStreamIndex && audioCodec != nullptr) {
-				const int sendResult = avcodec_send_packet(audioCodec, packet);
-				av_packet_unref(packet);
-				if (sendResult < 0 && sendResult != AVERROR(EAGAIN)) {
-					setRuntimeError("FFmpeg could not submit an audio packet: " + ffmpegError(sendResult));
-					break;
-				}
-				if (!receiveAudioFrames(audioSeekFloor, discardAudio)) {
-					if (interrupted()) continue;
-					break;
+				if (fastPreviewPending) {
+					av_packet_unref(packet);
+				} else {
+					const int sendResult = avcodec_send_packet(audioCodec, packet);
+					av_packet_unref(packet);
+					if (sendResult < 0 && sendResult != AVERROR(EAGAIN)) {
+						setRuntimeError("FFmpeg could not submit an audio packet: " + ffmpegError(sendResult));
+						break;
+					}
+					if (!receiveAudioFrames(audioSeekFloor, discardAudio)) {
+						if (interrupted()) continue;
+						break;
+					}
 				}
 			} else if (packet->stream_index == subtitleStreamIndex) {
-				decodeSubtitlePacket(packet);
-				av_packet_unref(packet);
+				if (fastPreviewPending) {
+					av_packet_unref(packet);
+				} else {
+					decodeSubtitlePacket(packet);
+					av_packet_unref(packet);
+				}
 			} else {
 				av_packet_unref(packet);
 			}
