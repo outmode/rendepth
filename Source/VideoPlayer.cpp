@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "VideoPlayer.h"
-#include "BlurayReader.h"
-#include "DvdReader.h"
+#include "Core.h"
 
 #include <SDL3_image/SDL_image.h>
 
@@ -12,6 +11,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/display.h>
 #include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
@@ -59,20 +59,46 @@ std::string ffmpegError(int code) {
 
 struct HardwareDecodeState {
 	std::atomic<bool> failed{false};
-	std::atomic<bool> attempted{false};
 };
 
 enum AVPixelFormat selectHardwareFormat(AVCodecContext* context, const enum AVPixelFormat* formats) {
 	auto* state = static_cast<HardwareDecodeState*>(context->opaque);
-	if (state != nullptr && (state->failed.load() || state->attempted.exchange(true))) {
+	const bool failed = state != nullptr && state->failed.load();
+	if (!failed) {
 		for (const auto* format = formats; *format != AV_PIX_FMT_NONE; ++format)
-			if ((av_pix_fmt_desc_get(*format)->flags & AV_PIX_FMT_FLAG_HWACCEL) == 0) return *format;
+			if (*format == AV_PIX_FMT_VAAPI) return *format;
 	}
-	for (const auto* format = formats; *format != AV_PIX_FMT_NONE; ++format)
-		if (*format == AV_PIX_FMT_VAAPI) return *format;
 	for (const auto* format = formats; *format != AV_PIX_FMT_NONE; ++format)
 		if ((av_pix_fmt_desc_get(*format)->flags & AV_PIX_FMT_FLAG_HWACCEL) == 0) return *format;
 	return formats[0];
+}
+
+template <typename T>
+void rotateBufferFromPitch(int rotation, const T* src, int srcPitchElements, int srcW, int srcH, std::vector<std::uint8_t>& dstBytes) {
+	dstBytes.resize(static_cast<size_t>(srcW) * srcH * sizeof(T));
+	T* out = reinterpret_cast<T*>(dstBytes.data());
+	if (rotation == 90) {
+		for (int y = 0; y < srcH; ++y) {
+			const T* row = src + y * srcPitchElements;
+			for (int x = 0; x < srcW; ++x) {
+				out[x * srcH + (srcH - 1 - y)] = row[x];
+			}
+		}
+	} else if (rotation == 180) {
+		for (int y = 0; y < srcH; ++y) {
+			const T* row = src + y * srcPitchElements;
+			for (int x = 0; x < srcW; ++x) {
+				out[(srcH - 1 - y) * srcW + (srcW - 1 - x)] = row[x];
+			}
+		}
+	} else if (rotation == 270) {
+		for (int y = 0; y < srcH; ++y) {
+			const T* row = src + y * srcPitchElements;
+			for (int x = 0; x < srcW; ++x) {
+				out[(srcW - 1 - x) * srcH + y] = row[x];
+			}
+		}
+	}
 }
 #endif
 }
@@ -86,8 +112,12 @@ struct VideoPlayer::Impl {
 	std::thread decodeThread;
 	std::mutex stateMutex;
 	std::condition_variable stateChanged;
-	std::shared_ptr<VideoFrame> pendingFrame;
-	bool pendingFrameIsPreview = false;
+	struct QueuedVideoFrame {
+		std::shared_ptr<VideoFrame> frame;
+		bool isPreview = false;
+	};
+	std::deque<QueuedVideoFrame> pendingFrames;
+	static constexpr size_t maxQueuedVideoFrames = 24;
 	std::optional<SeekRequest> requestedSeek;
 	std::string runtimeError;
 	std::atomic<bool> stopRequested{false};
@@ -116,6 +146,7 @@ struct VideoPlayer::Impl {
 	mutable std::deque<SubtitleCue> subtitleCues;
 	std::atomic<int> videoWidth{0};
 	std::atomic<int> videoHeight{0};
+	std::atomic<int> rotation{0};
 	std::atomic<int> outputMaxWidth{0};
 	std::atomic<int> outputMaxHeight{0};
 	std::atomic<int> inferenceMaxDimension{0};
@@ -124,10 +155,6 @@ struct VideoPlayer::Impl {
 	double lastInferencePosition = -1.0;
 	double nextInferencePosition = -1.0;
 	std::uint64_t lastInferenceGeneration = 0;
-	std::unique_ptr<BlurayReader> blurayReader;
-	bool isBluray = false;
-	std::unique_ptr<DvdReader> dvdReader;
-	bool isDvd = false;
 
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	AVIOContext* avioContext = nullptr;
@@ -200,6 +227,8 @@ struct VideoPlayer::Impl {
 				static_cast<size_t>(artStream->attached_pic.size));
 			if (io == nullptr) continue;
 			SDL_Surface* loaded = IMG_Load_IO(io, true);
+			if (loaded == nullptr) continue;
+			loaded = Core::orientSurface(loaded);
 			if (loaded == nullptr) continue;
 			if (loaded->format == SDL_PIXELFORMAT_ABGR8888) return loaded;
 			SDL_Surface* result = SDL_ConvertSurface(loaded, SDL_PIXELFORMAT_ABGR8888);
@@ -604,33 +633,6 @@ struct VideoPlayer::Impl {
 		return std::max(0.0, timestamp - streamStart);
 	}
 
-	bool waitForPresentation(double position, bool& clockValid,
-			std::chrono::steady_clock::time_point& clockOrigin, double& mediaOrigin) {
-		std::unique_lock lock(stateMutex);
-		for (;;) {
-			if (stopRequested || requestedSeek.has_value()) return false;
-			if (!isPlaying) {
-				clockValid = false;
-				stateChanged.wait(lock, [&] {
-					return stopRequested || requestedSeek.has_value() || isPlaying.load();
-				});
-				continue;
-			}
-			const auto now = std::chrono::steady_clock::now();
-			if (!clockValid || position < mediaOrigin || position - mediaOrigin > 60.0) {
-				clockOrigin = now;
-				mediaOrigin = position;
-				clockValid = true;
-			}
-			const auto target = clockOrigin + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-				std::chrono::duration<double>(position - mediaOrigin));
-			if (now >= target) return true;
-			stateChanged.wait_until(lock, target, [&] {
-				return stopRequested || requestedSeek.has_value() || !isPlaying.load();
-			});
-		}
-	}
-
 	bool publishFrame(AVFrame* decodedFrame, bool& clockValid,
 			std::chrono::steady_clock::time_point& clockOrigin, double& mediaOrigin,
 			std::optional<double>& seekFloor, bool& seekPreviewPending,
@@ -644,23 +646,17 @@ struct VideoPlayer::Impl {
 		if (pausedSeekFrame) {
 			if (stopRequested) return false;
 			clockValid = false;
-		} else if (!waitForPresentation(position, clockValid,
-			clockOrigin, mediaOrigin)) {
-			return false;
-		}
-
-		if (!pausedSeekFrame) {
-			const auto target = clockOrigin + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-				std::chrono::duration<double>(position - mediaOrigin));
-			const auto presentationNow = std::chrono::steady_clock::now();
-			const double lateness = std::chrono::duration<double>(
-				presentationNow - target).count();
-			if (lateness > std::max(0.1, fallbackFrameDuration * 3.0)) {
-				clockOrigin = presentationNow;
-				mediaOrigin = position;
-				currentPosition = position;
-				return true;
+		} else {
+			std::unique_lock lock(stateMutex);
+			while (!stopRequested && !requestedSeek.has_value() && isPlaying.load() &&
+			       pendingFrames.size() >= maxQueuedVideoFrames) {
+				stateChanged.wait(lock);
 			}
+			if (stopRequested || requestedSeek.has_value()) return false;
+			while (!stopRequested && !requestedSeek.has_value() && !isPlaying.load() && !seekPreviewPending) {
+				stateChanged.wait(lock);
+			}
+			if (stopRequested || requestedSeek.has_value()) return false;
 		}
 		struct TransferredFrame {
 			AVFrame* frame = nullptr;
@@ -677,12 +673,17 @@ struct VideoPlayer::Impl {
 				setRuntimeError("FFmpeg could not transfer the hardware video frame.");
 				return false;
 			}
+			av_frame_copy_props(transferredFrame.frame, decodedFrame);
 			decodedFrame = transferredFrame.frame;
 		}
 
 		constexpr int previewMaxDimension = 720;
-		const int sourceWidth = decodedFrame->width;
-		const int sourceHeight = decodedFrame->height;
+		const int rot = rotation.load();
+		const int rawWidth = decodedFrame->width;
+		const int rawHeight = decodedFrame->height;
+		const bool swapDims = (rot == 90 || rot == 270);
+		const int sourceWidth = swapDims ? rawHeight : rawWidth;
+		const int sourceHeight = swapDims ? rawWidth : rawHeight;
 		const int sourceMaxDimension = std::max(sourceWidth, sourceHeight);
 		const double previewScale = fastPreviewFrame && sourceMaxDimension > previewMaxDimension
 			? static_cast<double>(previewMaxDimension) / sourceMaxDimension : 1.0;
@@ -760,9 +761,11 @@ struct VideoPlayer::Impl {
 				static_cast<int>(std::lround(sourceWidth * inferenceScale)));
 			converted->inferenceHeight = std::max(1,
 				static_cast<int>(std::lround(sourceHeight * inferenceScale)));
+			const int rawInfW = swapDims ? converted->inferenceHeight : converted->inferenceWidth;
+			const int rawInfH = swapDims ? converted->inferenceWidth : converted->inferenceHeight;
 			inferenceScaler = sws_getCachedContext(inferenceScaler,
 				decodedFrame->width, decodedFrame->height, sourceFormat,
-				converted->inferenceWidth, converted->inferenceHeight, AV_PIX_FMT_RGBA,
+				rawInfW, rawInfH, AV_PIX_FMT_RGBA,
 				SWS_BILINEAR, nullptr, nullptr, nullptr);
 			if (inferenceScaler == nullptr) {
 				setRuntimeError("FFmpeg could not create the depth-inference color converter.");
@@ -774,15 +777,29 @@ struct VideoPlayer::Impl {
 				setRuntimeError("FFmpeg could not configure depth-inference video color.");
 				return false;
 			}
-			converted->inferenceRGBA.resize(
-				static_cast<size_t>(converted->inferenceWidth) * converted->inferenceHeight * 4);
-			uint8_t* inferenceData[] = {
-				converted->inferenceRGBA.data(), nullptr, nullptr, nullptr };
-			int inferenceLines[] = { converted->inferenceWidth * 4, 0, 0, 0 };
-			if (sws_scale(inferenceScaler, decodedFrame->data, decodedFrame->linesize,
-					0, decodedFrame->height, inferenceData, inferenceLines) <= 0) {
-				setRuntimeError("FFmpeg could not prepare a video frame for depth inference.");
-				return false;
+			if (rot == 0) {
+				converted->inferenceRGBA.resize(
+					static_cast<size_t>(converted->inferenceWidth) * converted->inferenceHeight * 4);
+				uint8_t* inferenceData[] = {
+					converted->inferenceRGBA.data(), nullptr, nullptr, nullptr };
+				int inferenceLines[] = { converted->inferenceWidth * 4, 0, 0, 0 };
+				if (sws_scale(inferenceScaler, decodedFrame->data, decodedFrame->linesize,
+						0, decodedFrame->height, inferenceData, inferenceLines) <= 0) {
+					setRuntimeError("FFmpeg could not prepare a video frame for depth inference.");
+					return false;
+				}
+			} else {
+				std::vector<std::uint8_t> rawRGBA(static_cast<size_t>(rawInfW) * rawInfH * 4);
+				uint8_t* inferenceData[] = {
+					rawRGBA.data(), nullptr, nullptr, nullptr };
+				int inferenceLines[] = { rawInfW * 4, 0, 0, 0 };
+				if (sws_scale(inferenceScaler, decodedFrame->data, decodedFrame->linesize,
+						0, decodedFrame->height, inferenceData, inferenceLines) <= 0) {
+					setRuntimeError("FFmpeg could not prepare a video frame for depth inference.");
+					return false;
+				}
+				rotateBufferFromPitch(rot, reinterpret_cast<const uint32_t*>(rawRGBA.data()),
+					rawInfW, rawInfW, rawInfH, converted->inferenceRGBA);
 			}
 			lastInferencePosition = position;
 			lastInferenceGeneration = frameGeneration;
@@ -801,22 +818,38 @@ struct VideoPlayer::Impl {
 				SDL_memcpy(destination.data() + static_cast<size_t>(row) * rowBytes,
 					source + static_cast<ptrdiff_t>(row) * sourcePitch, rowBytes);
 		};
-		const int chromaWidth = (sourceWidth + 1) / 2;
-		const int chromaHeight = (sourceHeight + 1) / 2;
+		const int rawChromaWidth = (rawWidth + 1) / 2;
+		const int rawChromaHeight = (rawHeight + 1) / 2;
 		if (sourceFormat == AV_PIX_FMT_NV12) {
 			converted->format = VideoFrame::Format::NV12;
-			copyPlane(converted->planes[0], decodedFrame->data[0], decodedFrame->linesize[0],
-				sourceWidth, sourceHeight);
-			copyPlane(converted->planes[1], decodedFrame->data[1], decodedFrame->linesize[1],
-				chromaWidth * 2, chromaHeight);
+			if (rot == 0) {
+				copyPlane(converted->planes[0], decodedFrame->data[0], decodedFrame->linesize[0],
+					rawWidth, rawHeight);
+				copyPlane(converted->planes[1], decodedFrame->data[1], decodedFrame->linesize[1],
+					rawChromaWidth * 2, rawChromaHeight);
+			} else {
+				rotateBufferFromPitch(rot, decodedFrame->data[0], decodedFrame->linesize[0],
+					rawWidth, rawHeight, converted->planes[0]);
+				rotateBufferFromPitch(rot, reinterpret_cast<const uint16_t*>(decodedFrame->data[1]),
+					decodedFrame->linesize[1] / 2, rawChromaWidth, rawChromaHeight, converted->planes[1]);
+			}
 		} else if (sourceFormat == AV_PIX_FMT_YUV420P) {
 			converted->format = VideoFrame::Format::YUV420P;
-			copyPlane(converted->planes[0], decodedFrame->data[0], decodedFrame->linesize[0],
-				sourceWidth, sourceHeight);
-			copyPlane(converted->planes[1], decodedFrame->data[1], decodedFrame->linesize[1],
-				chromaWidth, chromaHeight);
-			copyPlane(converted->planes[2], decodedFrame->data[2], decodedFrame->linesize[2],
-				chromaWidth, chromaHeight);
+			if (rot == 0) {
+				copyPlane(converted->planes[0], decodedFrame->data[0], decodedFrame->linesize[0],
+					rawWidth, rawHeight);
+				copyPlane(converted->planes[1], decodedFrame->data[1], decodedFrame->linesize[1],
+					rawChromaWidth, rawChromaHeight);
+				copyPlane(converted->planes[2], decodedFrame->data[2], decodedFrame->linesize[2],
+					rawChromaWidth, rawChromaHeight);
+			} else {
+				rotateBufferFromPitch(rot, decodedFrame->data[0], decodedFrame->linesize[0],
+					rawWidth, rawHeight, converted->planes[0]);
+				rotateBufferFromPitch(rot, decodedFrame->data[1], decodedFrame->linesize[1],
+					rawChromaWidth, rawChromaHeight, converted->planes[1]);
+				rotateBufferFromPitch(rot, decodedFrame->data[2], decodedFrame->linesize[2],
+					rawChromaWidth, rawChromaHeight, converted->planes[2]);
+			}
 		} else {
 			// Less common pixel formats retain the general swscale fallback.
 			// The common VA-API NV12 and software YUV420P paths avoid CPU RGB
@@ -831,10 +864,12 @@ struct VideoPlayer::Impl {
 			converted->outputHeight = std::max(1,
 				static_cast<int>(std::lround(sourceHeight * scale)));
 			converted->format = VideoFrame::Format::RGBA;
+			const int rawOutW = swapDims ? converted->outputHeight : converted->outputWidth;
+			const int rawOutH = swapDims ? converted->outputWidth : converted->outputHeight;
 			scaler = sws_getCachedContext(scaler,
 				decodedFrame->width, decodedFrame->height,
 				sourceFormat,
-				converted->outputWidth, converted->outputHeight, AV_PIX_FMT_RGBA,
+				rawOutW, rawOutH, AV_PIX_FMT_RGBA,
 				fastPreviewFrame ? SWS_FAST_BILINEAR : SWS_BILINEAR,
 				nullptr, nullptr, nullptr);
 			if (scaler == nullptr) {
@@ -848,26 +883,42 @@ struct VideoPlayer::Impl {
 				return false;
 			}
 
-			converted->planes[0].resize(static_cast<size_t>(converted->outputWidth) *
-				converted->outputHeight * 4);
-			uint8_t* outputData[] = { converted->planes[0].data(), nullptr, nullptr, nullptr };
-			int outputLines[] = { converted->outputWidth * 4, 0, 0, 0 };
-			const int convertedRows = sws_scale(scaler, decodedFrame->data,
-				decodedFrame->linesize, 0, decodedFrame->height, outputData, outputLines);
-			if (convertedRows <= 0) {
-				setRuntimeError("FFmpeg could not convert the decoded video frame.");
-				return false;
+			if (rot == 0) {
+				converted->planes[0].resize(static_cast<size_t>(converted->outputWidth) *
+					converted->outputHeight * 4);
+				uint8_t* outputData[] = { converted->planes[0].data(), nullptr, nullptr, nullptr };
+				int outputLines[] = { converted->outputWidth * 4, 0, 0, 0 };
+				const int convertedRows = sws_scale(scaler, decodedFrame->data,
+					decodedFrame->linesize, 0, decodedFrame->height, outputData, outputLines);
+				if (convertedRows <= 0) {
+					setRuntimeError("FFmpeg could not convert the decoded video frame.");
+					return false;
+				}
+			} else {
+				std::vector<std::uint8_t> rawRGBA(static_cast<size_t>(rawOutW) * rawOutH * 4);
+				uint8_t* outputData[] = { rawRGBA.data(), nullptr, nullptr, nullptr };
+				int outputLines[] = { rawOutW * 4, 0, 0, 0 };
+				const int convertedRows = sws_scale(scaler, decodedFrame->data,
+					decodedFrame->linesize, 0, decodedFrame->height, outputData, outputLines);
+				if (convertedRows <= 0) {
+					setRuntimeError("FFmpeg could not convert the decoded video frame.");
+					return false;
+				}
+				rotateBufferFromPitch(rot, reinterpret_cast<const uint32_t*>(rawRGBA.data()),
+					rawOutW, rawOutW, rawOutH, converted->planes[0]);
 			}
 		}
 
 		if (frameGeneration != playbackGeneration.load() && !pausedSeekFrame) return true;
 		{
 			std::lock_guard lock(stateMutex);
-			pendingFrame = std::move(converted);
-			pendingFrameIsPreview = fastPreviewFrame;
+			if (pausedSeekFrame || fastPreviewFrame) {
+				pendingFrames.clear();
+			}
+			pendingFrames.push_back({std::move(converted), fastPreviewFrame});
 		}
-		videoWidth = decodedFrame->width;
-		videoHeight = decodedFrame->height;
+		videoWidth = sourceWidth;
+		videoHeight = sourceHeight;
 		currentPosition = position;
 		if (isPlaying) startAudio(audioState);
 		seekPreviewPending = false;
@@ -884,8 +935,11 @@ struct VideoPlayer::Impl {
 			if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) return true;
 			if (result < 0) {
 				if (disableHardwareDecoding()) return true;
-				setRuntimeError("FFmpeg video decode failed: " + ffmpegError(result));
-				return false;
+				if (result == AVERROR(ENOMEM)) {
+					setRuntimeError("FFmpeg video decode failed: " + ffmpegError(result));
+					return false;
+				}
+				return true;
 			}
 			const bool previewWasPending = seekPreviewPending;
 			const bool published = publishFrame(frame, clockValid, clockOrigin, mediaOrigin,
@@ -901,8 +955,11 @@ struct VideoPlayer::Impl {
 			const int result = avcodec_receive_frame(audioCodec, audioFrame);
 			if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) return true;
 			if (result < 0) {
-				setRuntimeError("FFmpeg audio decode failed: " + ffmpegError(result));
-				return false;
+				if (result == AVERROR(ENOMEM)) {
+					setRuntimeError("FFmpeg audio decode failed: " + ffmpegError(result));
+					return false;
+				}
+				return true;
 			}
 
 			const double position = audioFrame->best_effort_timestamp == AV_NOPTS_VALUE
@@ -939,20 +996,25 @@ struct VideoPlayer::Impl {
 					int firstFrame = 0;
 					if (!audioQueuePositionValid) {
 						constexpr int syncToleranceFrames = audioSampleRate / 1000;
-						const int syncFrames = static_cast<int>(std::clamp<long long>(
-							std::llround((position - audioQueuePosition.load()) * audioSampleRate),
-							-audioSampleRate * 2LL, audioSampleRate * 2LL));
-						if (syncFrames > syncToleranceFrames) {
-							std::vector<float> silence(
-								static_cast<size_t>(syncFrames) * audioChannels, 0.0f);
-							if (!queueAudio(silence.data(), syncFrames)) {
-								av_frame_unref(audioFrame);
-								return false;
+						const double diff = position - audioQueuePosition.load();
+						if (std::abs(diff) > 0.5 || audioQueuePosition.load() == 0.0) {
+							audioQueuePosition = position;
+						} else {
+							const int syncFrames = static_cast<int>(std::clamp<long long>(
+								std::llround(diff * audioSampleRate),
+								-audioSampleRate * 2LL, audioSampleRate * 2LL));
+							if (syncFrames > syncToleranceFrames) {
+								std::vector<float> silence(
+									static_cast<size_t>(syncFrames) * audioChannels, 0.0f);
+								if (!queueAudio(silence.data(), syncFrames)) {
+									av_frame_unref(audioFrame);
+									return false;
+								}
+								audioQueuePosition.fetch_add(
+									syncFrames / static_cast<double>(audioSampleRate));
+							} else if (syncFrames < -syncToleranceFrames) {
+								firstFrame = std::min(converted, -syncFrames);
 							}
-							audioQueuePosition.fetch_add(
-								syncFrames / static_cast<double>(audioSampleRate));
-						} else if (syncFrames < -syncToleranceFrames) {
-							firstFrame = std::min(converted, -syncFrames);
 						}
 						audioQueuePositionValid = true;
 					}
@@ -976,7 +1038,14 @@ struct VideoPlayer::Impl {
 		if (audioOnly || !audioStreamIndices.empty()) audioSeekPending = true;
 		const int64_t target = static_cast<int64_t>(
 			(request.seconds + streamStart) / av_q2d(stream->time_base));
-		const int result = av_seek_frame(format, streamIndex, target, AVSEEK_FLAG_BACKWARD);
+		int result = av_seek_frame(format, streamIndex, target, AVSEEK_FLAG_BACKWARD);
+		if (result < 0) {
+			const int64_t defaultTarget = static_cast<int64_t>((request.seconds + streamStart) * AV_TIME_BASE);
+			result = av_seek_frame(format, -1, defaultTarget, AVSEEK_FLAG_BACKWARD);
+		}
+		if (result < 0) {
+			result = avformat_seek_file(format, streamIndex, INT64_MIN, target, INT64_MAX, 0);
+		}
 		if (result < 0) {
 			setRuntimeError("FFmpeg seek failed: " + ffmpegError(result));
 			return false;
@@ -1010,13 +1079,19 @@ struct VideoPlayer::Impl {
 			std::lock_guard lock(subtitleMutex);
 			subtitleCues.clear();
 		}
+		{
+			std::lock_guard lock(stateMutex);
+			pendingFrames.clear();
+		}
+		stateChanged.notify_all();
 		currentPosition = request.seconds;
 		presentedPosition = request.seconds;
 		audioQueuePosition = request.seconds;
 		audioQueuePositionValid = false;
 		atEnd = false;
 		audioState->buffering = true;
-		seekFloor = request.fastPreview ? std::nullopt : std::optional(request.seconds);
+		seekFloor = request.fastPreview
+			? std::nullopt : std::optional(request.seconds);
 		audioSeekFloor = audioCodec != nullptr ? std::optional(request.seconds) : std::nullopt;
 		audioSeekPending = false;
 		return true;
@@ -1175,16 +1250,23 @@ struct VideoPlayer::Impl {
 
 			if (!audioOnly && packet->stream_index == streamIndex) {
 				bool packetHandled = false;
-				for (int attempt = 0; attempt < 2 && !packetHandled; ++attempt) {
+				while (!packetHandled && !stopRequested && !interrupted()) {
 					const int sendResult = avcodec_send_packet(codec, packet);
-					if (sendResult < 0 && sendResult != AVERROR(EAGAIN)) {
+					if (sendResult == AVERROR(EAGAIN)) {
+						if (!receiveFrames(clockValid, clockOrigin, mediaOrigin, seekFloor,
+								seekPreviewPending, fastPreviewPending)) {
+							if (interrupted()) break;
+							break;
+						}
+						continue;
+					}
+					if (sendResult < 0) {
 						if (disableHardwareDecoding()) continue;
-						setRuntimeError("FFmpeg could not submit a video packet: " + ffmpegError(sendResult));
 						break;
 					}
 					if (!receiveFrames(clockValid, clockOrigin, mediaOrigin, seekFloor,
 							seekPreviewPending, fastPreviewPending)) {
-						if (interrupted()) continue;
+						if (interrupted()) break;
 						break;
 					}
 					if (!retryVideoPacketAfterHardwareFallback) {
@@ -1198,12 +1280,12 @@ struct VideoPlayer::Impl {
 				if (fastPreviewPending) {
 					av_packet_unref(packet);
 				} else {
-					const int sendResult = avcodec_send_packet(audioCodec, packet);
-					av_packet_unref(packet);
-					if (sendResult < 0 && sendResult != AVERROR(EAGAIN)) {
-						setRuntimeError("FFmpeg could not submit an audio packet: " + ffmpegError(sendResult));
-						break;
+					int sendResult = avcodec_send_packet(audioCodec, packet);
+					while (sendResult == AVERROR(EAGAIN) && !stopRequested && !interrupted()) {
+						if (!receiveAudioFrames(audioSeekFloor, discardAudio)) break;
+						sendResult = avcodec_send_packet(audioCodec, packet);
 					}
+					av_packet_unref(packet);
 					if (!receiveAudioFrames(audioSeekFloor, discardAudio)) {
 						if (interrupted()) continue;
 						break;
@@ -1225,13 +1307,12 @@ struct VideoPlayer::Impl {
 };
 
 bool VideoPlayer::supported(const std::filesystem::path& path) {
-	if (BlurayReader::isBluraySource(path)) return true;
-	if (DvdReader::isDvdSource(path)) return true;
 	const auto extension = lowerExtension(path);
 	return extension == ".mp4" || extension == ".m4v" || extension == ".mov" ||
 		extension == ".mkv" || extension == ".webm" || extension == ".avi" ||
 		extension == ".wmv" || extension == ".mpeg" || extension == ".mpg" ||
 		extension == ".vob" || extension == ".ifo" || extension == ".iso" ||
+		extension == ".m2ts" || extension == ".ts" ||
 		extension == ".gif";
 }
 
@@ -1246,121 +1327,15 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 	(void)path;
 	return false;
 #else
-	int result = 0;
-	const bool bluraySource = BlurayReader::isBluraySource(path);
-	const bool dvdSource = DvdReader::isDvdSource(path);
-
-	if (dvdSource && !bluraySource) {
-		impl->dvdReader = std::make_unique<DvdReader>();
-		if (!impl->dvdReader->open(path, error)) {
-			close();
-			return false;
-		}
-		impl->isDvd = true;
-		impl->avioContext = impl->dvdReader->createAVIOContext(65536);
-		if (!impl->avioContext) {
-			error = "Could not create streaming buffer for DVD playback.";
-			close();
-			return false;
-		}
-		impl->format = avformat_alloc_context();
-		if (!impl->format) {
-			error = "Could not allocate FFmpeg format context.";
-			close();
-			return false;
-		}
-		impl->format->pb = impl->avioContext;
-		impl->format->flags |= AVFMT_FLAG_CUSTOM_IO;
-		result = avformat_open_input(&impl->format, nullptr, nullptr, nullptr);
-		if (result < 0) {
-			error = "FFmpeg could not open the DVD stream: " + ffmpegError(result);
-			close();
-			return false;
-		}
-	} else if (bluraySource) {
-		impl->blurayReader = std::make_unique<BlurayReader>();
-		std::string brError;
-		if (impl->blurayReader->open(path, brError)) {
-			impl->isBluray = true;
-			impl->avioContext = impl->blurayReader->createAVIOContext(65536);
-			if (!impl->avioContext) {
-				error = "Could not create streaming buffer for Blu-ray playback.";
-				close();
-				return false;
-			}
-			impl->format = avformat_alloc_context();
-			if (!impl->format) {
-				error = "Could not allocate FFmpeg format context.";
-				close();
-				return false;
-			}
-			impl->format->pb = impl->avioContext;
-			impl->format->flags |= AVFMT_FLAG_CUSTOM_IO;
-			result = avformat_open_input(&impl->format, nullptr, nullptr, nullptr);
-			if (result < 0) {
-				if (impl->blurayReader && (impl->blurayReader->isEncrypted() || !impl->blurayReader->encryptionHandled())) {
-					error = "Blu-ray disc is encrypted (AACS/BD+ protection) and could not be decrypted. Encrypted Disc Not Supported";
-				} else {
-					error = "FFmpeg could not open the Blu-ray stream: " + ffmpegError(result) + ". Encrypted Disc Not Supported";
-				}
-				close();
-				return false;
-			}
-		} else {
-			// If Blu-ray open failed, and it might be a DVD disc or ISO, attempt DVD playback
-			if (dvdSource) {
-				impl->blurayReader.reset();
-				impl->isBluray = false;
-				impl->dvdReader = std::make_unique<DvdReader>();
-				if (!impl->dvdReader->open(path, error)) {
-					error = brError;
-					close();
-					return false;
-				}
-				impl->isDvd = true;
-				impl->avioContext = impl->dvdReader->createAVIOContext(65536);
-				if (!impl->avioContext) {
-					error = "Could not create streaming buffer for DVD playback.";
-					close();
-					return false;
-				}
-				impl->format = avformat_alloc_context();
-				if (!impl->format) {
-					error = "Could not allocate FFmpeg format context.";
-					close();
-					return false;
-				}
-				impl->format->pb = impl->avioContext;
-				impl->format->flags |= AVFMT_FLAG_CUSTOM_IO;
-				result = avformat_open_input(&impl->format, nullptr, nullptr, nullptr);
-				if (result < 0) {
-					error = "FFmpeg could not open the DVD stream: " + ffmpegError(result);
-					close();
-					return false;
-				}
-			} else {
-				error = brError;
-				close();
-				return false;
-			}
-		}
-	} else {
-		result = avformat_open_input(&impl->format, path.string().c_str(), nullptr, nullptr);
-		if (result < 0) {
-			error = "FFmpeg could not open the video: " + ffmpegError(result);
-			close();
-			return false;
-		}
+	int result = avformat_open_input(&impl->format, path.string().c_str(), nullptr, nullptr);
+	if (result < 0) {
+		error = "FFmpeg could not open the video: " + ffmpegError(result);
+		close();
+		return false;
 	}
 	result = avformat_find_stream_info(impl->format, nullptr);
 	if (result < 0) {
-		if (impl->isBluray || (impl->blurayReader && (impl->blurayReader->isEncrypted() || !impl->blurayReader->encryptionHandled()))) {
-			error = "FFmpeg could not inspect the Blu-ray stream: " + ffmpegError(result) + ". Encrypted Disc Not Supported";
-		} else if (impl->isDvd) {
-			error = "FFmpeg could not inspect the DVD stream: " + ffmpegError(result);
-		} else {
-			error = "FFmpeg could not inspect the video: " + ffmpegError(result);
-		}
+		error = "FFmpeg could not inspect the video: " + ffmpegError(result);
 		close();
 		return false;
 	}
@@ -1450,7 +1425,6 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 		result = avcodec_parameters_to_context(impl->codec, impl->stream->codecpar);
 		impl->videoDecoder = decoder;
 		impl->hardwareDecodeState.failed = false;
-		impl->hardwareDecodeState.attempted = false;
 		impl->retryVideoPacketAfterHardwareFallback = false;
 		impl->codec->opaque = &impl->hardwareDecodeState;
 		impl->codec->thread_count = static_cast<int>(
@@ -1474,6 +1448,7 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 			return false;
 		}
 	}
+
 	impl->packet = av_packet_alloc();
 	impl->frame = impl->audioOnly ? nullptr : av_frame_alloc();
 	if (impl->packet == nullptr || (!impl->audioOnly && impl->frame == nullptr)) {
@@ -1484,11 +1459,7 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 
 	if (impl->stream->start_time != AV_NOPTS_VALUE)
 		impl->streamStart = impl->stream->start_time * av_q2d(impl->stream->time_base);
-	if (impl->isBluray && impl->blurayReader && impl->blurayReader->duration() > 0.0)
-		impl->totalDuration = impl->blurayReader->duration();
-	else if (impl->isDvd && impl->dvdReader && impl->dvdReader->duration() > 0.0)
-		impl->totalDuration = impl->dvdReader->duration();
-	else if (impl->format->duration != AV_NOPTS_VALUE && impl->format->duration > 0)
+	if (impl->format->duration != AV_NOPTS_VALUE && impl->format->duration > 0)
 		impl->totalDuration = static_cast<double>(impl->format->duration) / AV_TIME_BASE;
 	else if (impl->stream->duration != AV_NOPTS_VALUE && impl->stream->duration > 0)
 		impl->totalDuration = impl->stream->duration * av_q2d(impl->stream->time_base);
@@ -1505,8 +1476,38 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 	impl->audioState->playing = true;
 	impl->isReady = true;
 	impl->atEnd = false;
-	impl->videoWidth = impl->audioOnly ? 0 : impl->codec->width;
-	impl->videoHeight = impl->audioOnly ? 0 : impl->codec->height;
+	int detectedRotation = 0;
+	if (impl->stream != nullptr && impl->stream->codecpar != nullptr) {
+		const AVPacketSideData* sd = av_packet_side_data_get(
+			impl->stream->codecpar->coded_side_data,
+			impl->stream->codecpar->nb_coded_side_data,
+			AV_PKT_DATA_DISPLAYMATRIX);
+		if (sd != nullptr && sd->data != nullptr && sd->size >= static_cast<int>(sizeof(int32_t) * 9)) {
+			double theta = -av_display_rotation_get(reinterpret_cast<const int32_t*>(sd->data));
+			int angle = static_cast<int>(std::round(theta)) % 360;
+			if (angle < 0) angle += 360;
+			if (angle >= 45 && angle < 135) detectedRotation = 90;
+			else if (angle >= 135 && angle < 225) detectedRotation = 180;
+			else if (angle >= 225 && angle < 315) detectedRotation = 270;
+		} else {
+			const AVDictionaryEntry* rotateTag = av_dict_get(impl->stream->metadata, "rotate", nullptr, 0);
+			if (rotateTag != nullptr && rotateTag->value != nullptr) {
+				try {
+					int angle = static_cast<int>(std::round(std::stod(rotateTag->value))) % 360;
+					if (angle < 0) angle += 360;
+					if (angle >= 45 && angle < 135) detectedRotation = 90;
+					else if (angle >= 135 && angle < 225) detectedRotation = 180;
+					else if (angle >= 225 && angle < 315) detectedRotation = 270;
+				} catch (...) {}
+			}
+		}
+	}
+	impl->rotation = detectedRotation;
+	const int widthVal = impl->codec && impl->codec->width > 0 ? impl->codec->width : impl->stream->codecpar->width;
+	const int heightVal = impl->codec && impl->codec->height > 0 ? impl->codec->height : impl->stream->codecpar->height;
+	const bool swapDims = (detectedRotation == 90 || detectedRotation == 270);
+	impl->videoWidth = impl->audioOnly ? 0 : (swapDims ? heightVal : widthVal);
+	impl->videoHeight = impl->audioOnly ? 0 : (swapDims ? widthVal : heightVal);
 	impl->decodeThread = std::thread(&Impl::decodeLoop, impl.get());
 	return true;
 #endif
@@ -1519,12 +1520,13 @@ void VideoPlayer::close() {
 	if (impl->decodeThread.joinable()) impl->decodeThread.join();
 	{
 		std::lock_guard lock(impl->stateMutex);
-		impl->pendingFrame.reset();
-		impl->pendingFrameIsPreview = false;
+		impl->pendingFrames.clear();
 		impl->requestedSeek.reset();
 		impl->runtimeError.clear();
 	}
+	impl->stateChanged.notify_all();
 #ifdef RENDEPTH_ENABLE_FFMPEG
+	impl->rotation = 0;
 	SDL_DestroySurface(impl->albumArt);
 	impl->albumArt = nullptr;
 	impl->audioState->shutdown();
@@ -1551,16 +1553,6 @@ void VideoPlayer::close() {
 		avio_context_free(&impl->avioContext);
 		impl->avioContext = nullptr;
 	}
-	if (impl->blurayReader) {
-		impl->blurayReader->close();
-		impl->blurayReader.reset();
-	}
-	impl->isBluray = false;
-	if (impl->dvdReader) {
-		impl->dvdReader->close();
-		impl->dvdReader.reset();
-	}
-	impl->isDvd = false;
 	impl->stream = nullptr;
 	impl->streamIndex = -1;
 	impl->audioOnly = false;
@@ -1582,7 +1574,6 @@ void VideoPlayer::close() {
 	impl->streamStart = 0.0;
 	impl->fallbackFrameDuration = 1.0 / 30.0;
 	impl->hardwareDecodeState.failed = false;
-	impl->hardwareDecodeState.attempted = false;
 #endif
 	impl->isPlaying = false;
 	impl->isReady = false;
@@ -1873,10 +1864,12 @@ void VideoPlayer::update() {
 
 std::shared_ptr<VideoFrame> VideoPlayer::takeFrame(bool* preview) {
 	std::lock_guard lock(impl->stateMutex);
-	auto result = std::move(impl->pendingFrame);
-	if (preview != nullptr) *preview = result != nullptr && impl->pendingFrameIsPreview;
-	impl->pendingFrameIsPreview = false;
-	return result;
+	if (impl->pendingFrames.empty()) return nullptr;
+	auto item = std::move(impl->pendingFrames.front());
+	impl->pendingFrames.pop_front();
+	if (preview != nullptr) *preview = item.frame != nullptr && item.isPreview;
+	impl->stateChanged.notify_all();
+	return item.frame;
 }
 
 std::string VideoPlayer::takeError() {
@@ -1898,17 +1891,9 @@ void VideoPlayer::setInferenceSize(int maxDimension, double framesPerSecond) {
 
 bool VideoPlayer::playing() const { return impl->isPlaying; }
 bool VideoPlayer::ready() const { return impl->isReady; }
-bool VideoPlayer::isBluray() const { return impl->isBluray; }
-bool VideoPlayer::isDvd() const { return impl->isDvd; }
 bool VideoPlayer::hasChapters() const { return chapterCount() > 0; }
 
 int VideoPlayer::chapterCount() const {
-#ifdef RENDEPTH_ENABLE_BLURAY
-	if (impl->isBluray && impl->blurayReader) return impl->blurayReader->chapterCount();
-#endif
-#ifdef RENDEPTH_ENABLE_DVD
-	if (impl->isDvd && impl->dvdReader) return impl->dvdReader->chapterCount();
-#endif
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	if (impl->format != nullptr) return static_cast<int>(impl->format->nb_chapters);
 #endif
@@ -1916,20 +1901,17 @@ int VideoPlayer::chapterCount() const {
 }
 
 int VideoPlayer::currentChapter() const {
-#ifdef RENDEPTH_ENABLE_BLURAY
-	if (impl->isBluray && impl->blurayReader) return impl->blurayReader->currentChapter();
-#endif
-#ifdef RENDEPTH_ENABLE_DVD
-	if (impl->isDvd && impl->dvdReader) return impl->dvdReader->currentChapter();
-#endif
+	return chapterAtTime(position());
+}
+
+int VideoPlayer::chapterAtTime(double seconds) const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	if (impl->format != nullptr && impl->format->nb_chapters > 0) {
-		const double currentPos = position();
 		for (int i = static_cast<int>(impl->format->nb_chapters) - 1; i >= 0; --i) {
 			const AVChapter* ch = impl->format->chapters[i];
 			if (ch != nullptr) {
 				const double start = static_cast<double>(ch->start) * av_q2d(ch->time_base);
-				if (currentPos >= start - 0.5) return i;
+				if (seconds >= start - 0.5) return i;
 			}
 		}
 	}
@@ -1938,12 +1920,6 @@ int VideoPlayer::currentChapter() const {
 }
 
 double VideoPlayer::chapterTime(int chapterIndex) const {
-#ifdef RENDEPTH_ENABLE_BLURAY
-	if (impl->isBluray && impl->blurayReader) return impl->blurayReader->chapterStartTime(chapterIndex);
-#endif
-#ifdef RENDEPTH_ENABLE_DVD
-	if (impl->isDvd && impl->dvdReader) return impl->dvdReader->chapterStartTime(chapterIndex);
-#endif
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	if (impl->format != nullptr && chapterIndex >= 0 &&
 		chapterIndex < static_cast<int>(impl->format->nb_chapters)) {
@@ -1984,18 +1960,9 @@ void VideoPlayer::previousChapter() {
 	}
 }
 
-std::string VideoPlayer::discTitle() const {
-#ifdef RENDEPTH_ENABLE_BLURAY
-	if (impl->isBluray && impl->blurayReader) return impl->blurayReader->discTitle();
-#endif
-#ifdef RENDEPTH_ENABLE_DVD
-	if (impl->isDvd && impl->dvdReader) return impl->dvdReader->discTitle();
-#endif
-	return "";
-}
-
 double VideoPlayer::position() const { return impl->presentedPosition; }
 double VideoPlayer::duration() const { return impl->totalDuration; }
 std::uint64_t VideoPlayer::generation() const { return impl->playbackGeneration; }
 int VideoPlayer::width() const { return impl->videoWidth; }
 int VideoPlayer::height() const { return impl->videoHeight; }
+int VideoPlayer::rotation() const { return impl->rotation; }

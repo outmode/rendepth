@@ -1134,6 +1134,12 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 		SDL_Log("Failed To Create Image Fragment Shader.");
 		return -1;
 	}
+	SDL_GPUShader* lanczosFragmentShader = Core::loadShader(context->device,
+		"Lanczos.frag", 1, 1, 0, 0);
+	if (lanczosFragmentShader == nullptr) {
+		SDL_Log("Failed To Create Lanczos Fragment Shader.");
+		return -1;
+	}
 	SDL_GPUShader* depthRefineFragmentShader = Core::loadShader(context->device,
 		"DepthRefine.frag", 2, 1, 0, 0);
 	if (depthRefineFragmentShader == nullptr) {
@@ -1238,6 +1244,18 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	imagePipeline = SDL_CreateGPUGraphicsPipeline(context->device, &imagePipelineCreateInfo);
 	if (imagePipeline == nullptr) {
 		SDL_Log("Failed To Create Image Pipeline.");
+		return -1;
+	}
+	SDL_GPUGraphicsPipelineCreateInfo lanczosPipelineInfo = imagePipelineCreateInfo;
+	lanczosPipelineInfo.fragment_shader = lanczosFragmentShader;
+	SDL_GPUColorTargetDescription lanczosTargetDescription{
+		.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM
+	};
+	lanczosPipelineInfo.target_info.color_target_descriptions = &lanczosTargetDescription;
+	lanczosPipeline = SDL_CreateGPUGraphicsPipeline(context->device,
+		&lanczosPipelineInfo);
+	if (lanczosPipeline == nullptr) {
+		SDL_Log("Failed To Create Lanczos Pipeline.");
 		return -1;
 	}
 	SDL_GPUGraphicsPipelineCreateInfo depthRefinePipelineInfo = imagePipelineCreateInfo;
@@ -1373,6 +1391,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 
 	SDL_ReleaseGPUShader(context->device, imageVertexShader);
 	SDL_ReleaseGPUShader(context->device, imageFragmentShader);
+	SDL_ReleaseGPUShader(context->device, lanczosFragmentShader);
 	SDL_ReleaseGPUShader(context->device, depthRefineFragmentShader);
 	SDL_ReleaseGPUShader(context->device, videoYUVVertexShader);
 	SDL_ReleaseGPUShader(context->device, videoYUVFragmentShader);
@@ -1392,6 +1411,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 		.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
 		.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
 		.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+		.mip_lod_bias = -0.5f,
 		.max_anisotropy = 4,
 		.min_lod = -128.0,
 		.max_lod = 128.0,
@@ -1818,14 +1838,52 @@ SDL_Surface* Image::upscaleSurfaceGPU(Context* context, const SDL_Surface* sourc
 				SDL_UploadToGPUTexture(copy, &uploadTransfer, &sourceRegion, false);
 				SDL_EndGPUCopyPass(copy);
 
-				SDL_GPUBlitInfo blit{};
-				blit.source = {.texture = sourceTexture, .w = static_cast<Uint32>(source->w),
-					.h = static_cast<Uint32>(source->h)};
-				blit.destination = {.texture = outputTexture,
-					.w = static_cast<Uint32>(outputWidth), .h = static_cast<Uint32>(outputHeight)};
-				blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
-				blit.filter = SDL_GPU_FILTER_LINEAR;
-				SDL_BlitGPUTexture(commands, &blit);
+				if (lanczosPipeline != nullptr && sharedVertexBuffer != nullptr && sharedIndexBuffer != nullptr) {
+					const SDL_GPUColorTargetInfo target{
+						.texture = outputTexture,
+						.load_op = SDL_GPU_LOADOP_DONT_CARE,
+						.store_op = SDL_GPU_STOREOP_STORE
+					};
+					SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(commands, &target, 1, nullptr);
+					if (pass != nullptr) {
+						bindPipeline(pass, lanczosPipeline);
+						const SDL_GPUBufferBinding vertexBinding{.buffer = sharedVertexBuffer, .offset = 0};
+						const SDL_GPUBufferBinding indexBinding{.buffer = sharedIndexBuffer, .offset = 0};
+						SDL_BindGPUVertexBuffers(pass, 0, &vertexBinding, 1);
+						SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+						const SDL_GPUTextureSamplerBinding bindings[1] = {
+							{.texture = sourceTexture, .sampler = imageSampler}
+						};
+						SDL_BindGPUFragmentSamplers(pass, 0, bindings, 1);
+						const ImageDataVert vertexUniforms{
+							.transform = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f)),
+							.projection = glm::mat4(1.0f),
+							.displayImageAspect = glm::vec3(1.0f),
+							.fillScreen = 0
+						};
+						const LanczosDataFrag fragmentUniforms{
+							.sourceSize = glm::vec2(source->w, source->h),
+							.targetSize = glm::vec2(outputWidth, outputHeight)
+						};
+						SDL_PushGPUVertexUniformData(commands, 0, &vertexUniforms, sizeof(vertexUniforms));
+						SDL_PushGPUFragmentUniformData(commands, 0, &fragmentUniforms,
+							sizeof(fragmentUniforms));
+						const SDL_GPUViewport viewport{0.0f, 0.0f, static_cast<float>(outputWidth),
+							static_cast<float>(outputHeight), 0.0f, 1.0f};
+						SDL_SetGPUViewport(pass, &viewport);
+						SDL_DrawGPUIndexedPrimitives(pass, 6, 1, 0, 0, 0);
+						SDL_EndGPURenderPass(pass);
+					}
+				} else {
+					SDL_GPUBlitInfo blit{};
+					blit.source = {.texture = sourceTexture, .w = static_cast<Uint32>(source->w),
+						.h = static_cast<Uint32>(source->h)};
+					blit.destination = {.texture = outputTexture,
+						.w = static_cast<Uint32>(outputWidth), .h = static_cast<Uint32>(outputHeight)};
+					blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+					blit.filter = SDL_GPU_FILTER_LINEAR;
+					SDL_BlitGPUTexture(commands, &blit);
+				}
 
 				copy = SDL_BeginGPUCopyPass(commands);
 				SDL_GPUTextureTransferInfo downloadTransfer{.transfer_buffer = download};
@@ -2698,6 +2756,29 @@ int Image::draw(Context* context) {
 						glm::vec3(aspectScale, 1.0));
 					drawSprite(commandBuffer, renderPass);
 
+					if (icon.type == IconType::VideoSeek && !context->chapterMarkers.empty()) {
+						const float trackWidth = icon.slider.size.x * context->displayScale;
+						const float trackHeight = icon.slider.size.y * context->displayScale;
+						const float trackLeft = sliderPosition.x - trackWidth * 0.5f;
+						const float tickWidth = std::max(2.0f * context->displayScale, 1.5f);
+						const float tickHeight = trackHeight + 2.0f * context->displayScale;
+						auto tickColor = context->backgroundStyle == Light
+							? glm::vec4(0.0f, 0.0f, 0.0f, 0.75f)
+							: glm::vec4(1.0f, 1.0f, 1.0f, 0.75f);
+						if (context->mode == RGB_Depth && view > 0) tickColor = uiColorDepth;
+
+						for (double markerPercent : context->chapterMarkers) {
+							if (markerPercent <= 0.001 || markerPercent >= 0.999) continue;
+							const float tickX = trackLeft + static_cast<float>(markerPercent) * trackWidth;
+							setSpriteUniforms(glm::vec3(tickX, sliderPosition.y, 1.0f),
+								glm::vec3(tickWidth, tickHeight, 1.0f),
+								tickColor, (float)icon.visibility, 0, { 0, 0 },
+								{ 1, 1 }, glm::vec2(0.5f, 0.5f),
+								glm::vec3(aspectScale, 1.0f));
+							drawSprite(commandBuffer, renderPass);
+						}
+					}
+
 				}
 			}
 
@@ -3123,6 +3204,7 @@ void Image::quit(Context* context){
 	}
 	SDL_ReleaseGPUGraphicsPipeline(context->device, interlacerPipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, imagePipeline);
+	SDL_ReleaseGPUGraphicsPipeline(context->device, lanczosPipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, depthRefinePipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, depthRefineR16Pipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, videoYUVPipeline);

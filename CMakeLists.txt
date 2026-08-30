@@ -16,9 +16,7 @@ foreach(RENDEPTH_BUILD_FEATURE IN ITEMS
         RENDEPTH_ENABLE_CUDA
         RENDEPTH_BUILD_DEPTH_TEST
         RENDEPTH_BUILD_SUPER_TEST
-        RENDEPTH_COMPILE_SHADERS
-        RENDEPTH_ENABLE_BLURAY
-        RENDEPTH_ENABLE_DVD)
+        RENDEPTH_COMPILE_SHADERS)
     unset(${RENDEPTH_BUILD_FEATURE} CACHE)
 endforeach()
 
@@ -27,15 +25,11 @@ if(WIN32)
     set(RENDEPTH_ENABLE_FFMPEG ON)
     set(RENDEPTH_ENABLE_ROCM OFF)
     set(RENDEPTH_ENABLE_CUDA ON)
-    set(RENDEPTH_ENABLE_BLURAY ON)
-    set(RENDEPTH_ENABLE_DVD ON)
 else()
     set(RENDEPTH_ENABLE_ONNX_RUNTIME ON)
     set(RENDEPTH_ENABLE_FFMPEG ON)
     set(RENDEPTH_ENABLE_ROCM ON)
     set(RENDEPTH_ENABLE_CUDA OFF)
-    set(RENDEPTH_ENABLE_BLURAY ON)
-    set(RENDEPTH_ENABLE_DVD ON)
 endif()
 set(RENDEPTH_BUILD_DEPTH_TEST ON)
 set(RENDEPTH_BUILD_SUPER_TEST ON)
@@ -189,6 +183,7 @@ if(RENDEPTH_COMPILE_SHADERS)
     set(QUILTTEST_SHADER_OUTPUTS)
     foreach(shader IN ITEMS
             Image.vert Image.frag DepthRefine.frag VideoYUV.vert VideoYUV.frag
+            Lanczos.frag
             Icon.vert Icon.frag Sprite.vert Sprite.frag Interlacer.frag
             QuiltTest.vert QuiltTest.frag)
         set(shader_spv "${CMAKE_SOURCE_DIR}/Shaders/Compiled/${shader}.spv")
@@ -313,8 +308,7 @@ target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp 
 		Source/VideoDepthProcessor.cpp
 		Source/ScreenCapture.cpp
         Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
-        Source/ModelDownloader.cpp Source/SuperResolution.cpp
-        Source/BlurayReader.cpp Source/DvdReader.cpp)
+        Source/ModelDownloader.cpp Source/SuperResolution.cpp)
 
 target_include_directories(Rendepth PUBLIC
         ThirdParty/glm ThirdParty/SDL/include ThirdParty/SDL_image/include
@@ -509,94 +503,6 @@ if(RENDEPTH_ENABLE_FFMPEG)
         if(RENDEPTH_VAAPI_DRM_FOUND)
             target_link_directories(Rendepth PUBLIC ${RENDEPTH_VAAPI_DRM_LIBRARY_DIRS})
             target_link_libraries(Rendepth PUBLIC ${RENDEPTH_VAAPI_DRM_LIBRARIES})
-        endif()
-    endif()
-endif()
-
-if(RENDEPTH_ENABLE_BLURAY)
-    if(WIN32)
-        set(RENDEPTH_LIBBLURAY_ROOT "" CACHE PATH
-                "MSVC-compatible libbluray SDK root (for example, vcpkg_installed/x64-windows)")
-        find_path(LIBBLURAY_INCLUDE_DIRS
-                NAMES libbluray/bluray.h
-                PATHS "${RENDEPTH_LIBBLURAY_ROOT}/include"
-                      "${CMAKE_SOURCE_DIR}/ThirdParty/libbluray/include")
-        find_library(LIBBLURAY_LIBRARIES
-                NAMES bluray libbluray
-                PATHS "${RENDEPTH_LIBBLURAY_ROOT}/lib")
-        if(LIBBLURAY_INCLUDE_DIRS AND LIBBLURAY_LIBRARIES)
-            set(LIBBLURAY_FOUND TRUE)
-            target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_BLURAY)
-            target_include_directories(Rendepth PUBLIC "${LIBBLURAY_INCLUDE_DIRS}")
-            target_link_libraries(Rendepth PUBLIC "${LIBBLURAY_LIBRARIES}")
-        endif()
-    else()
-        find_package(PkgConfig QUIET)
-        if(PkgConfig_FOUND)
-            pkg_check_modules(LIBBLURAY QUIET IMPORTED_TARGET libbluray)
-        endif()
-        if(LIBBLURAY_FOUND)
-            target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_BLURAY)
-            target_link_libraries(Rendepth PUBLIC PkgConfig::LIBBLURAY)
-        else()
-            find_path(LIBBLURAY_INCLUDE_DIRS
-                    NAMES libbluray/bluray.h
-                    PATHS "${CMAKE_SOURCE_DIR}/ThirdParty/libbluray/include"
-                          /usr/include
-                          /usr/local/include)
-            find_library(LIBBLURAY_LIBRARIES
-                    NAMES bluray libbluray libbluray.so.3
-                    PATHS /usr/lib64 /usr/lib /usr/local/lib)
-            if(LIBBLURAY_INCLUDE_DIRS AND LIBBLURAY_LIBRARIES)
-                set(LIBBLURAY_FOUND TRUE)
-                target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_BLURAY)
-                target_include_directories(Rendepth PUBLIC "${LIBBLURAY_INCLUDE_DIRS}")
-                target_link_libraries(Rendepth PUBLIC "${LIBBLURAY_LIBRARIES}")
-            endif()
-        endif()
-    endif()
-endif()
-
-if(RENDEPTH_ENABLE_DVD)
-    if(WIN32)
-        set(RENDEPTH_LIBDVDREAD_ROOT "" CACHE PATH
-                "MSVC-compatible libdvdread SDK root (for example, vcpkg_installed/x64-windows)")
-        find_path(LIBDVDREAD_INCLUDE_DIRS
-                NAMES dvdread/dvd_reader.h
-                PATHS "${RENDEPTH_LIBDVDREAD_ROOT}/include"
-                      "${CMAKE_SOURCE_DIR}/ThirdParty/libdvdread/include")
-        find_library(LIBDVDREAD_LIBRARIES
-                NAMES dvdread libdvdread
-                PATHS "${RENDEPTH_LIBDVDREAD_ROOT}/lib")
-        if(LIBDVDREAD_INCLUDE_DIRS AND LIBDVDREAD_LIBRARIES)
-            set(LIBDVDREAD_FOUND TRUE)
-            target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_DVD)
-            target_include_directories(Rendepth PUBLIC "${LIBDVDREAD_INCLUDE_DIRS}")
-            target_link_libraries(Rendepth PUBLIC "${LIBDVDREAD_LIBRARIES}")
-        endif()
-    else()
-        find_package(PkgConfig QUIET)
-        if(PkgConfig_FOUND)
-            pkg_check_modules(LIBDVDREAD QUIET IMPORTED_TARGET dvdread libdvdread)
-        endif()
-        if(LIBDVDREAD_FOUND)
-            target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_DVD)
-            target_link_libraries(Rendepth PUBLIC PkgConfig::LIBDVDREAD)
-        else()
-            find_path(LIBDVDREAD_INCLUDE_DIRS
-                    NAMES dvdread/dvd_reader.h
-                    PATHS "${CMAKE_SOURCE_DIR}/ThirdParty/libdvdread/include"
-                          /usr/include
-                          /usr/local/include)
-            find_library(LIBDVDREAD_LIBRARIES
-                    NAMES dvdread libdvdread libdvdread.so.8 libdvdread.so.7 libdvdread.so.4
-                    PATHS /usr/lib64 /usr/lib /usr/local/lib)
-            if(LIBDVDREAD_INCLUDE_DIRS AND LIBDVDREAD_LIBRARIES)
-                set(LIBDVDREAD_FOUND TRUE)
-                target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_DVD)
-                target_include_directories(Rendepth PUBLIC "${LIBDVDREAD_INCLUDE_DIRS}")
-                target_link_libraries(Rendepth PUBLIC "${LIBDVDREAD_LIBRARIES}")
-            endif()
         endif()
     endif()
 endif()
@@ -903,24 +809,18 @@ set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 # runtime setup. These are the Debian-family libraries used by the Linux
 # executable itself; alternatives cover the current t64 transitions.
 set(CPACK_DEBIAN_PACKAGE_DEPENDS
-        "libc6, libstdc++6, libgcc-s1, libcurl4 | libcurl4t64, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, libbluray2 | libbluray1, libdvdread8 | libdvdread4 | libdvdread")
+        "libc6, libstdc++6, libgcc-s1, libcurl4 | libcurl4t64, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0")
 set(CPACK_RPM_PACKAGE_LICENSE "MIT")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
 # Increment the RPM release for rebuilds of the same application version so
 # package managers do not treat a freshly built artifact as the old package.
-set(CPACK_RPM_PACKAGE_RELEASE 3)
+set(CPACK_RPM_PACKAGE_RELEASE 4)
 set(RENDEPTH_RPM_REQUIRES)
 if(RENDEPTH_ENABLE_FFMPEG AND DAV1D_FOUND)
     list(APPEND RENDEPTH_RPM_REQUIRES "libdav1d >= 0.5.0")
 endif()
 if(RENDEPTH_ENABLE_ROCM AND UNIX AND NOT APPLE)
     list(APPEND RENDEPTH_RPM_REQUIRES "onnxruntime-rocm >= 1.22.2")
-endif()
-if(RENDEPTH_ENABLE_BLURAY AND LIBBLURAY_FOUND)
-    list(APPEND RENDEPTH_RPM_REQUIRES "libbluray")
-endif()
-if(RENDEPTH_ENABLE_DVD AND LIBDVDREAD_FOUND)
-    list(APPEND RENDEPTH_RPM_REQUIRES "libdvdread")
 endif()
 if(RENDEPTH_RPM_REQUIRES)
     list(JOIN RENDEPTH_RPM_REQUIRES ", " CPACK_RPM_PACKAGE_REQUIRES)

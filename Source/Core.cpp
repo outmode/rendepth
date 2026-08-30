@@ -20,9 +20,72 @@
 
 #include "Core.h"
 #include "SDL3_image/SDL_image.h"
+#include <cstdio>
+#include <cstring>
+#include <cstdint>
+#include <algorithm>
 #include <regex>
 
 namespace {
+	int readExifOrientation(const std::string& path) {
+		FILE* file = fopen(path.c_str(), "rb");
+		if (file == nullptr) return 1;
+		uint8_t header[65536];
+		size_t bytesRead = fread(header, 1, sizeof(header), file);
+		fclose(file);
+		if (bytesRead < 12) return 1;
+
+		// Check JPEG: 0xFF, 0xD8
+		if (header[0] == 0xFF && header[1] == 0xD8) {
+			size_t offset = 2;
+			while (offset + 4 <= bytesRead) {
+				if (header[offset] != 0xFF) break;
+				uint8_t marker = header[offset + 1];
+				if (marker == 0xD9 || marker == 0xDA) break;
+				uint16_t length = (static_cast<uint16_t>(header[offset + 2]) << 8) | header[offset + 3];
+				if (length < 2 || offset + 2 + length > bytesRead) break;
+				if (marker == 0xE1 && length >= 14) {
+					const uint8_t* exif = header + offset + 4;
+					if (std::memcmp(exif, "Exif\0\0", 6) == 0) {
+						const uint8_t* tiff = exif + 6;
+						size_t tiffLen = length - 8;
+						if (tiffLen >= 8) {
+							bool littleEndian = (tiff[0] == 'I' && tiff[1] == 'I');
+							bool bigEndian = (tiff[0] == 'M' && tiff[1] == 'M');
+							if (!littleEndian && !bigEndian) break;
+							auto read16 = [littleEndian](const uint8_t* p) -> uint16_t {
+								return littleEndian ? (p[0] | (p[1] << 8)) : ((p[0] << 8) | p[1]);
+							};
+							auto read32 = [littleEndian](const uint8_t* p) -> uint32_t {
+								return littleEndian
+									? (static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+									   (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24))
+									: ((static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+									   (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]));
+							};
+							if (read16(tiff + 2) == 0x002A) {
+								uint32_t ifdOffset = read32(tiff + 4);
+								if (ifdOffset + 2 <= tiffLen) {
+									uint16_t numEntries = read16(tiff + ifdOffset);
+									size_t entryOffset = ifdOffset + 2;
+									for (uint16_t i = 0; i < numEntries && entryOffset + 12 <= tiffLen; ++i, entryOffset += 12) {
+										uint16_t tag = read16(tiff + entryOffset);
+										if (tag == 0x0112) {
+											uint16_t val = read16(tiff + entryOffset + 8);
+											if (val >= 1 && val <= 8) return val;
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				offset += 2 + length;
+			}
+		}
+		return 1;
+	}
+
 	bool parseQuiltTag(const std::string& file, glm::vec3* grid) {
 		static const std::regex quiltPattern(
 			R"((?:_|\(|\s)qs([0-9]+)x([0-9]+)a([0-9]+(?:\.[0-9]+)?))",
@@ -211,8 +274,52 @@ int Core::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTexture
 	return 0;
 }
 
+SDL_Surface* Core::orientSurface(SDL_Surface* surface, const std::string& filepath) {
+	if (surface == nullptr) return nullptr;
+
+	float rotation = 0.0f;
+	SDL_FlipMode flip = SDL_FLIP_NONE;
+
+	SDL_PropertiesID props = SDL_GetSurfaceProperties(surface);
+	if (props != 0) {
+		rotation = SDL_GetFloatProperty(props, SDL_PROP_SURFACE_ROTATION_FLOAT, 0.0f);
+	}
+
+	if (rotation == 0.0f && flip == SDL_FLIP_NONE && !filepath.empty()) {
+		int orientation = readExifOrientation(filepath);
+		switch (orientation) {
+		case 2: flip = SDL_FLIP_HORIZONTAL; break;
+		case 3: rotation = 180.0f; break;
+		case 4: flip = SDL_FLIP_VERTICAL; break;
+		case 5: flip = SDL_FLIP_HORIZONTAL; rotation = 270.0f; break;
+		case 6: rotation = 90.0f; break;
+		case 7: flip = SDL_FLIP_HORIZONTAL; rotation = 90.0f; break;
+		case 8: rotation = 270.0f; break;
+		default: break;
+		}
+	}
+
+	if (flip != SDL_FLIP_NONE) {
+		SDL_FlipSurface(surface, flip);
+	}
+	if (rotation != 0.0f) {
+		SDL_Surface* rotated = SDL_RotateSurface(surface, rotation);
+		if (rotated != nullptr) {
+			SDL_DestroySurface(surface);
+			surface = rotated;
+		}
+		props = SDL_GetSurfaceProperties(surface);
+		if (props != 0) SDL_ClearProperty(props, SDL_PROP_SURFACE_ROTATION_FLOAT);
+	}
+
+	return surface;
+}
+
 SDL_Surface* Core::loadImageDirect(const std::string& imageFilename) {
 	SDL_Surface* surface = IMG_Load(imageFilename.c_str());
+	if (surface == nullptr) return nullptr;
+
+	surface = orientSurface(surface, imageFilename);
 	if (surface == nullptr) return nullptr;
 
 	SDL_PixelFormat format= SDL_PIXELFORMAT_ABGR8888;

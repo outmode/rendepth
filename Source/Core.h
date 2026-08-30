@@ -234,6 +234,7 @@ struct Context {
 	int effectRandom;
 	int swapLeftRight;
 	glm::vec2 imageBounds;
+	std::vector<double> chapterMarkers;
 };
 
 struct NativeDisplayConfig {
@@ -279,6 +280,7 @@ public:
 	static void quit(Context* context);
 	static SDL_GPUShader* loadShader(SDL_GPUDevice* device, const std::string& shaderFilename, Uint32 samplerCount,
 		Uint32 uniformBufferCount, Uint32 storageBufferCount, Uint32 storageTextureCount);
+	static SDL_Surface* orientSurface(SDL_Surface* surface, const std::string& filepath = "");
 	static SDL_Surface* loadImageDirect(const std::string& imageFilename);
 	static int loadImageThread(void* ptr);
 	static SDL_Thread* loadImageAsync(AsyncData& asyncData);

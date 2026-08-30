@@ -37,6 +37,7 @@ public:
 	~Image() = default;
 
 	inline static SDL_GPUGraphicsPipeline* imagePipeline = nullptr;
+	inline static SDL_GPUGraphicsPipeline* lanczosPipeline = nullptr;
 	inline static SDL_GPUGraphicsPipeline* depthRefinePipeline = nullptr;
 	inline static SDL_GPUGraphicsPipeline* depthRefineR16Pipeline = nullptr;
 	inline static SDL_GPUGraphicsPipeline* videoYUVPipeline = nullptr;
@@ -120,6 +121,11 @@ public:
 		int colorSpace;
 		int fullRange;
 		int padding;
+	};
+
+	struct LanczosDataFrag {
+		glm::vec2 sourceSize;
+		glm::vec2 targetSize;
 	};
 
 	struct InterlacerDataFrag {

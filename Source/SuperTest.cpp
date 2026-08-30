@@ -17,7 +17,12 @@ static bool isImagePath(const std::filesystem::path& path) {
 	std::transform(extension.begin(), extension.end(), extension.begin(),
 		[](unsigned char value) { return static_cast<char>(std::tolower(value)); });
 	return extension == ".png" || extension == ".jpg" || extension == ".jpeg" ||
-		extension == ".bmp" || extension == ".tga";
+		extension == ".jpe" || extension == ".jfif" || extension == ".jps" ||
+		extension == ".pns" || extension == ".bmp" || extension == ".dib" ||
+		extension == ".tga" || extension == ".tif" || extension == ".tiff" ||
+		extension == ".ico" || extension == ".cur" || extension == ".qoi" ||
+		extension == ".webp" || extension == ".avif" || extension == ".avifs" ||
+		extension == ".jxl";
 }
 
 static bool processImage(SuperResolution& estimator,
