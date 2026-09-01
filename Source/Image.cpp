@@ -2998,7 +2998,12 @@ int Image::draw(Context* context) {
 						if (context->mode == SBS_Full|| context->mode == SBS_Half || context->mode == RGB_Depth
 							|| context->mode == Free_View_Grid || context->mode == Free_View_LRL) {
 							if (context->imageType == Color_Only) {
-								imageDataFrag.mode = Native;
+								if (context->mode == RGB_Depth) {
+									if (viewX == 0) imageDataFrag.mode = Mono;
+									if (viewX == 1) imageDataFrag.mode = RGB_Depth;
+								} else {
+									imageDataFrag.mode = Native;
+								}
 							} else {
 								if (context->display3D) {
 									imageDataFrag.mode = Left + (viewX + (viewY % 2)) % 2;
@@ -3007,7 +3012,12 @@ int Image::draw(Context* context) {
 										if (viewX == 1) imageDataFrag.mode = RGB_Depth;
 									}
 								} else {
-									imageDataFrag.mode = Mono;
+									if (context->mode == RGB_Depth) {
+										if (viewX == 0) imageDataFrag.mode = Mono;
+										if (viewX == 1) imageDataFrag.mode = RGB_Depth;
+									} else {
+										imageDataFrag.mode = Mono;
+									}
 								}
 							}
 						} else if (context->imageType == Color_Only) imageDataFrag.mode = Native;
@@ -3040,8 +3050,11 @@ int Image::draw(Context* context) {
 						if (displayTip) imageDataFrag.visibility *= 0.5;
 						imageDataFrag.blur = 0;
 						imageDataFrag.force = 0;
-						if (context->mode == RGB_Depth && context->imageType != Color_Plus_Depth && viewX > 0) {
-							imageDataFrag.force = 1;
+						if (context->mode == RGB_Depth && viewX > 0) {
+							if (!context->display3D || (context->imageType != Color_Plus_Depth &&
+								videoDepthTexture == nullptr)) {
+								imageDataFrag.force = 1;
+							}
 						}
 
 						drawImage(commandBuffer, renderPass);

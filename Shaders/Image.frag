@@ -320,7 +320,7 @@ void main() {
 	vec3 clearColor = vec3(0.1, 0.1, 0.1);
 	vec2 gridLeftUV = vec2(0.0);
 	vec2 gridRightUV = vec2(0.0);
-	if (type == Color_Anaglyph) {
+	if (type == Color_Anaglyph || type == Color_Only) {
 		monoUV = fragUV;
 	} else if (type == Side_By_Side_Swap) {
 		vec2 tempUV = monoUV;
@@ -419,7 +419,7 @@ void main() {
 		} else {
 			imageColor = getColor(imageTexture, depthUV);
 		}
-		if (force == 1) imageColor.rgb = vec3(1.0);
+		if (force == 1) imageColor.rgb = vec3(0.5);
 	} else if (mode == Depth_Zoom) {
 		vec2 zoomFragUV = fragUV * 0.95 + 0.025;
 		vec2 zoomMonoUV = separateDepth == 1 ? zoomFragUV : vec2(zoomFragUV.x * 0.5, zoomFragUV.y);

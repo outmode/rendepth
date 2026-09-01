@@ -735,6 +735,7 @@ static std::string formatFileSize(std::uintmax_t size) {
 }
 static void callDepthGen(int imageIndex, bool speculative = false,
 	SDL_Surface* inputSurface = nullptr);
+static void waitForDepthThread();
 
 int previousFileIndex() {
 	if (fileList.empty() || fileIndex < 0) return -1;
@@ -1530,8 +1531,50 @@ static std::array stereoModes = {
 	Anaglyph_Accurate, Anaglyph_Vivid, SBS_Full, SBS_Half, RGB_Depth,
 	Horizontal, Vertical, Checkerboard, Free_View_Grid, Mono };
 static void changeStereo(int option) {
-	if (stereoModes[option] == Mono) setDisplay3D(false);
+	if (stereoModes[option] == Mono) {
+		setDisplay3D(false);
+		if (activeVideo || activeScreenCapture) {
+			stopVideoDepth();
+		}
+		if (isConverting) {
+			activeDepthGeneration = ++nextDepthGeneration;
+			isSpeculativeDepth = false;
+			nativeDepthEstimator.cancel();
+			waitForDepthThread();
+			isConverting = false;
+		}
+		for (auto& file : fileList) {
+			if (Core::getImageType(file.link) == Color_Only ||
+				(!isSupportedMedia(file.link) && file.path != file.link)) {
+				file.path = file.link;
+				file.type = Color_Only;
+				SDL_DestroySurface(file.preload);
+				file.preload = nullptr;
+			}
+		}
+		if (!fileList.empty()) {
+			if (activeVideo && videoPlayer.audioOnly() && audioAlbumArt != nullptr) {
+				auto* artwork = SDL_DuplicateSurface(audioAlbumArt);
+				if (artwork != nullptr) {
+					Image::load(&context, fileList[fileIndex], artwork, Color_Only);
+				}
+			} else if (!activeVideo && !activeScreenCapture) {
+				loadImage(nullptr);
+			}
+		}
+	} else {
+		if (!display3D) setDisplay3D(true);
+	}
 	setPreferredStereo(stereoModes[option], true);
+	if (!fileList.empty() && stereoModes[option] != Mono) {
+		if (activeVideo) {
+			if (fileList[fileIndex].type == Color_Only && !videoDepthProcessor.running()) {
+				startVideoDepth();
+			}
+		} else if (!activeScreenCapture && fileList[fileIndex].type == Color_Only && !isConverting) {
+			callDepthGen(fileIndex);
+		}
+	}
 	Image::saveMenuLayout(&context);
 	setShowStereoSettings(false);
 	checkMouseState();
@@ -1674,7 +1717,8 @@ static constexpr std::array<double, 3> videoDepthRates = { 20.0, 15.0, 12.0 };
 
 static void setVideoDepthFallbackMode() {
 	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
-		preferredStereoMode == Anaglyph_Accurate || preferredStereoMode == Anaglyph_Vivid)
+		preferredStereoMode == Anaglyph_Accurate || preferredStereoMode == Anaglyph_Vivid ||
+		preferredStereoMode == RGB_Depth)
 		setStereoMode(preferredStereoMode);
 	else
 		setStereoMode(Native);
@@ -2911,8 +2955,9 @@ static void refreshDisplay3D(StereoFormat type) {
 		setStereoMode(Lenticular);
 		return;
 	}
-	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half) {
-		// SBS is a two-view presentation and is only valid in fullscreen. On
+	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
+		preferredStereoMode == RGB_Depth) {
+		// SBS and RGB_Depth are two-view presentations and are only valid in fullscreen. On
 		// the initial load the window is still windowed, so keep the normal
 		// single-view mode until fullscreen is entered.
 		setStereoMode(isFullscreen ? preferredStereoMode :
@@ -3056,7 +3101,8 @@ static void updateFullscreenState() {
 	context.fullscreen = isFullscreen;
 	context.maximized = isMaximized;
 	Image::updateSize(&context);
-	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half)
+	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
+		preferredStereoMode == RGB_Depth)
 		refreshDisplay3D(context.imageType);
 }
 
@@ -3217,7 +3263,9 @@ void toggleStereo() {
 			// Keep the running depth processor and its latest frame cached while
 			// viewing the video in 2D, so returning to 3D does not reload the model.
 			setDisplay3D(false);
-			setStereoMode(Native);
+			setStereoMode((isFullscreen && (preferredStereoMode == SBS_Full ||
+				preferredStereoMode == SBS_Half || preferredStereoMode == RGB_Depth))
+				? preferredStereoMode : Native);
 		} else if (videoDepthProcessor.running() || videoDepthFrameLoaded) {
 			setDisplay3D(true);
 			refreshDisplay3D(Color_Plus_Depth);
@@ -3614,9 +3662,11 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 
 	if (!fileList.empty() && fileList.size() > fileIndex) {
 		refreshDisplay3D(fileList[fileIndex].type);
-		if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half)
+		if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
+			preferredStereoMode == RGB_Depth)
 			setStereoMode(fileList[fileIndex].type == Color_Only ? Native : Mono);
-	} else if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half) {
+	} else if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
+		preferredStereoMode == RGB_Depth) {
 		setStereoMode(Native);
 	}
 
@@ -4043,7 +4093,8 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	if (context.window != nullptr)
 		isFullscreen = (SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) != 0;
 	context.fullscreen = isFullscreen;
-	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half) {
+	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
+		preferredStereoMode == RGB_Depth) {
 		const auto fullscreenMode = isFullscreen ? preferredStereoMode :
 			(context.imageType == Color_Only ? Native : Mono);
 		if (context.mode != fullscreenMode) setStereoMode(fullscreenMode);
