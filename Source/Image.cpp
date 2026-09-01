@@ -21,6 +21,8 @@
 #include "Image.h"
 #include "Utils.h"
 #include "rapidjson/document.h"
+#include "rapidjson/prettywriter.h"
+#include "rapidjson/stringbuffer.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -62,31 +64,101 @@ namespace {
 	}
 
 	glm::vec4 getVideoBackgroundColor(const VideoFrame& frame) {
-		const auto* pixels = frame.inferenceRGBA.data();
-		int width = frame.inferenceWidth;
-		int height = frame.inferenceHeight;
-		if (width <= 0 || height <= 0 || frame.inferenceRGBA.size() <
-			static_cast<size_t>(width) * height * 4) {
-			if (frame.format != VideoFrame::Format::RGBA || frame.outputWidth <= 0 ||
-				frame.outputHeight <= 0 || frame.planes[0].size() <
-				static_cast<size_t>(frame.outputWidth) * frame.outputHeight * 4)
-				return Image::clearColorSolid;
-			pixels = frame.planes[0].data();
-			width = frame.outputWidth;
-			height = frame.outputHeight;
-		}
-		glm::vec4 result{};
 		constexpr int sampleSize = 4;
-		for (int y = 0; y < sampleSize; ++y) {
-			const int sampleY = std::min(height - 1, y * height / sampleSize);
-			for (int x = 0; x < sampleSize; ++x) {
-				const int sampleX = std::min(width - 1, x * width / sampleSize);
-				const size_t offset = static_cast<size_t>(sampleY * width +
-					sampleX) * 4;
-				result += glm::vec4(pixels[offset], pixels[offset + 1], pixels[offset + 2], 255.0f);
+		glm::vec4 result{};
+
+		if (frame.inferenceWidth > 0 && frame.inferenceHeight > 0 &&
+			frame.inferenceRGBA.size() >= static_cast<size_t>(frame.inferenceWidth) * frame.inferenceHeight * 4) {
+			const auto* pixels = frame.inferenceRGBA.data();
+			const int width = frame.inferenceWidth;
+			const int height = frame.inferenceHeight;
+			for (int y = 0; y < sampleSize; ++y) {
+				const int sampleY = std::min(height - 1, y * height / sampleSize);
+				for (int x = 0; x < sampleSize; ++x) {
+					const int sampleX = std::min(width - 1, x * width / sampleSize);
+					const size_t offset = static_cast<size_t>(sampleY * width + sampleX) * 4;
+					result += glm::vec4(pixels[offset], pixels[offset + 1], pixels[offset + 2], 255.0f);
+				}
 			}
+			result /= static_cast<float>(sampleSize * sampleSize * 255);
+		} else if (frame.format == VideoFrame::Format::RGBA) {
+			if (frame.outputWidth <= 0 || frame.outputHeight <= 0 ||
+				frame.planes[0].size() < static_cast<size_t>(frame.outputWidth) * frame.outputHeight * 4)
+				return Image::clearColorSolid;
+			const auto* pixels = frame.planes[0].data();
+			const int width = frame.outputWidth;
+			const int height = frame.outputHeight;
+			for (int y = 0; y < sampleSize; ++y) {
+				const int sampleY = std::min(height - 1, y * height / sampleSize);
+				for (int x = 0; x < sampleSize; ++x) {
+					const int sampleX = std::min(width - 1, x * width / sampleSize);
+					const size_t offset = static_cast<size_t>(sampleY * width + sampleX) * 4;
+					result += glm::vec4(pixels[offset], pixels[offset + 1], pixels[offset + 2], 255.0f);
+				}
+			}
+			result /= static_cast<float>(sampleSize * sampleSize * 255);
+		} else if (frame.format == VideoFrame::Format::NV12 || frame.format == VideoFrame::Format::YUV420P) {
+			const int width = frame.width;
+			const int height = frame.height;
+			const int chromaWidth = (width + 1) / 2;
+			const int chromaHeight = (height + 1) / 2;
+			if (width <= 0 || height <= 0 ||
+				frame.planes[0].size() < static_cast<size_t>(width) * height ||
+				frame.planes[1].size() < static_cast<size_t>(chromaWidth) * chromaHeight * (frame.format == VideoFrame::Format::NV12 ? 2 : 1) ||
+				(frame.format == VideoFrame::Format::YUV420P && frame.planes[2].size() < static_cast<size_t>(chromaWidth) * chromaHeight))
+				return Image::clearColorSolid;
+
+			float kr = 0.2126f, kb = 0.0722f;
+			if (frame.colorSpace == VideoFrame::ColorSpace::BT601) {
+				kr = 0.2990f; kb = 0.1140f;
+			} else if (frame.colorSpace == VideoFrame::ColorSpace::BT2020) {
+				kr = 0.2627f; kb = 0.0593f;
+			}
+			const float kg = 1.0f - kr - kb;
+
+			for (int y = 0; y < sampleSize; ++y) {
+				const int sampleY = std::min(height - 1, y * height / sampleSize);
+				const int chromaY = sampleY / 2;
+				for (int x = 0; x < sampleSize; ++x) {
+					const int sampleX = std::min(width - 1, x * width / sampleSize);
+					const int chromaX = sampleX / 2;
+
+					const float yVal = static_cast<float>(frame.planes[0][sampleY * width + sampleX]);
+					float uVal = 128.0f;
+					float vVal = 128.0f;
+					if (frame.format == VideoFrame::Format::NV12) {
+						const size_t chromaOffset = static_cast<size_t>(chromaY * chromaWidth + chromaX) * 2;
+						uVal = static_cast<float>(frame.planes[1][chromaOffset]);
+						vVal = static_cast<float>(frame.planes[1][chromaOffset + 1]);
+					} else {
+						const size_t chromaOffset = static_cast<size_t>(chromaY * chromaWidth + chromaX);
+						uVal = static_cast<float>(frame.planes[1][chromaOffset]);
+						vVal = static_cast<float>(frame.planes[2][chromaOffset]);
+					}
+
+					float yScaled = 0.0f, cb = 0.0f, cr = 0.0f;
+					if (!frame.fullRange) {
+						yScaled = (yVal - 16.0f) / 219.0f;
+						cb = (uVal - 128.0f) / 224.0f;
+						cr = (vVal - 128.0f) / 224.0f;
+					} else {
+						yScaled = yVal / 255.0f;
+						cb = uVal / 255.0f - 0.5f;
+						cr = vVal / 255.0f - 0.5f;
+					}
+
+					const float r = glm::clamp(yScaled + 2.0f * (1.0f - kr) * cr, 0.0f, 1.0f);
+					const float g = glm::clamp(yScaled - 2.0f * kb * (1.0f - kb) / kg * cb - 2.0f * kr * (1.0f - kr) / kg * cr, 0.0f, 1.0f);
+					const float b = glm::clamp(yScaled + 2.0f * (1.0f - kb) * cb, 0.0f, 1.0f);
+
+					result += glm::vec4(r, g, b, 1.0f);
+				}
+			}
+			result /= static_cast<float>(sampleSize * sampleSize);
+		} else {
+			return Image::clearColorSolid;
 		}
-		result /= static_cast<float>(sampleSize * sampleSize * 255);
+
 		result.a = 1.0f;
 		return glm::mix(glm::vec4(0.1f, 0.1f, 0.1f, 1.0f), result, 0.9f);
 	}
@@ -137,33 +209,61 @@ void updateVideoSolidColor() {
 		if (document.HasParseError() || !document.IsObject()) return false;
 
 		NativeDisplayConfig loaded = config;
-		float pitch = 0.0f, slope = 0.0f, center = 0.0f, dpi = 0.0f;
-		float screenWidth = 0.0f, screenHeight = 0.0f, viewCone = 0.0f;
-		const bool complete =
-			readCalibrationNumber(document, "pitch", pitch) && pitch > 0.0f &&
-			readCalibrationNumber(document, "slope", slope) && std::abs(slope) > 0.001f &&
-			readCalibrationNumber(document, "center", center) &&
-			readCalibrationNumber(document, "DPI", dpi) && dpi > 0.0f &&
-			readCalibrationNumber(document, "screenW", screenWidth) && screenWidth > 0.0f &&
-			readCalibrationNumber(document, "screenH", screenHeight) && screenHeight > 0.0f;
-		if (!complete) {
-			SDL_Log("Incomplete Looking Glass calibration in %s", path.string().c_str());
-			return false;
+		float pitch = loaded.pitch, slope = loaded.slope, center = loaded.center, dpi = loaded.dpi;
+		float screenWidth = (float)loaded.screenSize.x, screenHeight = (float)loaded.screenSize.y, viewCone = loaded.viewCone;
+		float subpixel = loaded.subpixel;
+
+		readCalibrationNumber(document, "pitch", pitch);
+		if (!readCalibrationNumber(document, "slope", slope)) {
+			readCalibrationNumber(document, "tilt", slope);
 		}
-		loaded.pitch = pitch;
+		readCalibrationNumber(document, "center", center);
+		if (!readCalibrationNumber(document, "DPI", dpi)) {
+			readCalibrationNumber(document, "dpi", dpi);
+		}
+		if (!readCalibrationNumber(document, "screenW", screenWidth)) {
+			if (!readCalibrationNumber(document, "screenWidth", screenWidth)) {
+				readCalibrationNumber(document, "width", screenWidth);
+			}
+		}
+		if (!readCalibrationNumber(document, "screenH", screenHeight)) {
+			if (!readCalibrationNumber(document, "screenHeight", screenHeight)) {
+				readCalibrationNumber(document, "height", screenHeight);
+			}
+		}
+		if (!readCalibrationNumber(document, "subpixel", subpixel)) {
+			readCalibrationNumber(document, "subpixelOffset", subpixel);
+		}
+
+		if (pitch > 0.0f) loaded.pitch = pitch;
 		loaded.slope = slope;
 		loaded.center = center;
-		loaded.dpi = dpi;
-		loaded.screenSize = {(int)std::lround(screenWidth), (int)std::lround(screenHeight)};
+		if (dpi > 0.0f) loaded.dpi = dpi;
+		if (screenWidth > 0.0f && screenHeight > 0.0f) {
+			loaded.screenSize = {(int)std::lround(screenWidth), (int)std::lround(screenHeight)};
+		}
+		loaded.subpixel = subpixel;
 		if (readCalibrationNumber(document, "viewCone", viewCone)) loaded.viewCone = viewCone;
+
 		bool vendorInvertView = false;
 		if (readCalibrationBool(document, "invView", vendorInvertView))
 			loaded.invertView = !vendorInvertView;
+		readCalibrationBool(document, "invertView", loaded.invertView);
 		readCalibrationBool(document, "flipImageX", loaded.flipImageX);
+		readCalibrationBool(document, "flipX", loaded.flipImageX);
 		readCalibrationBool(document, "flipImageY", loaded.flipImageY);
+		readCalibrationBool(document, "flipY", loaded.flipImageY);
 		readCalibrationBool(document, "flipSubp", loaded.flipSubpixel);
+		readCalibrationBool(document, "flipSubpixel", loaded.flipSubpixel);
+
+		float viewCountVal = 0.0f;
+		if (readCalibrationNumber(document, "viewCount", viewCountVal) ||
+			readCalibrationNumber(document, "views", viewCountVal)) {
+			loaded.viewCount = (int)std::lround(viewCountVal);
+			if (loaded.viewCount == 2) loaded.quiltGrid = {2.0f, 1.0f};
+		}
 		loaded.calibrated = true;
-		if (loaded.screenSize == glm::ivec2(1440, 2560)) {
+		if (loaded.screenSize == glm::ivec2(1440, 2560) && loaded.viewCount == 2) {
 			loaded.quiltGrid = {11.0f, 6.0f};
 			loaded.viewCount = 66;
 		}
@@ -177,6 +277,15 @@ void updateVideoSolidColor() {
 			return requested;
 
 		std::error_code error;
+		for (const auto& localCandidate : {
+			std::filesystem::current_path() / "calibration.json",
+			std::filesystem::current_path() / "visual.json",
+			Core::getHomeDirectory() / ".config" / "rendepth" / "calibration.json",
+			Core::getHomeDirectory() / ".rendepth" / "calibration.json"
+		}) {
+			if (std::filesystem::is_regular_file(localCandidate, error)) return localCandidate;
+		}
+
 		for (const auto& mediaRoot : {std::filesystem::path("/run/media"), std::filesystem::path("/media")}) {
 			if (!std::filesystem::is_directory(mediaRoot, error)) continue;
 			for (const auto& userRoot : std::filesystem::directory_iterator(mediaRoot, error)) {
@@ -192,14 +301,34 @@ void updateVideoSolidColor() {
 	}
 
 	void applyNativeDisplayOverrides(NativeDisplayConfig& config) {
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_WIDTH"))
+			config.screenSize.x = (int)std::strtol(value, nullptr, 10);
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_HEIGHT"))
+			config.screenSize.y = (int)std::strtol(value, nullptr, 10);
 		if (const char* value = std::getenv("RENDEPTH_NATIVE_PITCH"))
 			config.pitch = std::strtof(value, nullptr);
 		if (const char* value = std::getenv("RENDEPTH_NATIVE_TILT"))
+			config.slope = std::strtof(value, nullptr);
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_SLOPE"))
 			config.slope = std::strtof(value, nullptr);
 		if (const char* value = std::getenv("RENDEPTH_NATIVE_CENTER"))
 			config.center = std::strtof(value, nullptr);
 		if (const char* value = std::getenv("RENDEPTH_NATIVE_SUBPIXEL"))
 			config.subpixel = std::strtof(value, nullptr);
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_DPI"))
+			config.dpi = std::strtof(value, nullptr);
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_VIEWS")) {
+			config.viewCount = (int)std::strtol(value, nullptr, 10);
+			if (config.viewCount == 2) config.quiltGrid = {2.0f, 1.0f};
+		}
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_FLIP_X"))
+			config.flipImageX = (std::string(value) == "1" || std::string(value) == "true");
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_FLIP_Y"))
+			config.flipImageY = (std::string(value) == "1" || std::string(value) == "true");
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_FLIP_SUBPIXEL"))
+			config.flipSubpixel = (std::string(value) == "1" || std::string(value) == "true");
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_INVERT"))
+			config.invertView = (std::string(value) == "1" || std::string(value) == "true");
 	}
 
 	void reloadNativeDisplayConfig(NativeDisplayConfig& config) {
@@ -233,6 +362,10 @@ int Image::initNativeOutput(Context* context) {
 
 	int displayCount = 0;
 	SDL_DisplayID* displays = SDL_GetDisplays(&displayCount);
+	SDL_DisplayID appDisplay = context->window != nullptr ? SDL_GetDisplayForWindow(context->window) : 0;
+	SDL_DisplayID matchedDisplay = 0;
+	std::string matchedDisplayName;
+
 	for (int i = 0; displays != nullptr && i < displayCount; ++i) {
 		const char* name = SDL_GetDisplayName(displays[i]);
 		std::string displayName = name != nullptr ? name : "";
@@ -244,55 +377,190 @@ int Image::initNativeOutput(Context* context) {
 				[](unsigned char c) { return (char)std::tolower(c); });
 			return value;
 		}();
-		const bool knownQuiltDisplay = lowerName.find("lkg") != std::string::npos ||
+		const bool isLookingGlass = lowerName.find("lkg") != std::string::npos ||
 			lowerName.find("looking glass") != std::string::npos ||
 			lowerName.find("cubevi") != std::string::npos ||
 			lowerName.find("c1") != std::string::npos;
+		const bool isGenericLenticular = lowerName.find("3d display") != std::string::npos ||
+			lowerName.find("lenticular") != std::string::npos;
+		const bool knownQuiltDisplay = isLookingGlass || isGenericLenticular;
 		if (!requested && requestedName == nullptr && !knownQuiltDisplay) continue;
 		if (!requested && requestedName != nullptr) continue;
 
-		SDL_Rect bounds{};
-		if (!SDL_GetDisplayBounds(displays[i], &bounds)) continue;
-		nativeDisplay = displays[i];
-		nativeDisplayConfig.displayName = displayName;
-		context->nativeOutputWindow = SDL_CreateWindow("Rendepth Native Output",
-			bounds.w, bounds.h, SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIGH_PIXEL_DENSITY);
-		if (context->nativeOutputWindow == nullptr) {
-			SDL_Log("Could not create native output window for %s: %s",
-				displayName.c_str(), SDL_GetError());
-			break;
-		}
-		SDL_SetWindowPosition(context->nativeOutputWindow,
-			SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay),
-			SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay));
-		SDL_SetWindowFullscreenMode(context->nativeOutputWindow, nullptr);
-		if (!SDL_SetWindowFullscreen(context->nativeOutputWindow, true)) {
-			SDL_Log("Native output fullscreen failed for %s: %s",
-				displayName.c_str(), SDL_GetError());
-		}
-		if (!SDL_ClaimWindowForGPUDevice(context->device, context->nativeOutputWindow)) {
-			SDL_Log("Could not claim native output window for %s: %s",
-				displayName.c_str(), SDL_GetError());
-			SDL_DestroyWindow(context->nativeOutputWindow);
-			context->nativeOutputWindow = nullptr;
-			break;
-		}
-			nativeOutputEnabled = true;
-			nativeOutputLastSize = {0, 0};
+		matchedDisplay = displays[i];
+		matchedDisplayName = displayName;
 		break;
 	}
+
+	if (matchedDisplay != 0) {
+		nativeDisplay = matchedDisplay;
+		nativeDisplayConfig.displayName = matchedDisplayName;
+
+		if (appDisplay == nativeDisplay) {
+			if (context->nativeOutputWindow != nullptr) {
+				SDL_ReleaseWindowFromGPUDevice(context->device, context->nativeOutputWindow);
+				SDL_DestroyWindow(context->nativeOutputWindow);
+				context->nativeOutputWindow = nullptr;
+			}
+			nativeOutputEnabled = true;
+			nativeDisplayOnMainWindow = true;
+		} else {
+			nativeDisplayOnMainWindow = false;
+			if (context->nativeOutputWindow == nullptr) {
+				SDL_Rect bounds{};
+				if (SDL_GetDisplayBounds(nativeDisplay, &bounds)) {
+					context->nativeOutputWindow = SDL_CreateWindow("Rendepth Native Output",
+						bounds.w, bounds.h, SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+					if (context->nativeOutputWindow != nullptr) {
+						SDL_SetWindowPosition(context->nativeOutputWindow,
+							SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay),
+							SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay));
+						configureFullscreenMode(context->nativeOutputWindow, nativeDisplay);
+						SDL_SetWindowFullscreen(context->nativeOutputWindow, true);
+						if (!SDL_ClaimWindowForGPUDevice(context->device, context->nativeOutputWindow)) {
+							SDL_Log("Could not claim native output window for %s: %s",
+								matchedDisplayName.c_str(), SDL_GetError());
+							SDL_DestroyWindow(context->nativeOutputWindow);
+							context->nativeOutputWindow = nullptr;
+						}
+					}
+				}
+			}
+			nativeOutputEnabled = (context->nativeOutputWindow != nullptr);
+			nativeOutputLastSize = {0, 0};
+		}
+	} else {
+		nativeDisplay = 0;
+		if (context->nativeOutputWindow != nullptr) {
+			SDL_ReleaseWindowFromGPUDevice(context->device, context->nativeOutputWindow);
+			SDL_DestroyWindow(context->nativeOutputWindow);
+			context->nativeOutputWindow = nullptr;
+		}
+		nativeOutputEnabled = true;
+		nativeDisplayOnMainWindow = true;
+	}
+
 	if (displays != nullptr) SDL_free(displays);
 	return 0;
+}
+
+void Image::configureFullscreenMode(SDL_Window* window, SDL_DisplayID displayID) {
+	if (window == nullptr || displayID == 0) return;
+	int modeCount = 0;
+	SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(displayID, &modeCount);
+	const SDL_DisplayMode* bestMode = nullptr;
+	if (modes != nullptr && modeCount > 0) {
+		if (nativeDisplayConfig.screenSize.x > 0 && nativeDisplayConfig.screenSize.y > 0) {
+			for (int i = 0; i < modeCount; ++i) {
+				if (modes[i] != nullptr &&
+					modes[i]->w == nativeDisplayConfig.screenSize.x &&
+					modes[i]->h == nativeDisplayConfig.screenSize.y) {
+					bestMode = modes[i];
+					break;
+				}
+			}
+		}
+		if (bestMode == nullptr) {
+			for (int i = 0; i < modeCount; ++i) {
+				if (modes[i] != nullptr && modes[i]->w == 3840 && modes[i]->h == 2160) {
+					bestMode = modes[i];
+					break;
+				}
+			}
+		}
+		if (bestMode == nullptr) {
+			int maxPixels = 0;
+			for (int i = 0; i < modeCount; ++i) {
+				if (modes[i] != nullptr) {
+					int pixels = modes[i]->w * modes[i]->h;
+					if (pixels > maxPixels) {
+						maxPixels = pixels;
+						bestMode = modes[i];
+					}
+				}
+			}
+		}
+	}
+	if (bestMode != nullptr) {
+		SDL_SetWindowFullscreenMode(window, bestMode);
+		SDL_Log("Selected native fullscreen display mode: %dx%d (%.2f Hz) for display %u",
+			bestMode->w, bestMode->h, bestMode->refresh_rate, (unsigned int)displayID);
+	} else {
+		SDL_SetWindowFullscreenMode(window, nullptr);
+	}
+	if (modes != nullptr) SDL_free(modes);
 }
 
 bool Image::nativeOutputAvailable() {
 	return nativeOutputEnabled;
 }
 
+bool Image::saveNativeDisplayConfig(const std::filesystem::path& path, const NativeDisplayConfig& config) {
+	rapidjson::StringBuffer buffer;
+	rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+	writer.StartObject();
+	writer.Key("pitch");
+	writer.Double(config.pitch);
+	writer.Key("slope");
+	writer.Double(config.slope);
+	writer.Key("center");
+	writer.Double(config.center);
+	writer.Key("dpi");
+	writer.Double(config.dpi);
+	writer.Key("screenWidth");
+	writer.Int(config.screenSize.x);
+	writer.Key("screenHeight");
+	writer.Int(config.screenSize.y);
+	writer.Key("viewCount");
+	writer.Int(config.viewCount);
+	writer.Key("subpixel");
+	writer.Double(config.subpixel);
+	writer.Key("invertView");
+	writer.Bool(config.invertView);
+	writer.Key("flipImageX");
+	writer.Bool(config.flipImageX);
+	writer.Key("flipImageY");
+	writer.Bool(config.flipImageY);
+	writer.Key("flipSubpixel");
+	writer.Bool(config.flipSubpixel);
+	writer.EndObject();
+
+	const std::string text = buffer.GetString();
+	SDL_IOStream* file = SDL_IOFromFile(path.string().c_str(), "w");
+	if (file == nullptr) {
+		SDL_Log("Failed to save calibration to %s: %s", path.string().c_str(), SDL_GetError());
+		return false;
+	}
+	SDL_WriteIO(file, text.data(), text.size());
+	SDL_CloseIO(file);
+	SDL_Log("Saved lenticular calibration to %s", path.string().c_str());
+	return true;
+}
+
+bool Image::saveNativeDisplayConfig(const NativeDisplayConfig& config) {
+	std::filesystem::path savePath = std::filesystem::current_path() / "calibration.json";
+	return saveNativeDisplayConfig(savePath, config);
+}
+
+void Image::resetNativeDisplayConfig(Context* context) {
+	std::string currentDisplayName = nativeDisplayConfig.displayName;
+	nativeDisplayConfig = NativeDisplayConfig{};
+	nativeDisplayConfig.displayName = currentDisplayName;
+	saveNativeDisplayConfig(nativeDisplayConfig);
+	if (context != nullptr) {
+		updateInterlacerUniforms(context, (int)context->windowSize.x, (int)context->windowSize.y);
+	}
+}
+
+bool Image::isNativeDisplayOnMainWindow() {
+	return nativeDisplayOnMainWindow;
+}
+
 void Image::setNativeOutputActive(Context* context, bool active) {
 	if (context == nullptr || context->device == nullptr) return;
 	if (active) {
-		if (!nativeOutputEnabled) initNativeOutput(context);
+		if (!nativeOutputEnabled || (nativeDisplay != 0 && (context->nativeOutputWindow == nullptr && !nativeDisplayOnMainWindow)))
+			initNativeOutput(context);
 		return;
 	}
 	if (context->nativeOutputWindow != nullptr) {
@@ -302,6 +570,7 @@ void Image::setNativeOutputActive(Context* context, bool active) {
 	}
 	nativeOutputEnabled = false;
 	nativeOutputSourceReady = false;
+	nativeDisplayOnMainWindow = false;
 }
 
 glm::vec2 Image::updateRatio(Context* context, glm::vec2 windowSize) {
@@ -2570,9 +2839,10 @@ int Image::draw(Context* context) {
 		return -1;
 	}
 
+	Uint32 swapchainWidth = 0, swapchainHeight = 0;
 	SDL_GPUTexture* swapchainTexture;
 	if (!SDL_AcquireGPUSwapchainTexture(commandBuffer, context->window, &swapchainTexture,
-			nullptr, nullptr)) {
+			&swapchainWidth, &swapchainHeight)) {
 		SDL_Log("Acquire GPU Swap Chain Failed.");
 		return -1;
 	}
@@ -2596,8 +2866,13 @@ int Image::draw(Context* context) {
 			return -1;
 		}
 
-		int windowWidth, windowHeight;
-		SDL_GetWindowSizeInPixels(context->window, &windowWidth, &windowHeight);
+		int windowWidth = 0, windowHeight = 0;
+		if (swapchainWidth > 0 && swapchainHeight > 0) {
+			windowWidth = (int)swapchainWidth;
+			windowHeight = (int)swapchainHeight;
+		} else {
+			SDL_GetWindowSizeInPixels(context->window, &windowWidth, &windowHeight);
+		}
 		glm::vec2 windowSize = { windowWidth, windowHeight };
 		auto aspectScale = glm::vec2(1.0, 1.0);
 
@@ -2621,94 +2896,156 @@ int Image::draw(Context* context) {
 			viewsY = 2;
 		}
 
-		for (auto viewY = 0; viewY < viewsY; viewY++) {
-			for (auto viewX = 0; viewX < viewsX; viewX++) {
-				if (displayHelp) continue;
-				auto viewSize = windowSize;
-				auto drawViewport = getViewport(viewX, viewsX * viewsY, viewSize);
-				if (viewsY > 1) {
-					viewSize = windowSize / glm::vec2(viewsX, viewsY);
-					drawViewport = getViewportGrid(glm::vec2(viewX, viewY), viewSize);
-				}
-				SDL_SetGPUViewport(renderPass, &drawViewport);
+		const bool isMainInterlaced = (context->mode == Lenticular && context->display3D &&
+			context->fullscreen && context->nativeOutputWindow == nullptr && interlacerPipeline != nullptr &&
+			imageTexture != nullptr);
 
-				if (imageTexture != nullptr && blurTexture != nullptr &&
-					blurTextureNext != nullptr) {
-					bindPipeline(renderPass, imagePipeline);
-					SDL_GPUTextureSamplerBinding sampleBindings[4] = {
-						{ .texture = imageTexture, .sampler = imageSampler },
-						{ .texture = blurTexture, .sampler = imageSampler },
-						{ .texture = blurTextureNext, .sampler = imageSampler },
-						{ .texture = videoDepthTexture != nullptr ? videoDepthTexture : imageTexture,
-							.sampler = imageSampler }};
-					SDL_BindGPUFragmentSamplers(renderPass, 0, &sampleBindings[0], 4);
+		if (isMainInterlaced) {
+			auto drawViewport = getViewport(0, 1, windowSize);
+			SDL_SetGPUViewport(renderPass, &drawViewport);
+			if (context->backgroundStyle == Blur && blurTexture != nullptr &&
+				blurTextureNext != nullptr) {
+				bindPipeline(renderPass, imagePipeline);
+				SDL_GPUTextureSamplerBinding sampleBindings[4] = {
+					{ .texture = imageTexture, .sampler = imageSampler },
+					{ .texture = blurTexture, .sampler = imageSampler },
+					{ .texture = blurTextureNext, .sampler = imageSampler },
+					{ .texture = videoDepthTexture != nullptr ? videoDepthTexture : imageTexture,
+						.sampler = imageSampler }};
+				SDL_BindGPUFragmentSamplers(renderPass, 0, &sampleBindings[0], 4);
 
-					imageDataVert.fillScreen = 1;
-					imageDataVert.projection = glm::mat4(1.0f);
-					imageDataVert.transform = glm::scale(glm::mat4(1.0f), glm::vec3(2.0, 2.0, 1.0));
+				imageDataVert.fillScreen = 1;
+				imageDataVert.projection = glm::mat4(1.0f);
+				imageDataVert.transform = glm::scale(glm::mat4(1.0f), glm::vec3(2.0, 2.0, 1.0));
 
-					imageDataFrag.windowSize = windowSize;
-					imageDataFrag.imageSize = context->imageSize;
-					imageDataFrag.gridSize = context->gridSize;
-					imageDataFrag.mode = context->mode;
-					imageDataFrag.type = context->imageType;
-					imageDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;
-					imageDataFrag.swapLeftRight = context->swapLeftRight;
+				imageDataFrag.windowSize = windowSize;
+				imageDataFrag.imageSize = context->imageSize;
+				imageDataFrag.gridSize = context->gridSize;
+				imageDataFrag.mode = context->mode;
+				imageDataFrag.type = context->imageType;
+				imageDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;
+				imageDataFrag.swapLeftRight = context->swapLeftRight;
+				imageDataVert.displayImageAspect = glm::vec3(context->displayAspect, 1.0);
+				imageDataFrag.visibility = 1.0;
+				imageDataFrag.stereoStrength = (float)context->stereoStrength;
+				imageDataFrag.stereoDepth = (float)context->stereoDepth;
+				imageDataFrag.stereoOffset = (float)context->stereoOffset;
+				imageDataFrag.gridAngle = (float)context->gridAngle;
+				imageDataFrag.depthEffect = (float)context->depthEffect;
+				imageDataFrag.effectRandom = context->effectRandom;
+				imageDataFrag.blur = 1;
 
-					imageDataVert.displayImageAspect = glm::vec3(context->displayAspect, 1.0);
-					if (context->mode == SBS_Full && viewsX > 1)
-						imageDataVert.displayImageAspect.x *= 2.0f;
+				drawImage(commandBuffer, renderPass);
+			}
 
-					if (context->mode == SBS_Full|| context->mode == SBS_Half || context->mode == RGB_Depth
-						|| context->mode == Free_View_Grid || context->mode == Free_View_LRL) {
-						if (context->imageType == Color_Only) {
-							imageDataFrag.mode = Native;
-						} else {
-							if (context->display3D) {
-								imageDataFrag.mode = Left + (viewX + (viewY % 2)) % 2;
-								if (context->mode == RGB_Depth) {
-									if (viewX == 0) imageDataFrag.mode = Mono;
-									if (viewX == 1) imageDataFrag.mode = RGB_Depth;
-								}
+			updateInterlacerUniforms(context, (int)windowSize.x, (int)windowSize.y);
+			bindPipeline(renderPass, interlacerPipeline);
+			imageDataVert.displayImageAspect = {1.0f, 1.0f, 1.0f};
+			imageDataVert.displayImageAspect.x = windowSize.x / windowSize.y;
+			imageDataVert.displayImageAspect.y = context->imageSize.x / context->imageSize.y;
+			imageDataVert.fillScreen = 0;
+			imageDataVert.projection = glm::mat4(1.0f);
+			imageDataVert.transform = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f));
+			SDL_PushGPUVertexUniformData(commandBuffer, 0, &imageDataVert, sizeof(imageDataVert));
+			SDL_GPUTextureSamplerBinding bindings[2] = {
+				{.texture = imageTexture, .sampler = imageSampler},
+				{.texture = videoDepthTexture != nullptr ? videoDepthTexture : imageTexture,
+					.sampler = imageSampler}
+			};
+			SDL_BindGPUFragmentSamplers(renderPass, 0, bindings, 2);
+			SDL_PushGPUFragmentUniformData(commandBuffer, 0, &interlacerDataFrag,
+				sizeof(interlacerDataFrag));
+			SDL_DrawGPUIndexedPrimitives(renderPass, 6, 1, 0, 0, 0);
+		} else {
+			for (auto viewY = 0; viewY < viewsY; viewY++) {
+				for (auto viewX = 0; viewX < viewsX; viewX++) {
+					if (displayHelp) continue;
+					auto viewSize = windowSize;
+					auto drawViewport = getViewport(viewX, viewsX * viewsY, viewSize);
+					if (viewsY > 1) {
+						viewSize = windowSize / glm::vec2(viewsX, viewsY);
+						drawViewport = getViewportGrid(glm::vec2(viewX, viewY), viewSize);
+					}
+					SDL_SetGPUViewport(renderPass, &drawViewport);
+
+					if (imageTexture != nullptr && blurTexture != nullptr &&
+						blurTextureNext != nullptr) {
+						bindPipeline(renderPass, imagePipeline);
+						SDL_GPUTextureSamplerBinding sampleBindings[4] = {
+							{ .texture = imageTexture, .sampler = imageSampler },
+							{ .texture = blurTexture, .sampler = imageSampler },
+							{ .texture = blurTextureNext, .sampler = imageSampler },
+							{ .texture = videoDepthTexture != nullptr ? videoDepthTexture : imageTexture,
+								.sampler = imageSampler }};
+						SDL_BindGPUFragmentSamplers(renderPass, 0, &sampleBindings[0], 4);
+
+						imageDataVert.fillScreen = 1;
+						imageDataVert.projection = glm::mat4(1.0f);
+						imageDataVert.transform = glm::scale(glm::mat4(1.0f), glm::vec3(2.0, 2.0, 1.0));
+
+						imageDataFrag.windowSize = windowSize;
+						imageDataFrag.imageSize = context->imageSize;
+						imageDataFrag.gridSize = context->gridSize;
+						imageDataFrag.mode = context->mode;
+						imageDataFrag.type = context->imageType;
+						imageDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;
+						imageDataFrag.swapLeftRight = context->swapLeftRight;
+
+						imageDataVert.displayImageAspect = glm::vec3(context->displayAspect, 1.0);
+						if (context->mode == SBS_Full && viewsX > 1)
+							imageDataVert.displayImageAspect.x *= 2.0f;
+
+						if (context->mode == SBS_Full|| context->mode == SBS_Half || context->mode == RGB_Depth
+							|| context->mode == Free_View_Grid || context->mode == Free_View_LRL) {
+							if (context->imageType == Color_Only) {
+								imageDataFrag.mode = Native;
 							} else {
-								imageDataFrag.mode = Mono;
+								if (context->display3D) {
+									imageDataFrag.mode = Left + (viewX + (viewY % 2)) % 2;
+									if (context->mode == RGB_Depth) {
+										if (viewX == 0) imageDataFrag.mode = Mono;
+										if (viewX == 1) imageDataFrag.mode = RGB_Depth;
+									}
+								} else {
+									imageDataFrag.mode = Mono;
+								}
 							}
+						} else if (context->imageType == Color_Only) imageDataFrag.mode = Native;
+
+						imageDataFrag.visibility = 1.0;
+						imageDataFrag.stereoStrength = (float)context->stereoStrength;
+						imageDataFrag.stereoDepth = (float)context->stereoDepth;
+						imageDataFrag.stereoOffset = (float)context->stereoOffset;
+						imageDataFrag.gridAngle = (float)context->gridAngle;
+						imageDataFrag.depthEffect = (float)context->depthEffect;
+						imageDataFrag.effectRandom = context->effectRandom;
+						imageDataFrag.blur = 1;
+
+						if (context->backgroundStyle == Blur) drawImage(commandBuffer, renderPass);
+
+						imageDataVert.displayImageAspect = glm::vec3(context->displayAspect, 1.0);
+						imageDataVert.fillScreen = 0;
+						imageDataVert.projection = glm::ortho(-windowSize.x * 0.5f, windowSize.x * 0.5f,
+							-windowSize.y * 0.5f, windowSize.y * 0.5f);
+						imageDataVert.transform = glm::mat4(1.0f);
+						auto viewOffset = context->offset;
+						if (context->mode == Free_View_Grid) {
+							viewOffset.x = viewX == 0 ? context->imageBounds.x : -context->imageBounds.x;
+							viewOffset.y = viewY == 0 ? context->imageBounds.y : -context->imageBounds.y;
 						}
-					} else if (context->imageType == Color_Only) imageDataFrag.mode = Native;
+						imageDataVert.transform = glm::translate(imageDataVert.transform, glm::vec3(viewOffset * glm::vec2(1.0, -1.0), 0.0f));
+						imageDataVert.transform = glm::scale(imageDataVert.transform, glm::vec3(context->currentZoom, context->currentZoom, 1.0f));
+						imageDataVert.transform = glm::scale(imageDataVert.transform, glm::vec3(windowSize.x, windowSize.y, 1.0));
+						imageDataFrag.visibility = context->visibility;
+						if (displayTip) imageDataFrag.visibility *= 0.5;
+						imageDataFrag.blur = 0;
+						imageDataFrag.force = 0;
+						if (context->mode == RGB_Depth && context->imageType != Color_Plus_Depth && viewX > 0) {
+							imageDataFrag.force = 1;
+						}
 
-					imageDataFrag.visibility = 1.0;
-					imageDataFrag.stereoStrength = (float)context->stereoStrength;
-					imageDataFrag.stereoDepth = (float)context->stereoDepth;
-					imageDataFrag.stereoOffset = (float)context->stereoOffset;
-					imageDataFrag.gridAngle = (float)context->gridAngle;
-					imageDataFrag.depthEffect = (float)context->depthEffect;
-					imageDataFrag.effectRandom = context->effectRandom;
-					imageDataFrag.blur = 1;
-
-					if (context->backgroundStyle == Blur) drawImage(commandBuffer, renderPass);
-
-					imageDataVert.displayImageAspect = glm::vec3(context->displayAspect, 1.0);
-					imageDataVert.fillScreen = 0;
-					imageDataVert.projection = glm::ortho(-windowSize.x * 0.5f, windowSize.x * 0.5f,
-						-windowSize.y * 0.5f, windowSize.y * 0.5f);
-					imageDataVert.transform = glm::mat4(1.0f);
-					auto viewOffset = context->offset;
-					if (context->mode == Free_View_Grid) {
-						viewOffset.x = viewX == 0 ? context->imageBounds.x : -context->imageBounds.x;
-						viewOffset.y = viewY == 0 ? context->imageBounds.y : -context->imageBounds.y;
+						drawImage(commandBuffer, renderPass);
 					}
-					imageDataVert.transform = glm::translate(imageDataVert.transform, glm::vec3(viewOffset * glm::vec2(1.0, -1.0), 0.0f));
-					imageDataVert.transform = glm::scale(imageDataVert.transform, glm::vec3(context->currentZoom, context->currentZoom, 1.0f));
-					imageDataVert.transform = glm::scale(imageDataVert.transform, glm::vec3(windowSize.x, windowSize.y, 1.0));
-					imageDataFrag.visibility = context->visibility;
-					if (displayTip) imageDataFrag.visibility *= 0.5;
-					imageDataFrag.blur = 0;
-					imageDataFrag.force = 0;
-					if (context->mode == RGB_Depth && context->imageType != Color_Plus_Depth && viewX > 0) {
-						imageDataFrag.force = 1;
-					}
-
-					drawImage(commandBuffer, renderPass);
 				}
 			}
 		}
@@ -3060,29 +3397,7 @@ int Image::draw(Context* context) {
 	return 0;
 }
 
-int Image::drawNativeOutput(Context* context) {
-	if (!nativeOutputEnabled || !nativeOutputSourceReady || context == nullptr ||
-		context->nativeOutputWindow == nullptr ||
-		interlacerPipeline == nullptr) return 0;
-	SDL_GPUTexture* quiltTexture = imageTexture;
-	if (quiltTexture == nullptr) return 0;
-
-	int width = 0, height = 0;
-	SDL_GetWindowSizeInPixels(context->nativeOutputWindow, &width, &height);
-	if (width <= 0 || height <= 0) return 0;
-	const bool outputSizeChanged = nativeOutputLastSize != glm::ivec2(width, height);
-	if (outputSizeChanged) {
-		nativeOutputLastSize = {width, height};
-		SDL_Log("Native output swapchain: %dx%d physical pixels", width, height);
-		if (nativeDisplayConfig.calibrated &&
-			(width != nativeDisplayConfig.screenSize.x || height != nativeDisplayConfig.screenSize.y)) {
-			SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-				"Native output is %dx%d but calibration requires %dx%d. "
-				"Compositor scaling will prevent correct lenticular output.",
-				width, height, nativeDisplayConfig.screenSize.x,
-				nativeDisplayConfig.screenSize.y);
-		}
-	}
+void Image::updateInterlacerUniforms(Context* context, int width, int height) {
 	if (context->imageType == Light_Field_LKG && context->gridSize.x > 0.0f &&
 		context->gridSize.y > 0.0f) {
 		nativeDisplayConfig.quiltGrid = {context->gridSize.x, context->gridSize.y};
@@ -3107,9 +3422,14 @@ int Image::drawNativeOutput(Context* context) {
 		(int)(nativeDisplayConfig.quiltGrid.x * nativeDisplayConfig.quiltGrid.y));
 	interlacerDataFrag.gridColumns = (int)nativeDisplayConfig.quiltGrid.x;
 	interlacerDataFrag.gridRows = (int)nativeDisplayConfig.quiltGrid.y;
-	interlacerDataFrag.output2D = context->mode != Light_Field || !context->display3D ? 1 : 0;
-	interlacerDataFrag.sourceFlat = context->imageType != Color_Plus_Depth &&
-		context->imageType != Light_Field_LKG ? 1 : 0;
+	interlacerDataFrag.output2D = (context->mode != Lenticular || !context->display3D) ? 1 : 0;
+	const bool isLenticular2View = (nativeDisplayConfig.viewCount == 2);
+	if (isLenticular2View) {
+		interlacerDataFrag.sourceFlat = (context->imageType == Color_Only) ? 1 : 0;
+	} else {
+		interlacerDataFrag.sourceFlat = (context->imageType != Color_Plus_Depth &&
+			context->imageType != Light_Field_LKG) ? 1 : 0;
+	}
 	interlacerDataFrag.invertView = nativeDisplayConfig.invertView ? 1 : 0;
 	interlacerDataFrag.flipImageX = nativeDisplayConfig.flipImageX ? 1 : 0;
 	interlacerDataFrag.flipImageY = nativeDisplayConfig.flipImageY ? 1 : 0;
@@ -3120,10 +3440,38 @@ int Image::drawNativeOutput(Context* context) {
 	interlacerDataFrag.stereoDepth = (float)context->stereoDepth;
 	interlacerDataFrag.stereoOffset = (float)context->stereoOffset;
 	interlacerDataFrag.sourceType = context->imageType;
+	interlacerDataFrag.testPattern = testPatternMode;
+}
+
+int Image::drawNativeOutput(Context* context) {
+	if (!nativeOutputEnabled || !nativeOutputSourceReady || context == nullptr ||
+		context->nativeOutputWindow == nullptr ||
+		interlacerPipeline == nullptr) return 0;
+	SDL_GPUTexture* quiltTexture = imageTexture;
+	if (quiltTexture == nullptr) return 0;
+
+	int width = 0, height = 0;
+	SDL_GetWindowSizeInPixels(context->nativeOutputWindow, &width, &height);
+	if (width <= 0 || height <= 0) return 0;
+	const bool outputSizeChanged = nativeOutputLastSize != glm::ivec2(width, height);
+	if (outputSizeChanged) {
+		nativeOutputLastSize = {width, height};
+		SDL_Log("Native output swapchain: %dx%d physical pixels", width, height);
+		if (nativeDisplayConfig.calibrated &&
+			(width != nativeDisplayConfig.screenSize.x || height != nativeDisplayConfig.screenSize.y)) {
+			SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+				"Native output is %dx%d but calibration requires %dx%d. "
+				"Compositor scaling will prevent correct lenticular output.",
+				width, height, nativeDisplayConfig.screenSize.x,
+				nativeDisplayConfig.screenSize.y);
+		}
+	}
+	updateInterlacerUniforms(context, width, height);
 	if (outputSizeChanged) {
 		SDL_Log("Native phase: X=%.8f Y=%.8f center=%.8f subpixel=%.8f "
 			"origin=%d view=%s",
-			phaseX, phaseY, interlacerDataFrag.center,
+			interlacerDataFrag.phaseScale.x, interlacerDataFrag.phaseScale.y,
+			interlacerDataFrag.center,
 			interlacerDataFrag.subpixelPhase, 1,
 			interlacerDataFrag.invertView != 0 ? "inverted" : "forward");
 	}

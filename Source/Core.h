@@ -48,7 +48,8 @@ enum ViewMode {
 	Vertical,
 	Checkerboard,
 	Depth_Zoom,
-	Light_Field
+	Lenticular,
+	Light_Field = Lenticular
 };
 
 enum StereoFormat {
@@ -241,11 +242,11 @@ struct NativeDisplayConfig {
 	std::string displayName;
 	glm::vec2 quiltGrid{2.0f, 1.0f};
 	int viewCount = 2;
-	float pitch = 50.0f;
-	float slope = -5.0f;
+	float pitch = 141.2f;
+	float slope = 0.0f;
 	float center = 0.5f;
-	float dpi = 300.0f;
-	glm::ivec2 screenSize{0, 0};
+	float dpi = 282.4f;
+	glm::ivec2 screenSize{3840, 2160};
 	float viewCone = 40.0f;
 	float subpixel = 0.0f;
 	bool invertView = false;

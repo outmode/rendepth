@@ -25,7 +25,6 @@
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_dialog.h>
 #include <SDL3_image/SDL_image.h>
-#if RENDEPTH_USE_QOI_TEMPORARY_RGBD
 #define QOI_NO_STDIO
 #define QOI_IMPLEMENTATION
 #define QOI_MALLOC SDL_malloc
@@ -35,7 +34,6 @@
 #undef QOI_MALLOC
 #undef QOI_IMPLEMENTATION
 #undef QOI_NO_STDIO
-#endif
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/matrix_decompose.hpp>
 #include "rapidjson/document.h"
@@ -268,6 +266,8 @@ bool prevNextKeyDown = false;
 Icon* currentSlider = nullptr;
 static bool videoSliderScrubbing = false;
 static bool videoSliderWasPlaying = false;
+static double videoScrubLastPreviewTime = 0.0;
+static constexpr double videoScrubPreviewInterval = 0.075;
 static bool videoControlsVisible = false;
 auto currentSliderValue = 0.0;
 auto showingStereoSettings = false;
@@ -298,6 +298,7 @@ static std::vector<std::filesystem::path> batchInputPaths;
 static size_t batchExportIndex = 0;
 static bool batchDepthGeneration = false;
 static bool batchExportActive = false;
+static bool losslessDepthmaps = false;
 static std::filesystem::path runtimeDepthOutputPath(const std::filesystem::path& input);
 std::string infoSettingKey = "Display Info";
 std::string borderlessSettingKey = "Borderless Window";
@@ -1397,7 +1398,7 @@ Icon IconSettings = {
 Choice ChoiceStereo {
 	"3D Mode",
 	{ "Natural Color", "Vivid Color", "SBS Full", "SBS Half", "Color + Depth",
-		"Horizontal", "Vertical", "Checkerboard", "Light Field", "Free View", "Disabled" },
+		"Horizontal", "Vertical", "Checkerboard", "Free View", "Disabled" },
 };
 
 Choice ChoiceExport {
@@ -1472,9 +1473,8 @@ static void setPreferredStereo(ViewMode mode, bool saveMode = true);
 static void setShowStereoSettings(bool show);
 static std::array stereoModes = {
 	Anaglyph_Accurate, Anaglyph_Vivid, SBS_Full, SBS_Half, RGB_Depth,
-	Horizontal, Vertical, Checkerboard, Light_Field, Free_View_Grid, Mono };
+	Horizontal, Vertical, Checkerboard, Free_View_Grid, Mono };
 static void changeStereo(int option) {
-	if (stereoModes[option] == Light_Field) setDisplay3D(true);
 	if (stereoModes[option] == Mono) setDisplay3D(false);
 	setPreferredStereo(stereoModes[option], true);
 	Image::saveMenuLayout(&context);
@@ -2050,17 +2050,22 @@ static double getSnappedSeekPercent(double rawPercent) {
 
 static void seekVideoFromSlider() {
 	if (!activeVideo || currentSlider == nullptr) return;
-	if (videoSliderScrubbing) {
-		if (displayInfoEnabled) {
-			showInfoTip(formatVideoTimecode(*currentSlider));
-		}
-		return;
-	}
 	double percent = getSliderPercent(*currentSlider);
 	if (currentSlider->type == IconType::VideoSeek && videoPlayer.hasChapters()) {
 		percent = getSnappedSeekPercent(percent);
 	}
 	const double target = percent * videoPlayer.duration();
+	if (videoSliderScrubbing) {
+		if (displayInfoEnabled) {
+			showInfoTip(formatVideoTimecode(*currentSlider));
+		}
+		const double now = getTimeNow();
+		if (now - videoScrubLastPreviewTime >= videoScrubPreviewInterval) {
+			seekVideo(target, true);
+			videoScrubLastPreviewTime = now;
+		}
+		return;
+	}
 	seekVideo(target, false);
 }
 
@@ -2586,8 +2591,16 @@ static void processBatchExport() {
 	}
 
 	const auto& inputPath = batchInputPaths[batchExportIndex++];
-	const auto depthPath = runtimeDepthOutputPath(inputPath);
-	if (!exists(depthPath)) return;
+	auto depthPath = runtimeDepthOutputPath(inputPath);
+	if (!exists(depthPath)) {
+		const auto altExt = losslessDepthmaps ? ".jpg" : ".qoi";
+		const auto altPath = depthPath.parent_path() / (inputPath.stem().string() + "_rgbd" + altExt);
+		if (exists(altPath)) {
+			depthPath = altPath;
+		} else {
+			return;
+		}
+	}
 
 	SDL_Surface* batchImage = Core::loadImageDirect(depthPath.string());
 	if (batchImage == nullptr || batchImage->w < 2 || batchImage->h < 1) {
@@ -2659,6 +2672,7 @@ void saveOptions() {
 	modelDirValue.SetString(modelDirectory.c_str(), allocator);
 	document.AddMember(rapidjson::StringRef("modelDirectory"), modelDirValue, allocator);
 	document.AddMember(rapidjson::StringRef("videoVolume"), currentVideoVolume, allocator);
+	document.AddMember(rapidjson::StringRef("losslessDepthmaps"), losslessDepthmaps, allocator);
 
     rapidjson::StringBuffer output;
     rapidjson::PrettyWriter writer(output);
@@ -2724,6 +2738,13 @@ void loadOptions() {
 		currentVideoVolume = glm::clamp(document["videoVolume"].GetDouble(), 0.0, 1.0);
 		setSliderPercent(getIcon(IconType::VideoVolume), currentVideoVolume);
 		videoPlayer.setVolume(currentVideoVolume);
+	}
+	if (document.HasMember("losslessDepthmaps")) {
+		if (document["losslessDepthmaps"].IsBool()) {
+			losslessDepthmaps = document["losslessDepthmaps"].GetBool();
+		} else if (document["losslessDepthmaps"].IsInt()) {
+			losslessDepthmaps = document["losslessDepthmaps"].GetInt() != 0;
+		}
 	}
 
 }
@@ -2820,9 +2841,10 @@ static void setDisplay3D(bool display) {
 }
 
 static void refreshDisplay3D(StereoFormat type) {
-	if (preferredStereoMode == Light_Field) {
+	if (preferredStereoMode == Lenticular) {
+		const bool isLenticular2View = (Image::nativeDisplayConfig.viewCount == 2);
 		const bool supportedSource = type == Color_Plus_Depth ||
-			type == Light_Field_LKG;
+			type == Light_Field_LKG || (isLenticular2View && type != Color_Only);
 		Image::setNativeOutputActive(&context, true);
 		if (!display3D || !supportedSource) {
 			// Native stereo and other tagged sources are intentionally shown as
@@ -2832,7 +2854,7 @@ static void refreshDisplay3D(StereoFormat type) {
 			setStereoMode(type == Color_Only ? Native : Mono);
 			return;
 		}
-		setStereoMode(Light_Field);
+		setStereoMode(Lenticular);
 		return;
 	}
 	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half) {
@@ -2849,7 +2871,7 @@ static void refreshDisplay3D(StereoFormat type) {
 		setDisplay3D(false);
 	} else {
 		if (display3D) {
-			if (preferredStereoMode == Light_Field && !Image::nativeOutputAvailable())
+			if (preferredStereoMode == Lenticular && !Image::nativeOutputAvailable())
 				setStereoMode(Mono);
 			else
 				setStereoMode(preferredStereoMode);
@@ -2862,14 +2884,14 @@ static void refreshDisplay3D(StereoFormat type) {
 static void setStereoMode(ViewMode mode) {
 	currentStereoMode = mode;
 	context.mode = currentStereoMode;
-	if (mode == Light_Field) Image::setNativeOutputActive(&context, true);
+	if (mode == Lenticular) Image::setNativeOutputActive(&context, true);
 	Image::updateSize(&context);
 }
 
 static void setPreferredStereo(ViewMode mode, bool saveMode) {
 	if (saveMode) defaultStereoMode = mode;
 	preferredStereoMode = mode;
-	if (saveMode && mode != Light_Field)
+	if (saveMode && mode != Lenticular)
 		Image::setNativeOutputActive(&context, false);
 	updateStereoIcon();
 	if (activeScreenCapture) {
@@ -2985,6 +3007,12 @@ static void updateFullscreenState() {
 }
 
 static void setFullscreen(bool fullscreen = true) {
+	if (fullscreen && context.window != nullptr) {
+		SDL_DisplayID displayID = SDL_GetDisplayForWindow(context.window);
+		if (displayID != 0) {
+			Image::configureFullscreenMode(context.window, displayID);
+		}
+	}
 	SDL_SetWindowFullscreen(context.window, fullscreen);
 	SDL_SyncWindow(context.window);
 	updateFullscreenState();
@@ -3516,10 +3544,17 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	refreshWindowSize();
 	refreshWindowSizeBase();
 
-	const bool savedLightField = preferredStereoMode == Light_Field &&
+	const bool onLenticularDisplay = Image::isNativeDisplayOnMainWindow();
+	if (onLenticularDisplay) {
+		preferredStereoMode = Lenticular;
+		currentStereoMode = Lenticular;
+		context.mode = Lenticular;
+	}
+
+	const bool savedLenticular = preferredStereoMode == Lenticular &&
 		!fileList.empty();
 	setDisplay3D(false);
-	if (savedLightField) Image::setNativeOutputActive(&context, true);
+	if (savedLenticular) Image::setNativeOutputActive(&context, true);
 
 	if (!fileList.empty() && fileList.size() > fileIndex) {
 		refreshDisplay3D(fileList[fileIndex].type);
@@ -4586,7 +4621,6 @@ static std::filesystem::path nativeDepthOutputPath(const std::filesystem::path& 
 		(input.stem().string() + "_rgbd.jpg");
 }
 
-#if RENDEPTH_USE_QOI_TEMPORARY_RGBD
 static bool saveQoiSurface(const SDL_Surface* surface,
 	const std::filesystem::path& outputPath) {
 	if (surface == nullptr || surface->format != SDL_PIXELFORMAT_RGBA32) return false;
@@ -4623,16 +4657,14 @@ static bool saveQoiSurface(const SDL_Surface* surface,
 	SDL_free(encoded);
 	return output != nullptr && written == static_cast<size_t>(encodedSize) && closed;
 }
-#endif
 
 static bool saveTemporaryRgbdSurface(SDL_Surface* surface,
 	const std::filesystem::path& outputPath) {
-#if RENDEPTH_USE_QOI_TEMPORARY_RGBD
-	return saveQoiSurface(surface, outputPath);
-#else
-	return surface != nullptr &&
-		IMG_SaveJPG(surface, outputPath.string().c_str(), 90);
-#endif
+	if (surface == nullptr) return false;
+	if (losslessDepthmaps) {
+		return saveQoiSurface(surface, outputPath);
+	}
+	return IMG_SaveJPG(surface, outputPath.string().c_str(), 90);
 }
 
 static void cleanupStaleRuntimeDepthDirectories(
@@ -4699,13 +4731,7 @@ static std::filesystem::path runtimeDepthDirectory() {
 static std::filesystem::path runtimeDepthOutputPath(const std::filesystem::path& input) {
 	const auto directory = runtimeDepthDirectory();
 	return directory.empty() ? std::filesystem::path{} :
-		directory / (input.stem().string() + "_rgbd"
-#if RENDEPTH_USE_QOI_TEMPORARY_RGBD
-		+ ".qoi"
-#else
-		+ ".jpg"
-#endif
-		);
+		directory / (input.stem().string() + "_rgbd" + (losslessDepthmaps ? ".qoi" : ".jpg"));
 }
 
 static int nativeSuperResolutionScale(const SDL_Surface* color) {
@@ -5084,6 +5110,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		Image::mouseScale = 1.0;
 #endif
 		updateDisplayScale();
+		if (isFullscreen) {
+			Image::configureFullscreenMode(context.window, currentDisplay);
+		}
+		if (preferredStereoMode == Lenticular) {
+			Image::initNativeOutput(&context);
+		}
 	} else if (event->type == SDL_EVENT_WINDOW_RESIZED) {
 		showCustomCursor(false);
 		refreshWindowSizeBase();
@@ -5143,7 +5175,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 				}
 			}
 
-			if (event->key.key == SDLK_F5 && !event->key.repeat) {
+			if (event->key.key == SDLK_HOME && !event->key.repeat) {
 				if (compileShadersForReload()) Image::reloadShader(&context);
 			}
 
@@ -5203,8 +5235,30 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			toggleFullscreen();
 		}
 
-		if (event->key.key == SDLK_F || event->key.key == SDLK_KP_0) {
+		if (event->key.key == SDLK_F || event->key.key == SDLK_KP_0 || event->key.key == SDLK_F11) {
 			toggleFullscreen();
+		}
+
+		if (event->key.key == SDLK_E && !event->key.repeat) {
+			if (!activeScreenCapture && !isConverting && !fileList.empty() && fileIndex < fileList.size()) {
+				const bool videoDepthReady = activeVideo && videoDepthFrameLoaded;
+				const bool canExport = !(((fileList[fileIndex].type == Color_Only ||
+					fileList[fileIndex].type == Color_Anaglyph) && !videoDepthReady) ||
+					(fileList[fileIndex].type != Color_Plus_Depth &&
+						exportFormat == Color_Plus_Depth && !videoDepthReady));
+				if (canExport) {
+					if (isPlayingSlideshow) {
+						if (currentStereoMode == Depth_Zoom) {
+							preferredStereoMode = defaultStereoMode;
+						}
+						setSlideshow(false);
+						if (doingPreload) endPreload(false);
+						callbackQueue.push_back([]() { saveFile(); });
+					} else if (!doingPreload && !doingFileOp) {
+						saveFile();
+					}
+				}
+			}
 		}
 
 		if (activeVideo && videoPlayer.hasChapters()) {
@@ -5293,6 +5347,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 							if (activeVideo && icon.type == IconType::VideoSeek) {
 								videoSliderScrubbing = true;
 								videoSliderWasPlaying = videoPlayer.playing();
+								videoScrubLastPreviewTime =
+									getTimeNow() - videoScrubPreviewInterval;
 								// Audio-only seeks have no preview frame to display. Keep
 								// playback running while dragging instead of requiring the
 								// video preview pause/resume cycle.

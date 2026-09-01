@@ -1061,7 +1061,7 @@ struct VideoPlayer::Impl {
 			}
 		}
 		if (codec != nullptr)
-			codec->skip_frame = request.fastPreview ? AVDISCARD_NONKEY : AVDISCARD_DEFAULT;
+			codec->skip_frame = request.fastPreview ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
 		av_packet_unref(packet);
 		if (frame != nullptr) av_frame_unref(frame);
 		if (audioFrame != nullptr) av_frame_unref(audioFrame);
@@ -1090,8 +1090,7 @@ struct VideoPlayer::Impl {
 		audioQueuePositionValid = false;
 		atEnd = false;
 		audioState->buffering = true;
-		seekFloor = request.fastPreview
-			? std::nullopt : std::optional(request.seconds);
+		seekFloor = request.fastPreview ? std::nullopt : std::optional(request.seconds);
 		audioSeekFloor = audioCodec != nullptr ? std::optional(request.seconds) : std::nullopt;
 		audioSeekPending = false;
 		return true;
@@ -1152,7 +1151,7 @@ struct VideoPlayer::Impl {
 						seekPreviewPending;
 				});
 				if (stopRequested) break;
-				if (!seekPreviewPending || (requestedSeek.has_value() && !requestedSeek->fastPreview)) {
+				if (requestedSeek.has_value()) {
 					seek.swap(requestedSeek);
 				}
 			}
@@ -1166,7 +1165,7 @@ struct VideoPlayer::Impl {
 				// Audio has no preview frame to publish while scrubbing is paused.
 				// Leave the decoder parked at the requested position until playback
 				// resumes instead of reading to EOF and entering the loop path.
-				seekPreviewPending = !audioOnly && !isPlaying.load();
+				seekPreviewPending = !audioOnly && (!isPlaying.load() || seek->fastPreview);
 				fastPreviewPending = !audioOnly && seek->fastPreview;
 			}
 			if (!isPlaying && !seekPreviewPending) continue;

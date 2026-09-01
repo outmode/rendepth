@@ -89,8 +89,6 @@ set(SDLIMAGE_VENDORED ON)
 # for a lightweight test build when needed.
 option(RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
         "Build AVIF, JPEG XL, and WebP image support" ON)
-option(RENDEPTH_USE_QOI_TEMPORARY_RGBD
-        "Use QOI instead of JPEG for temporary RGB-D conversion files" ON)
 set(SDLIMAGE_AVIF ${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS})
 set(SDLIMAGE_BMP ON)
 # GIFs are treated as animated video and decoded by the FFmpeg pipeline.
@@ -301,8 +299,7 @@ endif()
 
 target_compile_definitions(Rendepth PUBLIC
         SDL_MAIN_USE_CALLBACKS
-        RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS=$<BOOL:${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS}>
-        RENDEPTH_USE_QOI_TEMPORARY_RGBD=$<BOOL:${RENDEPTH_USE_QOI_TEMPORARY_RGBD}>)
+        RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS=$<BOOL:${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS}>)
 
 target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp
 		Source/VideoDepthProcessor.cpp
@@ -814,7 +811,7 @@ set(CPACK_RPM_PACKAGE_LICENSE "MIT")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
 # Increment the RPM release for rebuilds of the same application version so
 # package managers do not treat a freshly built artifact as the old package.
-set(CPACK_RPM_PACKAGE_RELEASE 4)
+set(CPACK_RPM_PACKAGE_RELEASE 5)
 set(RENDEPTH_RPM_REQUIRES)
 if(RENDEPTH_ENABLE_FFMPEG AND DAV1D_FOUND)
     list(APPEND RENDEPTH_RPM_REQUIRES "libdav1d >= 0.5.0")

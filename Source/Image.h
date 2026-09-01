@@ -151,6 +151,7 @@ public:
 		float stereoDepth;
 		float stereoOffset;
 		int sourceType;
+		int testPattern;
 	};
 
 	struct IconDataVert {
@@ -220,7 +221,13 @@ public:
 	static int draw(Context* context);
 	static int initNativeOutput(Context* context);
 	static bool nativeOutputAvailable();
+	static bool isNativeDisplayOnMainWindow();
 	static void setNativeOutputActive(Context* context, bool active);
+	static void configureFullscreenMode(SDL_Window* window, SDL_DisplayID displayID);
+	static bool saveNativeDisplayConfig(const std::filesystem::path& path, const NativeDisplayConfig& config);
+	static bool saveNativeDisplayConfig(const NativeDisplayConfig& config);
+	static void resetNativeDisplayConfig(Context* context = nullptr);
+	static void updateInterlacerUniforms(Context* context, int width, int height);
 	static int drawNativeOutput(Context* context);
 	static int reloadInterlacerShader(Context* context);
 	static void quit(Context* context);
@@ -265,9 +272,11 @@ public:
 	inline static bool useBorderlessWindow = true;
 	inline static bool nativeOutputEnabled = false;
 	inline static bool nativeOutputSourceReady = false;
+	inline static bool nativeDisplayOnMainWindow = false;
 	inline static glm::ivec2 nativeOutputLastSize{0, 0};
 	inline static SDL_DisplayID nativeDisplay = 0;
 	inline static NativeDisplayConfig nativeDisplayConfig{};
+	inline static int testPatternMode = 0;
 	inline static Style style;
 };
 
