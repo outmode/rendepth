@@ -217,6 +217,7 @@ static void setStereoMode(ViewMode mode);
 static void setShowStereoSettings(bool show);
 static void hideUI(bool hideCustomMouse = true, bool hideRealMouse = false);
 static void endPreload(bool success);
+static void resetRapidBrowseState();
 
 glm::vec2 windowSize{};
 auto switchedImage = false;
@@ -253,6 +254,7 @@ auto mouseMoveDelay = mouseDelayCount;
 auto mouseValueNull = -128.0f;
 bool isConverting = false;
 bool justConverted = false;
+static bool keep3DForDepthReload = false;
 SDL_Thread* depthGenThread = nullptr;
 std::atomic<bool> depthGenAlive (false);
 std::atomic<bool> doneLoadingImage (false);
@@ -298,7 +300,7 @@ static std::vector<std::filesystem::path> batchInputPaths;
 static size_t batchExportIndex = 0;
 static bool batchDepthGeneration = false;
 static bool batchExportActive = false;
-static bool losslessDepthmaps = false;
+static bool losslessDepthmaps = true;
 static std::filesystem::path runtimeDepthOutputPath(const std::filesystem::path& input);
 std::string infoSettingKey = "Display Info";
 std::string borderlessSettingKey = "Borderless Window";
@@ -349,6 +351,7 @@ static void failVideoLoad(const std::string& error) {
 	context.gotoRand = false;
 	isConverting = false;
 	justConverted = false;
+	resetRapidBrowseState();
 	currentVisibility = 0.0;
 	targetVisibility = 0.0;
 	context.visibility = 0.0f;
@@ -627,14 +630,11 @@ static bool preloadNavigationReady = false;
 static bool navigationLoadingIndicator = false;
 static constexpr double minimumSwitchTime2D = 0.125;
 static constexpr double minimumSwitchTime3D = 0.250;
-static constexpr double rapidBrowseIdleTime = 3.0;
-static constexpr int rapidBrowseClickThreshold = 3;
-static constexpr int rapidBrowsePostLoadClickThreshold = 2;
+static constexpr double rapidBrowseIdleTime = 1.5;
+static constexpr int rapidBrowseClickThreshold = 2;
 static int rapidBrowseClicks = 0;
-static int rapidBrowsePostLoadClicks = 0;
 static bool rapidBrowseMode = false;
-static bool rapidBrowseQueued = false;
-static bool rapidBrowsePostLoadDetection = false;
+static bool rapidBrowseRestore3D = false;
 static double lastRapidBrowseNavigation = 0.0;
 static double getMinimumSwitchTime() {
 	return display3D ? minimumSwitchTime3D : minimumSwitchTime2D;
@@ -761,57 +761,68 @@ static void setSlideshow(bool slide);
 static void cancelSlideshow();
 static Icon& getIcon(IconType type);
 static void setDisplay3D(bool display);
+static int loadImage(void* ptr = nullptr);
 
 static void resetRapidBrowseState() {
 	rapidBrowseClicks = 0;
-	rapidBrowsePostLoadClicks = 0;
 	rapidBrowseMode = false;
-	rapidBrowseQueued = false;
-	rapidBrowsePostLoadDetection = false;
+	rapidBrowseRestore3D = false;
 	lastRapidBrowseNavigation = 0.0;
 }
 
-static void noteRapidBrowseNavigation() {
-	const auto now = getTimeNow();
-	if (!rapidBrowseMode &&
-		(!display3D && !rapidBrowsePostLoadDetection &&
-			!isSpeculativeDepth && !depthGenAlive && !isConverting)) return;
-	lastRapidBrowseNavigation = now;
-	if (!rapidBrowseMode) {
-		if (rapidBrowsePostLoadDetection) {
-			if (++rapidBrowsePostLoadClicks >= rapidBrowsePostLoadClickThreshold)
-				rapidBrowseMode = true;
-		} else if (!rapidBrowseQueued &&
-			++rapidBrowseClicks >= rapidBrowseClickThreshold) {
-			rapidBrowseQueued = true;
-		}
-	}
-}
+static void cancelPendingWorkForRapidBrowse() {
+	activeDepthGeneration = ++nextDepthGeneration;
+	nativeDepthEstimator.cancel();
+	isConverting = false;
+	isSpeculativeDepth = false;
+	preloadDepthIndex = -1;
+	justConverted = false;
+	keep3DForDepthReload = false;
+	navigationLoadingIndicator = false;
 
-static void queueRapidBrowseNavigation(bool previous) {
-	context.gotoPrev = previous;
-	context.gotoNext = !previous;
-	switchedImage = true;
+	if (doingPreload) {
+		endPreload(false);
+	}
+	pendingPreloadNavigation = -1;
+	preloadNavigationReady = false;
 }
 
 void gotoPreviousImage(bool seekActiveVideo = true) {
 	if (activeScreenCapture) return;
 	if (seekActiveVideo && skipVideoBy(-15.0)) return;
-	noteRapidBrowseNavigation();
-	if (rapidBrowseMode && isConverting) {
-		isConverting = false;
-		isSpeculativeDepth = true;
-		preloadDepthIndex = fileIndex;
-		setDisplay3D(false);
+	if (fileList.empty()) return;
+
+	if (rapidBrowseMode) {
+		lastRapidBrowseNavigation = getTimeNow();
+		lastSwitchTime = getTimeNow();
+		context.offset = { 0, 0 };
+		fileIndex = previousFileIndex();
+		loadImage(nullptr);
+		return;
 	}
-	if (isConverting) return;
+
+	if (isConverting) {
+		if (++rapidBrowseClicks >= rapidBrowseClickThreshold) {
+			cancelPendingWorkForRapidBrowse();
+			rapidBrowseRestore3D = true;
+			rapidBrowseMode = true;
+			setDisplay3D(false);
+			lastRapidBrowseNavigation = getTimeNow();
+			lastSwitchTime = getTimeNow();
+			context.offset = { 0, 0 };
+			fileIndex = previousFileIndex();
+			loadImage(nullptr);
+		}
+		return;
+	}
+
 	if (justConverted) return;
 	if (pendingPreloadNavigation >= 0) return;
 	if (doingFileOp) return;
-	if (context.loading) return;
-	if (lastSwitchTime > 0.0 && getTimeNow() - lastSwitchTime < getMinimumSwitchTime()) return;
-	if (fileList.empty()) return;
+	if (context.loading && !rapidBrowseMode) return;
+	if (!rapidBrowseMode && lastSwitchTime > 0.0 && getTimeNow() - lastSwitchTime < getMinimumSwitchTime()) return;
 	if (isPlayingSlideshow) cancelSlideshow();
+
 	preloadDir = -1;
 	auto previousIndex = previousFileIndex();
 	if (previousIndex == fileIndex) return;
@@ -819,10 +830,6 @@ void gotoPreviousImage(bool seekActiveVideo = true) {
 		if (asyncData.fileIndex == previousIndex) {
 			pendingPreloadNavigation = previousIndex;
 		}
-		return;
-	}
-	if (rapidBrowseMode) {
-		queueRapidBrowseNavigation(true);
 		return;
 	}
 	navigationLoadingIndicator = true;
@@ -833,6 +840,7 @@ void gotoPreviousImage(bool seekActiveVideo = true) {
 			fileIndex = previousIndex;
 			SDL_DestroySurface(fileList[fileIndex].preload);
 			fileList[fileIndex].preload = nullptr;
+			rapidBrowseClicks = 1;
 			callDepthGen(previousIndex);
 			return;
 		}
@@ -844,21 +852,39 @@ void gotoPreviousImage(bool seekActiveVideo = true) {
 void gotoNextImage(bool seekActiveVideo = true) {
 	if (activeScreenCapture) return;
 	if (seekActiveVideo && skipVideoBy(15.0)) return;
-	noteRapidBrowseNavigation();
-	if (rapidBrowseMode && isConverting) {
-		isConverting = false;
-		isSpeculativeDepth = true;
-		preloadDepthIndex = fileIndex;
-		setDisplay3D(false);
+	if (fileList.empty()) return;
+
+	if (rapidBrowseMode) {
+		lastRapidBrowseNavigation = getTimeNow();
+		lastSwitchTime = getTimeNow();
+		context.offset = { 0, 0 };
+		fileIndex = nextFileIndex();
+		loadImage(nullptr);
+		return;
 	}
-	if (isConverting) return;
+
+	if (isConverting) {
+		if (++rapidBrowseClicks >= rapidBrowseClickThreshold) {
+			cancelPendingWorkForRapidBrowse();
+			rapidBrowseRestore3D = true;
+			rapidBrowseMode = true;
+			setDisplay3D(false);
+			lastRapidBrowseNavigation = getTimeNow();
+			lastSwitchTime = getTimeNow();
+			context.offset = { 0, 0 };
+			fileIndex = nextFileIndex();
+			loadImage(nullptr);
+		}
+		return;
+	}
+
 	if (justConverted) return;
 	if (pendingPreloadNavigation >= 0) return;
 	if (doingFileOp) return;
-	if (context.loading) return;
-	if (lastSwitchTime > 0.0 && getTimeNow() - lastSwitchTime < getMinimumSwitchTime()) return;
-	if (fileList.empty()) return;
+	if (context.loading && !rapidBrowseMode) return;
+	if (!rapidBrowseMode && lastSwitchTime > 0.0 && getTimeNow() - lastSwitchTime < getMinimumSwitchTime()) return;
 	if (isPlayingSlideshow) cancelSlideshow();
+
 	preloadDir = 1;
 	auto nextIndex = nextFileIndex();
 	if (nextIndex == fileIndex) return;
@@ -866,10 +892,6 @@ void gotoNextImage(bool seekActiveVideo = true) {
 		if (asyncData.fileIndex == nextIndex) {
 			pendingPreloadNavigation = nextIndex;
 		}
-		return;
-	}
-	if (rapidBrowseMode) {
-		queueRapidBrowseNavigation(false);
 		return;
 	}
 	navigationLoadingIndicator = true;
@@ -880,6 +902,7 @@ void gotoNextImage(bool seekActiveVideo = true) {
 			fileIndex = nextIndex;
 			SDL_DestroySurface(fileList[fileIndex].preload);
 			fileList[fileIndex].preload = nullptr;
+			rapidBrowseClicks = 1;
 			callDepthGen(nextIndex);
 			return;
 		}
@@ -903,10 +926,40 @@ int getRandImageIndex() {
 }
 
 void gotoRandomImage() {
-	if (isConverting) return;
+	if (fileList.empty()) return;
+
+	if (rapidBrowseMode) {
+		lastRapidBrowseNavigation = getTimeNow();
+		lastSwitchTime = getTimeNow();
+		context.offset = { 0, 0 };
+		auto randIndex = nextRandIndex;
+		if (randIndex < 0) randIndex = getRandImageIndex();
+		nextRandIndex = getRandImageIndex();
+		fileIndex = randIndex;
+		loadImage(nullptr);
+		return;
+	}
+
+	if (isConverting) {
+		if (++rapidBrowseClicks >= rapidBrowseClickThreshold) {
+			cancelPendingWorkForRapidBrowse();
+			rapidBrowseRestore3D = true;
+			rapidBrowseMode = true;
+			setDisplay3D(false);
+			lastRapidBrowseNavigation = getTimeNow();
+			lastSwitchTime = getTimeNow();
+			context.offset = { 0, 0 };
+			auto randIndex = nextRandIndex;
+			if (randIndex < 0) randIndex = getRandImageIndex();
+			nextRandIndex = getRandImageIndex();
+			fileIndex = randIndex;
+			loadImage(nullptr);
+		}
+		return;
+	}
 	if (doingFileOp) return;
-	if (context.loading) return;
-	if (lastSwitchTime > 0.0 && getTimeNow() - lastSwitchTime < getMinimumSwitchTime()) return;
+	if (context.loading && !rapidBrowseMode) return;
+	if (!rapidBrowseMode && lastSwitchTime > 0.0 && getTimeNow() - lastSwitchTime < getMinimumSwitchTime()) return;
 	if (fileList.empty()) return;
 	auto randIndex = nextRandIndex;
 	if (randIndex < 0) {
@@ -914,6 +967,7 @@ void gotoRandomImage() {
 	}
 	nextRandIndex = getRandImageIndex();
 	preloadDir = 0;
+
 	if (display3D || preferredStereoMode == Depth_Zoom) {
 		if (fileList[randIndex].type == Color_Only &&
 			getMediaType(fileList[randIndex].link) == MediaType::Image) {
@@ -921,6 +975,7 @@ void gotoRandomImage() {
 			fileIndex = randIndex;
 			SDL_DestroySurface(fileList[randIndex].preload);
 			fileList[randIndex].preload = nullptr;
+			rapidBrowseClicks = 1;
 			callDepthGen(randIndex);
 			return;
 		}
@@ -1569,7 +1624,6 @@ static void changeEyes(int option) {
 
 static void endPreload(bool success);
 static auto depthRegenerated = false;
-static bool keep3DForDepthReload = false;
 static void waitForDepthThread() {
 	if (depthGenThread != nullptr) {
 		while (depthGenAlive.load(std::memory_order_acquire)) {
@@ -3101,6 +3155,7 @@ static void toggleScreenCapture() {
 }
 
 void toggleStereo() {
+	resetRapidBrowseState();
 	if (preferredStereoMode == Mono) return;
 	if (isConverting) return;
 	if (activeScreenCapture) {
@@ -3299,6 +3354,7 @@ static void pushFileInfo(const std::filesystem::path& filePath) {
 }
 
 static void parseFileList(const std::vector<std::string>& filesToLoad) {
+	resetRapidBrowseState();
 	if (doingPreload) endPreload(true);
 	const std::filesystem::path filePath = filesToLoad[0];
 	auto parentPath = filePath.parent_path();
@@ -3392,7 +3448,7 @@ static void endPreload(bool success) {
 				preloadNavigationReady = true;
 			if (loadedIndex != fileIndex && fileList[loadedIndex].type == Color_Only &&
 				(display3D || isPlayingSlideshow || preferredStereoMode == Depth_Zoom) &&
-				!isConverting && !depthGenAlive) {
+				!isConverting && !depthGenAlive && !rapidBrowseMode) {
 				preloadDepthIndex = loadedIndex;
 				isSpeculativeDepth = true;
 				callDepthGen(loadedIndex, true);
@@ -3839,18 +3895,21 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	// Apply worker completions after the navigation state machine has run.
 	serviceDepthCompletions();
 
-	if (justConverted) setDisplay3D(true);
-	justConverted = false;
+	if (justConverted) {
+		setDisplay3D(true);
+		if (!fileList.empty()) {
+			const auto sourceType = activeVideo && videoDepthProcessor.running()
+				? Color_Plus_Depth : fileList[fileIndex].type;
+			refreshDisplay3D(sourceType);
+		}
+		justConverted = false;
+	}
 
 	if (doneLoadingImage) {
 		doneLoadingImage = false;
 		const bool preserve3D = keep3DForDepthReload;
 		keep3DForDepthReload = false;
-		if (rapidBrowseQueued && !rapidBrowseMode) {
-			rapidBrowsePostLoadClicks = 0;
-			rapidBrowsePostLoadDetection = true;
-		}
-		if (!preserve3D) {
+		if (!preserve3D || !display3D) {
 			const auto sourceType = activeVideo && videoDepthProcessor.running()
 				? Color_Plus_Depth : fileList[fileIndex].type;
 			refreshDisplay3D(sourceType);
@@ -3859,10 +3918,10 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		context.offset = glm::vec2(0.0f);
 		currentZoom = 1.0;
 		targetZoom = 1.0;
-		if (preserve3D) {
+		if (preserve3D || rapidBrowseMode) {
 			currentVisibility = 1.0;
 			targetVisibility = 1.0;
-			depthEffect = 1.0;
+			depthEffect = rapidBrowseMode ? 0.0 : 1.0;
 			context.depthEffect = depthEffect;
 		} else {
 			currentVisibility = 0.0;
@@ -3881,7 +3940,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		else if (Core::defaultImportFormat == Top_And_Bottom_Half) menuSelection[ChoiceTags.label] = 3;
 		else if (Core::defaultImportFormat == Color_Only) menuSelection[ChoiceTags.label] = 4;
 		else if (Core::defaultImportFormat == Color_Anaglyph) menuSelection[ChoiceTags.label] = 5;
-		if (!activeVideo) {
+		if (!activeVideo && !rapidBrowseMode) {
 			if (isPlayingSlideshow) preloadImage(nextRandIndex);
 			else preloadImage();
 		}
@@ -3900,15 +3959,17 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		endPreload(true);
 	}
 
-	if (rapidBrowseMode && !display3D && !isSpeculativeDepth && !depthGenAlive &&
-		!isConverting && lastRapidBrowseNavigation > 0.0 &&
-		timeNow - lastRapidBrowseNavigation > rapidBrowseIdleTime) {
+	if (rapidBrowseMode && lastRapidBrowseNavigation > 0.0 &&
+		timeNow - lastRapidBrowseNavigation >= rapidBrowseIdleTime) {
+		const bool restore3D = rapidBrowseRestore3D;
 		resetRapidBrowseState();
-		if (!fileList.empty() && fileList[fileIndex].type == Color_Only) {
-			callDepthGen(fileIndex);
-		} else {
-			setDisplay3D(true);
-			if (!fileList.empty()) refreshDisplay3D(fileList[fileIndex].type);
+		if (restore3D) {
+			if (!fileList.empty() && fileList[fileIndex].type == Color_Only) {
+				callDepthGen(fileIndex);
+			} else {
+				setDisplay3D(true);
+				if (!fileList.empty()) refreshDisplay3D(fileList[fileIndex].type);
+			}
 		}
 	}
 
@@ -5024,17 +5085,26 @@ static void serviceDepthCompletions() {
 	auto depthPath = std::filesystem::path(path).filename().replace_extension();;
 	if (imageId == fileIndex) {
 		fileList[imageId].path = path;
+		fileList[imageId].type = Core::getImageType(fileList[imageId].path);
+		if (fileList[imageId].type == Unknown_Format)
+			fileList[imageId].type = Color_Plus_Depth;
 		context.loading = false;
+		setDisplay3D(true);
+		refreshDisplay3D(fileList[imageId].type);
 		loadImage(nullptr);
 		navigationLoadingIndicator = false;
 		justConverted = true;
 		isConverting = false;
+		rapidBrowseClicks = 0;
 	}
 	}
 }
 
 static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int imageId,
 	SDL_Surface* inputSurface) {
+	if (depthGenAlive.load(std::memory_order_acquire)) {
+		nativeDepthEstimator.cancel();
+	}
 	waitForDepthThread();
 	if (!nativeDepthEstimatorLoaded) {
 		Core::drawText(&context, "Loading Depth Model, Please Wait",
@@ -5068,6 +5138,12 @@ static void callDepthGen(int imageIndex, bool speculative, SDL_Surface* inputSur
 		// speculative depth job is still finishing. From this point onward the
 		// current-image conversion owns completion handling; do not let its
 		// result be mistaken for the old speculative request.
+		if (isSpeculativeDepth && preloadDepthIndex == imageIndex && depthGenAlive) {
+			isConverting = true;
+			isSpeculativeDepth = false;
+			preloadDepthIndex = -1;
+			return;
+		}
 		isConverting = true;
 		isSpeculativeDepth = false;
 		preloadDepthIndex = -1;
@@ -5308,7 +5384,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 					Image::infoTargetVisibility = 0.0;
 					const bool isNavigationIcon = icon.type == IconType::Back ||
 						icon.type == IconType::Forward;
-					if ((!isConverting && (!doingPreload || isNavigationIcon)) ||
+					if ((!isConverting && !doingPreload) || isNavigationIcon ||
 						icon.type == IconType::Close) {
 						if (icon.mode == IconMode::Button) {
 							languageButtonClicked = icon.type == IconType::VideoAudio ||
