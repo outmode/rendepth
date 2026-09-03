@@ -1,0 +1,15 @@
+#!/bin/sh
+
+set -eu
+
+app_root=/usr/libexec/rendepth
+rocm_lib=${RENDEPTH_ROCM_LIB:-/usr/lib64/rocm/lib}
+
+if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+	LD_LIBRARY_PATH="$app_root/Library:$rocm_lib:$LD_LIBRARY_PATH"
+else
+	LD_LIBRARY_PATH="$app_root/Library:$rocm_lib"
+fi
+export LD_LIBRARY_PATH
+
+exec "$app_root/Binary/Rendepth" "$@"

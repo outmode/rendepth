@@ -781,16 +781,28 @@ endif()
 install(FILES "${CMAKE_SOURCE_DIR}/LICENSE"
         DESTINATION share/licenses/rendepth)
 if(UNIX AND NOT APPLE)
-    install(PROGRAMS "${CMAKE_SOURCE_DIR}/Packaging/rendepth-launcher"
+    install(PROGRAMS "${CMAKE_SOURCE_DIR}/Packaging/Linux/rendepth-launcher"
             DESTINATION bin
             RENAME rendepth)
-    install(FILES "${CMAKE_SOURCE_DIR}/Packaging/rendepth.desktop"
+    install(FILES "${CMAKE_SOURCE_DIR}/Packaging/Linux/rendepth.desktop"
             DESTINATION share/applications)
     install(FILES "${CMAKE_SOURCE_DIR}/Assets/Rendepth.png"
             DESTINATION share/icons/hicolor/512x512/apps
             RENAME rendepth.png)
 endif()
 
+if(WIN32)
+    set(RENDEPTH_DISTRIBUTION_PLATFORM "Windows")
+elseif(APPLE)
+    set(RENDEPTH_DISTRIBUTION_PLATFORM "macOS")
+elseif(UNIX)
+    set(RENDEPTH_DISTRIBUTION_PLATFORM "Linux")
+else()
+    set(RENDEPTH_DISTRIBUTION_PLATFORM "Unknown")
+endif()
+
+set(CPACK_PACKAGE_DIRECTORY
+        "${CMAKE_SOURCE_DIR}/Distribution/${PROJECT_VERSION}/${RENDEPTH_DISTRIBUTION_PLATFORM}")
 set(CPACK_PACKAGE_NAME "rendepth")
 set(CPACK_PACKAGE_VENDOR "Outmode")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Convert any image to 3D")
