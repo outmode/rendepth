@@ -14,6 +14,7 @@ extern "C" {
 #include <libavutil/display.h>
 #include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/motion_vector.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
 #include <libswresample/swresample.h>
@@ -33,6 +34,7 @@ extern "C" {
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -612,6 +614,7 @@ struct VideoPlayer::Impl {
 		softwareCodec->thread_count = codec->thread_count;
 		softwareCodec->thread_type = codec->thread_type;
 		softwareCodec->skip_frame = codec->skip_frame;
+		softwareCodec->flags2 |= AV_CODEC_FLAG2_EXPORT_MVS;
 		if (avcodec_open2(softwareCodec, videoDecoder, nullptr) < 0) {
 			avcodec_free_context(&softwareCodec);
 			return false;
@@ -729,6 +732,41 @@ struct VideoPlayer::Impl {
 		converted->outputHeight = outputHeight;
 		converted->presentationTime = position;
 		converted->generation = frameGeneration;
+		const auto motionSideData = av_frame_get_side_data(
+			decodedFrame, AV_FRAME_DATA_MOTION_VECTORS);
+		if (motionSideData != nullptr && motionSideData->size >= sizeof(AVMotionVector) &&
+			rawWidth > 0 && rawHeight > 0) {
+			const auto* vectors = reinterpret_cast<const AVMotionVector*>(motionSideData->data);
+			const size_t vectorCount = motionSideData->size / sizeof(AVMotionVector);
+			converted->motionVectors.reserve(vectorCount);
+			const auto orientPoint = [rot](float x, float y) {
+				switch (rot) {
+					case 90: return std::pair<float, float>{1.0f - y, x};
+					case 180: return std::pair<float, float>{1.0f - x, 1.0f - y};
+					case 270: return std::pair<float, float>{y, 1.0f - x};
+					default: return std::pair<float, float>{x, y};
+				}
+			};
+			for (size_t index = 0; index < vectorCount; ++index) {
+				const auto& vector = vectors[index];
+				if (vector.w == 0 || vector.h == 0 || vector.motion_scale == 0) continue;
+				const float rawDestinationX = static_cast<float>(vector.dst_x) / rawWidth;
+				const float rawDestinationY = static_cast<float>(vector.dst_y) / rawHeight;
+				const float rawSourceX = static_cast<float>(vector.src_x) / rawWidth;
+				const float rawSourceY = static_cast<float>(vector.src_y) / rawHeight;
+				const auto [destinationX, destinationY] = orientPoint(rawDestinationX, rawDestinationY);
+				const auto [sourceX, sourceY] = orientPoint(rawSourceX, rawSourceY);
+				const float vectorWidth = rot == 90 || rot == 270
+					? static_cast<float>(vector.h) / rawHeight : static_cast<float>(vector.w) / rawWidth;
+				const float vectorHeight = rot == 90 || rot == 270
+					? static_cast<float>(vector.w) / rawWidth : static_cast<float>(vector.h) / rawHeight;
+				if (destinationX + vectorWidth < 0.0f ||
+					destinationY + vectorHeight < 0.0f ||
+					destinationX > 1.0f || destinationY > 1.0f) continue;
+				converted->motionVectors.push_back({destinationX, destinationY, sourceX, sourceY,
+					vectorWidth, vectorHeight});
+			}
+		}
 		converted->fullRange = sourceRange != 0;
 		switch (decodedFrame->colorspace) {
 		case AVCOL_SPC_BT2020_NCL:
@@ -1429,6 +1467,9 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 		impl->codec->thread_count = static_cast<int>(
 			std::clamp(std::thread::hardware_concurrency(), 1u, 16u));
 		impl->codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+		// Export codec-provided block motion vectors when the decoder supports
+		// them. This adds side data but avoids a second optical-flow pass.
+		impl->codec->flags2 |= AV_CODEC_FLAG2_EXPORT_MVS;
 		if (av_hwdevice_ctx_create(&impl->hwDeviceContext, AV_HWDEVICE_TYPE_VAAPI,
 			nullptr, nullptr, 0) >= 0) {
 			impl->codec->hw_device_ctx = av_buffer_ref(impl->hwDeviceContext);

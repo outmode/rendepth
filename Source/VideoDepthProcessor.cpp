@@ -210,6 +210,7 @@ VideoDepthFrame VideoDepthProcessor::stabilize(const DepthEstimator::Result& dep
 	temporalHeight = depth.height;
 	return result;
 }
+
 void VideoDepthProcessor::run() {
 	std::string error;
 	DepthEstimator::Config estimatorConfig;
@@ -256,7 +257,8 @@ void VideoDepthProcessor::run() {
 			continue;
 		}
 		auto output = stabilize(depth, *source);
-		if (output.valid()) {
+		if (!output.valid()) continue;
+		{
 			std::lock_guard lock(mutex);
 			completedFrame = std::make_unique<VideoDepthFrame>(std::move(output));
 		}

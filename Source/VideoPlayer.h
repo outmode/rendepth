@@ -13,6 +13,14 @@
 #include <vector>
 
 struct VideoFrame {
+	struct MotionVector {
+		float destinationX = 0.0f;
+		float destinationY = 0.0f;
+		float sourceX = 0.0f;
+		float sourceY = 0.0f;
+		float width = 0.0f;
+		float height = 0.0f;
+	};
 	enum class Format { RGBA, NV12, YUV420P };
 	enum class ColorSpace { BT601, BT709, BT2020 };
 
@@ -29,6 +37,7 @@ struct VideoFrame {
 	std::uint64_t generation = 0;
 	std::array<std::vector<std::uint8_t>, 3> planes;
 	std::vector<std::uint8_t> inferenceRGBA;
+	std::vector<MotionVector> motionVectors;
 };
 
 struct VideoSubtitle {
