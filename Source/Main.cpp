@@ -1772,11 +1772,7 @@ static bool startVideoDepth(bool preserveTexture) {
 	config.modelFilename = videoDepthModelFiles[modelOption];
 	config.processSize = videoDepthProcessSizes[modelOption];
 	config.targetFramesPerSecond = videoDepthRates[modelOption];
-	#ifdef RENDEPTH_ENABLE_CUDA
-	config.provider = DepthEstimator::Provider::CUDA;
-	#elif defined(RENDEPTH_ENABLE_ROCM)
-	config.provider = DepthEstimator::Provider::ROCM;
-	#endif
+	config.provider = DepthEstimator::Provider::Auto;
 	if (activeVideo) videoPlayer.setInferenceSize(config.processSize, config.targetFramesPerSecond);
 	if (!videoDepthProcessor.start(config)) {
 		videoPlayer.setInferenceSize(0);
@@ -4879,11 +4875,7 @@ static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
 			? homePath / "Models" : std::filesystem::path(modelDirectory);
 		config.modelPath = ModelDownloader::ensureAvailable(
 			modelDirectoryPath, "RFDN_x4.onnx", nativeSuperResolutionError);
-	#ifdef RENDEPTH_ENABLE_CUDA
-		config.provider = DepthEstimator::Provider::CUDA;
-	#elif defined(RENDEPTH_ENABLE_ROCM)
-		config.provider = DepthEstimator::Provider::ROCM;
-	#endif
+		config.provider = DepthEstimator::Provider::Auto;
 		if (!config.modelPath.empty())
 			nativeSuperResolutionLoaded = nativeSuperResolution.load(
 				config, nativeSuperResolutionError);
@@ -4997,11 +4989,7 @@ static int nativeDepthRun(void* ptr) {
 			depthGenAlive = false;
 			return 0;
 		}
-	#ifdef RENDEPTH_ENABLE_CUDA
-		config.provider = DepthEstimator::Provider::CUDA;
-	#elif defined(RENDEPTH_ENABLE_ROCM)
-		config.provider = DepthEstimator::Provider::ROCM;
-	#endif
+		config.provider = DepthEstimator::Provider::Auto;
 		config.processSize = depthProcessSizes[modelOption];
 		nativeDepthEstimatorLoaded = nativeDepthEstimator.load(
 			config, nativeDepthEstimatorError);

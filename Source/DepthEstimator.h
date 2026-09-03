@@ -16,6 +16,7 @@ public:
 		Auto,
 		CPU,
 		ROCM,
+		OpenVINO,
 		DirectML,
 		CUDA,
 		TensorRT,

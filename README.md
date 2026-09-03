@@ -36,6 +36,10 @@ Build Instructions
 - Folders `Assets` `Binary` `Library` `Shaders` must remain together.
 
 - Linux/macOS can use g++/clang. Windows builds use MSVC.
+- Linux builds use one universal executable and select ONNX Runtime providers
+  at runtime in this order: CUDA, ROCm, OpenVINO, then CPU. Optional provider
+  libraries can be placed in the app's `Library` directory or in the directory
+  named by `RENDEPTH_ONNXRUNTIME_EP_DIR`.
 - To enable Windows video playback, install an MSVC-compatible FFmpeg SDK (for
   example with vcpkg) and configure with
   `-DRENDEPTH_ENABLE_FFMPEG=ON -DRENDEPTH_FFMPEG_ROOT=<vcpkg>/installed/x64-windows`.
