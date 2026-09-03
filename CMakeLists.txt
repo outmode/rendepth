@@ -20,6 +20,10 @@ foreach(RENDEPTH_BUILD_FEATURE IN ITEMS
     unset(${RENDEPTH_BUILD_FEATURE} CACHE)
 endforeach()
 
+set(RENDEPTH_LINUX_BACKEND "CUDA" CACHE STRING
+        "Linux inference backend (CUDA, ROCM, or CPU)")
+set_property(CACHE RENDEPTH_LINUX_BACKEND PROPERTY STRINGS CUDA ROCM CPU)
+
 if(WIN32)
     set(RENDEPTH_ENABLE_ONNX_RUNTIME ON)
     set(RENDEPTH_ENABLE_FFMPEG ON)
@@ -28,8 +32,16 @@ if(WIN32)
 else()
     set(RENDEPTH_ENABLE_ONNX_RUNTIME ON)
     set(RENDEPTH_ENABLE_FFMPEG ON)
-    set(RENDEPTH_ENABLE_ROCM ON)
-    set(RENDEPTH_ENABLE_CUDA OFF)
+    if(RENDEPTH_LINUX_BACKEND STREQUAL "ROCM")
+        set(RENDEPTH_ENABLE_ROCM ON)
+        set(RENDEPTH_ENABLE_CUDA OFF)
+    elseif(RENDEPTH_LINUX_BACKEND STREQUAL "CPU")
+        set(RENDEPTH_ENABLE_ROCM OFF)
+        set(RENDEPTH_ENABLE_CUDA OFF)
+    else()
+        set(RENDEPTH_ENABLE_ROCM OFF)
+        set(RENDEPTH_ENABLE_CUDA ON)
+    endif()
 endif()
 set(RENDEPTH_BUILD_DEPTH_TEST ON)
 set(RENDEPTH_BUILD_SUPER_TEST ON)
@@ -505,9 +517,6 @@ if(RENDEPTH_ENABLE_FFMPEG)
 endif()
 
 if(RENDEPTH_ENABLE_ONNX_RUNTIME)
-    if(RENDEPTH_ENABLE_CUDA AND NOT WIN32)
-        message(FATAL_ERROR "RENDEPTH_ENABLE_CUDA currently requires the Windows CUDA ONNX Runtime package")
-    endif()
     if(NOT RENDEPTH_ENABLE_ROCM AND NOT RENDEPTH_ONNXRUNTIME_DIR)
         message(FATAL_ERROR "RENDEPTH_ONNXRUNTIME_DIR must point to an ONNX Runtime installation")
     endif()
@@ -608,7 +617,7 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
     endif()
     set_target_properties(Rendepth PROPERTIES
             SKIP_BUILD_RPATH FALSE
-            BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib;${RENDEPTH_ROCM_DIR}/lib"
+            BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib"
             INSTALL_RPATH "\$ORIGIN/../Library")
     if(RENDEPTH_ENABLE_ROCM)
         set_target_properties(Rendepth PROPERTIES
@@ -624,7 +633,9 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
     endif()
 
     if(RENDEPTH_BUILD_DEPTH_TEST)
-        add_executable(DepthTest Source/DepthTest.cpp Source/DepthEstimator.cpp)
+        # Development-only test executable; keep it out of the default and
+        # packaging builds. It can still be built explicitly when requested.
+        add_executable(DepthTest EXCLUDE_FROM_ALL Source/DepthTest.cpp Source/DepthEstimator.cpp)
         target_compile_definitions(DepthTest PUBLIC RENDEPTH_ENABLE_ONNX_RUNTIME)
         target_include_directories(DepthTest PUBLIC
                 Source ThirdParty/SDL/include ThirdParty/SDL_image/include
@@ -652,7 +663,7 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
         endif()
         set_target_properties(DepthTest PROPERTIES
                 SKIP_BUILD_RPATH FALSE
-                BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib;${RENDEPTH_ROCM_DIR}/lib"
+                BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib"
                 INSTALL_RPATH "\$ORIGIN/../Library")
         if(RENDEPTH_ENABLE_ROCM)
             set_target_properties(DepthTest PROPERTIES
@@ -663,7 +674,9 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
     endif()
 
     if(RENDEPTH_BUILD_SUPER_TEST)
-        add_executable(SuperTest Source/SuperTest.cpp Source/SuperResolution.cpp)
+        # Development-only test executable; keep it out of the default and
+        # packaging builds. It can still be built explicitly when requested.
+        add_executable(SuperTest EXCLUDE_FROM_ALL Source/SuperTest.cpp Source/SuperResolution.cpp)
         target_compile_definitions(SuperTest PUBLIC RENDEPTH_ENABLE_ONNX_RUNTIME)
         target_include_directories(SuperTest PUBLIC
                 Source ThirdParty/SDL/include ThirdParty/SDL_image/include
@@ -689,7 +702,7 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
         endif()
         set_target_properties(SuperTest PROPERTIES
                 SKIP_BUILD_RPATH FALSE
-                BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib;${RENDEPTH_ROCM_DIR}/lib"
+                BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib"
                 INSTALL_RPATH "\$ORIGIN/../Library")
     endif()
 
@@ -750,13 +763,16 @@ elseif(APPLE)
 elseif(UNIX)
     install(DIRECTORY "${CMAKE_SOURCE_DIR}/Shaders/Compiled/"
             DESTINATION libexec/rendepth/Shaders/Compiled
-            FILES_MATCHING PATTERN "*.spv")
+            FILES_MATCHING PATTERN "*.spv"
+            PATTERN "QuiltTest.*" EXCLUDE)
 endif()
 if(RENDEPTH_ENABLE_ONNX_RUNTIME AND UNIX AND NOT APPLE AND NOT RENDEPTH_ENABLE_ROCM)
     install(DIRECTORY "${RENDEPTH_ONNXRUNTIME_DIR}/lib/"
             DESTINATION libexec/rendepth/Library
             FILES_MATCHING PATTERN "libonnxruntime.so*"
                            PATTERN "libonnxruntime_providers_shared.so*"
+                           PATTERN "libonnxruntime_providers_cuda.so*"
+                           PATTERN "libonnxruntime_providers_tensorrt.so*"
             PATTERN "pkgconfig" EXCLUDE
             PATTERN "cmake" EXCLUDE)
 endif()
@@ -851,7 +867,9 @@ elseif(UNIX)
     target_link_libraries(Rendepth PUBLIC stdc++)
 endif()
 
-add_executable(QuiltTest Source/QuiltTest.cpp)
+# Development-only test executable; keep it out of the default and packaging
+# builds. It can still be built explicitly when requested.
+add_executable(QuiltTest EXCLUDE_FROM_ALL Source/QuiltTest.cpp)
 target_compile_definitions(QuiltTest PRIVATE SDL_MAIN_USE_CALLBACKS)
 target_include_directories(QuiltTest PRIVATE
         ThirdParty/SDL/include ThirdParty/rapidjson/include)
@@ -863,10 +881,11 @@ endif()
 if(UNIX AND NOT APPLE)
 	find_package(PkgConfig REQUIRED)
 	pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
+	pkg_check_modules(GIO_UNIX REQUIRED IMPORTED_TARGET gio-unix-2.0)
 	pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-1.0 gstreamer-app-1.0)
-	target_link_libraries(Rendepth PUBLIC PkgConfig::GIO PkgConfig::GSTREAMER)
-	add_executable(ScreenCaptureTest Source/ScreenCaptureTest.cpp)
+	target_link_libraries(Rendepth PUBLIC PkgConfig::GIO PkgConfig::GIO_UNIX PkgConfig::GSTREAMER)
+	add_executable(ScreenCaptureTest EXCLUDE_FROM_ALL Source/ScreenCaptureTest.cpp)
 	target_include_directories(ScreenCaptureTest PRIVATE ThirdParty/SDL/include)
 	target_link_libraries(ScreenCaptureTest PRIVATE
-		SDL3::SDL3 PkgConfig::GIO PkgConfig::GSTREAMER)
+		SDL3::SDL3 PkgConfig::GIO PkgConfig::GIO_UNIX PkgConfig::GSTREAMER)
 endif()

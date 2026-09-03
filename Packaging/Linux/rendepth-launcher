@@ -3,13 +3,24 @@
 set -eu
 
 app_root=/usr/libexec/rendepth
-rocm_lib=${RENDEPTH_ROCM_LIB:-/usr/lib64/rocm/lib}
+backend_binary="$app_root/Binary/Rendepth"
+backend_library="$app_root/Library"
 
-if [ -n "${LD_LIBRARY_PATH:-}" ]; then
-	LD_LIBRARY_PATH="$app_root/Library:$rocm_lib:$LD_LIBRARY_PATH"
+# Universal packages may contain separate binaries and dependency trees for
+# each GPU vendor. Keep the legacy paths as a fallback for existing packages.
+if [ -e /dev/nvidiactl ] && [ -x "$app_root/Backends/CUDA/Binary/Rendepth" ]; then
+	backend_binary="$app_root/Backends/CUDA/Binary/Rendepth"
+	backend_library="$app_root/Backends/CUDA/Library"
+elif [ -e /dev/kfd ] && [ -x "$app_root/Backends/ROCm/Binary/Rendepth" ]; then
+	backend_binary="$app_root/Backends/ROCm/Binary/Rendepth"
+	backend_library="$app_root/Backends/ROCm/Library"
+fi
+
+if [ -n "${RENDEPTH_ROCM_LIB:-}" ]; then
+	LD_LIBRARY_PATH="$backend_library:$RENDEPTH_ROCM_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 else
-	LD_LIBRARY_PATH="$app_root/Library:$rocm_lib"
+	LD_LIBRARY_PATH="$backend_library${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 export LD_LIBRARY_PATH
 
-exec "$app_root/Binary/Rendepth" "$@"
+exec "$backend_binary" "$@"

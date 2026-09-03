@@ -656,6 +656,7 @@ std::filesystem::path exePath = std::filesystem::path(
 std::filesystem::path homeDir = Core::getHomeDirectory();
 std::filesystem::path homePath = homeDir / ".Rendepth";
 static std::string modelDirectory;
+static SDL_Surface* windowIcon = nullptr;
 
 static std::random_device randDevice;
 static std::mt19937 randGen(randDevice());
@@ -3580,6 +3581,9 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	if (argc >= 2) fileToLoad = std::string(argv[1]);
 
 	context.appName = "Rendepth";
+	// Keep the desktop entry name, Wayland app_id, and X11 window class aligned
+	// so the running window is grouped under the installed launcher icon.
+	SDL_SetAppMetadata("Rendepth", "3.0.0", "rendepth");
 	context.windowSize = { 1920, 1080 };
 	context.appIcons = &appIcons;
 	context.menuChoices = &menuChoices;
@@ -3636,6 +3640,14 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 			SDL_Log("Could Not Initialize Image.");
 			return SDL_APP_FAILURE;
 		}
+	}
+
+	const auto iconPath = exePath / "Assets" / "Rendepth.png";
+	windowIcon = IMG_Load(iconPath.string().c_str());
+	if (windowIcon != nullptr) {
+		SDL_SetWindowIcon(context.window, windowIcon);
+	} else {
+		SDL_Log("Could Not Load Application Icon: %s", iconPath.string().c_str());
 	}
 
 	if (Image::useBorderlessWindow) SDL_SetWindowHitTest(context.window, windowHitCallback, &context);
@@ -5636,5 +5648,9 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result) {
 		std::filesystem::remove_all(runtimeDirectory, cleanupError);
 	}
 	Image::quit(&context);
+	if (windowIcon != nullptr) {
+		SDL_DestroySurface(windowIcon);
+		windowIcon = nullptr;
+	}
 	SDL_Quit();
 }

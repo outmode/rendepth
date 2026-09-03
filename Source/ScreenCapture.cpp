@@ -20,6 +20,7 @@ bool setCaptureError(std::string& destination, const char* message) {
 
 #if defined(__linux__)
 #include <gio/gio.h>
+#include <gio/gunixfdlist.h>
 #include <gst/app/gstappsink.h>
 #include <gst/gst.h>
 #include <unistd.h>
