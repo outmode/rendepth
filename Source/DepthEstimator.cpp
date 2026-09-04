@@ -10,11 +10,9 @@
 #include <cstring>
 #include <limits>
 #include <memory>
-#include <vector>
 
 #ifdef RENDEPTH_ENABLE_ONNX_RUNTIME
 #include <onnxruntime_cxx_api.h>
-#include "OnnxRuntimeProviders.h"
 #endif
 
 namespace {
@@ -24,6 +22,7 @@ namespace {
 struct DepthEstimator::State {
 #ifdef RENDEPTH_ENABLE_ONNX_RUNTIME
 	Ort::Env environment{ORT_LOGGING_LEVEL_WARNING, "Rendepth"};
+	Ort::SessionOptions sessionOptions;
 	std::unique_ptr<Ort::Session> session;
 	Ort::RunOptions runOptions;
 	std::string inputName;
@@ -63,32 +62,34 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 
 	auto nextState = std::make_unique<State>();
 	nextState->config = config;
+	if (config.intraOpThreads > 0) {
+		nextState->sessionOptions.SetIntraOpNumThreads(static_cast<int>(config.intraOpThreads));
+	}
+	nextState->sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+
 	std::string sessionStage = "creating ONNX Runtime session";
-	std::string lastProviderError;
-	Provider selectedProvider = Provider::CPU;
 	try {
-		RendepthOnnx::registerProviderLibraries(nextState->environment);
-		for (const Provider provider : RendepthOnnx::candidates(config.provider)) {
-			Ort::SessionOptions sessionOptions;
-			sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-			if (config.intraOpThreads > 0)
-				sessionOptions.SetIntraOpNumThreads(static_cast<int>(config.intraOpThreads));
-			try {
-			RendepthOnnx::append(sessionOptions, provider);
-				nextState->session = std::make_unique<Ort::Session>(
-					nextState->environment, config.modelPath.c_str(), sessionOptions);
-				selectedProvider = provider;
-				break;
-			} catch (const Ort::Exception& exception) {
-				lastProviderError = exception.what();
-				nextState->session.reset();
-			}
-		}
-		if (!nextState->session) {
-			error = "ONNX Runtime could not initialize CUDA/ROCm or CPU execution. ";
-			error += lastProviderError;
+		if (config.provider == Provider::CUDA) {
+#ifdef RENDEPTH_ENABLE_CUDA
+			OrtCUDAProviderOptions cudaOptions{};
+			nextState->sessionOptions.AppendExecutionProvider_CUDA(cudaOptions);
+#else
+			error = "CUDA support is not enabled. Configure with "
+				"RENDEPTH_ENABLE_CUDA=ON and rebuild against a CUDA-enabled ONNX Runtime.";
 			return false;
+#endif
+		} else if (config.provider == Provider::ROCM) {
+#ifdef RENDEPTH_ENABLE_ROCM
+			OrtROCMProviderOptions rocmOptions{};
+			nextState->sessionOptions.AppendExecutionProvider_ROCM(rocmOptions);
+#else
+			error = "ROCm support is not enabled. Configure with "
+				"RENDEPTH_ENABLE_ROCM=ON and rebuild against a ROCm-enabled ONNX Runtime.";
+			return false;
+#endif
 		}
+		nextState->session = std::make_unique<Ort::Session>(
+			nextState->environment, config.modelPath.c_str(), nextState->sessionOptions);
 		Ort::AllocatorWithDefaultOptions allocator;
 		sessionStage = "reading ONNX input name";
 		auto inputName = nextState->session->GetInputNameAllocated(0, allocator);
@@ -119,7 +120,11 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 		return false;
 	}
 
-	activeProvider = RendepthOnnx::name(selectedProvider);
+	switch (config.provider) {
+		case Provider::CUDA: activeProvider = "CUDA"; break;
+		case Provider::ROCM: activeProvider = "ROCm"; break;
+		default: activeProvider = "CPU"; break;
+	}
 	state = nextState.release();
 	return true;
 #endif

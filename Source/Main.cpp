@@ -1332,7 +1332,7 @@ Icon IconOpen = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Open 2D/3D Image",
+	"Open 2D/3D Media",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -1772,7 +1772,11 @@ static bool startVideoDepth(bool preserveTexture) {
 	config.modelFilename = videoDepthModelFiles[modelOption];
 	config.processSize = videoDepthProcessSizes[modelOption];
 	config.targetFramesPerSecond = videoDepthRates[modelOption];
-	config.provider = DepthEstimator::Provider::Auto;
+	#ifdef RENDEPTH_ENABLE_CUDA
+	config.provider = DepthEstimator::Provider::CUDA;
+	#elif defined(RENDEPTH_ENABLE_ROCM)
+	config.provider = DepthEstimator::Provider::ROCM;
+	#endif
 	if (activeVideo) videoPlayer.setInferenceSize(config.processSize, config.targetFramesPerSecond);
 	if (!videoDepthProcessor.start(config)) {
 		videoPlayer.setInferenceSize(0);
@@ -4933,7 +4937,11 @@ static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
 			? homePath / "Models" : std::filesystem::path(modelDirectory);
 		config.modelPath = ModelDownloader::ensureAvailable(
 			modelDirectoryPath, "RFDN_x4.onnx", nativeSuperResolutionError);
-		config.provider = DepthEstimator::Provider::Auto;
+	#ifdef RENDEPTH_ENABLE_CUDA
+		config.provider = DepthEstimator::Provider::CUDA;
+	#elif defined(RENDEPTH_ENABLE_ROCM)
+		config.provider = DepthEstimator::Provider::ROCM;
+	#endif
 		if (!config.modelPath.empty())
 			nativeSuperResolutionLoaded = nativeSuperResolution.load(
 				config, nativeSuperResolutionError);
@@ -5047,7 +5055,11 @@ static int nativeDepthRun(void* ptr) {
 			depthGenAlive = false;
 			return 0;
 		}
-		config.provider = DepthEstimator::Provider::Auto;
+	#ifdef RENDEPTH_ENABLE_CUDA
+		config.provider = DepthEstimator::Provider::CUDA;
+	#elif defined(RENDEPTH_ENABLE_ROCM)
+		config.provider = DepthEstimator::Provider::ROCM;
+	#endif
 		config.processSize = depthProcessSizes[modelOption];
 		nativeDepthEstimatorLoaded = nativeDepthEstimator.load(
 			config, nativeDepthEstimatorError);
