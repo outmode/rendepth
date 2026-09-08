@@ -3,6 +3,7 @@
 /Binary/*
 /Debug/
 /Library/*
+/Runtimes/
 /Shaders/Temp/
 
 /Assets/Settings.json

@@ -20,28 +20,14 @@ foreach(RENDEPTH_BUILD_FEATURE IN ITEMS
     unset(${RENDEPTH_BUILD_FEATURE} CACHE)
 endforeach()
 
-set(RENDEPTH_LINUX_BACKEND "CUDA" CACHE STRING
-        "Linux inference backend (CUDA, ROCM, or CPU)")
-set_property(CACHE RENDEPTH_LINUX_BACKEND PROPERTY STRINGS CUDA ROCM CPU)
-
+# Linux ships a CPU base and discovers optional runtime packs at startup.
+# Windows retains its existing CUDA setup until its packaging pass.
+set(RENDEPTH_ENABLE_ONNX_RUNTIME ON)
+set(RENDEPTH_ENABLE_FFMPEG ON)
+set(RENDEPTH_ENABLE_ROCM OFF)
+set(RENDEPTH_ENABLE_CUDA OFF)
 if(WIN32)
-    set(RENDEPTH_ENABLE_ONNX_RUNTIME ON)
-    set(RENDEPTH_ENABLE_FFMPEG ON)
-    set(RENDEPTH_ENABLE_ROCM OFF)
     set(RENDEPTH_ENABLE_CUDA ON)
-else()
-    set(RENDEPTH_ENABLE_ONNX_RUNTIME ON)
-    set(RENDEPTH_ENABLE_FFMPEG ON)
-    if(RENDEPTH_LINUX_BACKEND STREQUAL "ROCM")
-        set(RENDEPTH_ENABLE_ROCM ON)
-        set(RENDEPTH_ENABLE_CUDA OFF)
-    elseif(RENDEPTH_LINUX_BACKEND STREQUAL "CPU")
-        set(RENDEPTH_ENABLE_ROCM OFF)
-        set(RENDEPTH_ENABLE_CUDA OFF)
-    else()
-        set(RENDEPTH_ENABLE_ROCM OFF)
-        set(RENDEPTH_ENABLE_CUDA ON)
-    endif()
 endif()
 set(RENDEPTH_BUILD_DEPTH_TEST ON)
 set(RENDEPTH_BUILD_SUPER_TEST ON)
@@ -516,7 +502,9 @@ if(RENDEPTH_ENABLE_FFMPEG)
     endif()
 endif()
 
-if(RENDEPTH_ENABLE_ONNX_RUNTIME)
+if(RENDEPTH_ENABLE_ONNX_RUNTIME AND UNIX AND NOT APPLE)
+    include(Packaging/Linux/Inference.cmake)
+elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
     if(NOT RENDEPTH_ENABLE_ROCM AND NOT RENDEPTH_ONNXRUNTIME_DIR)
         message(FATAL_ERROR "RENDEPTH_ONNXRUNTIME_DIR must point to an ONNX Runtime installation")
     endif()
@@ -766,24 +754,6 @@ elseif(UNIX)
             FILES_MATCHING PATTERN "*.spv"
             PATTERN "QuiltTest.*" EXCLUDE)
 endif()
-if(RENDEPTH_ENABLE_ROCM AND UNIX AND NOT APPLE)
-    install(CODE
-            "set(_rendepth_library_dir
-                    \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/libexec/rendepth/Library\")
-             if(NOT EXISTS
-                    \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/libexec/rendepth/Binary\")
-                 set(_rendepth_library_dir
-                     \"\$ENV{DESTDIR}/usr/libexec/rendepth/Library\")
-             endif()
-             execute_process(COMMAND \"${CMAKE_COMMAND}\" -E make_directory
-                    \"\${_rendepth_library_dir}\")
-             execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
-                    \"${RENDEPTH_ROCM_ONNXRUNTIME_LIBRARY}\"
-                    \"\${_rendepth_library_dir}/libonnxruntime.so.1\")
-             execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
-                    \"${RENDEPTH_ROCM_DIR}/lib/libonnxruntime_providers_rocm.so\"
-                    \"\${_rendepth_library_dir}/libonnxruntime_providers_rocm.so\")")
-endif()
 install(FILES "${CMAKE_SOURCE_DIR}/LICENSE"
         DESTINATION share/licenses/rendepth)
 if(UNIX AND NOT APPLE)
@@ -829,13 +799,10 @@ set(CPACK_RPM_PACKAGE_LICENSE "MIT")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
 # Increment the RPM release for rebuilds of the same application version so
 # package managers do not treat a freshly built artifact as the old package.
-set(CPACK_RPM_PACKAGE_RELEASE 12)
+set(CPACK_RPM_PACKAGE_RELEASE 13)
 set(RENDEPTH_RPM_REQUIRES)
 if(RENDEPTH_ENABLE_FFMPEG AND DAV1D_FOUND)
     list(APPEND RENDEPTH_RPM_REQUIRES "libdav1d >= 0.5.0")
-endif()
-if(RENDEPTH_ENABLE_ROCM AND UNIX AND NOT APPLE)
-    list(APPEND RENDEPTH_RPM_REQUIRES "onnxruntime-rocm >= 1.22.2")
 endif()
 if(RENDEPTH_RPM_REQUIRES)
     list(JOIN RENDEPTH_RPM_REQUIRES ", " CPACK_RPM_PACKAGE_REQUIRES)

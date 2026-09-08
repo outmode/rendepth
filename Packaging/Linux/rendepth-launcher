@@ -1,26 +1,6 @@
 #!/bin/sh
-
 set -eu
-
 app_root=/usr/libexec/rendepth
-backend_binary="$app_root/Binary/Rendepth"
-backend_library="$app_root/Library"
-
-# Universal packages may contain separate binaries and dependency trees for
-# each GPU vendor. Keep the legacy paths as a fallback for existing packages.
-if [ -e /dev/nvidiactl ] && [ -x "$app_root/Backends/CUDA/Binary/Rendepth" ]; then
-	backend_binary="$app_root/Backends/CUDA/Binary/Rendepth"
-	backend_library="$app_root/Backends/CUDA/Library"
-elif [ -e /dev/kfd ] && [ -x "$app_root/Backends/ROCm/Binary/Rendepth" ]; then
-	backend_binary="$app_root/Backends/ROCm/Binary/Rendepth"
-	backend_library="$app_root/Backends/ROCm/Library"
-fi
-
-if [ -n "${RENDEPTH_ROCM_LIB:-}" ]; then
-	LD_LIBRARY_PATH="$backend_library:$RENDEPTH_ROCM_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-else
-	LD_LIBRARY_PATH="$backend_library${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-fi
-export LD_LIBRARY_PATH
-
-exec "$backend_binary" "$@"
+# GPU packs are selected inside the application. Do not inject vendor library
+# paths into the base application's process-wide dependency search path.
+exec "$app_root/Binary/Rendepth" "$@"

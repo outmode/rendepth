@@ -73,6 +73,9 @@
 #include "DepthEstimator.h"
 #include "SuperResolution.h"
 #include "ModelDownloader.h"
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+#include "InferenceRuntime.h"
+#endif
 #include "VideoPlayer.h"
 #include "VideoDepthProcessor.h"
 #include "ScreenCapture.h"
@@ -1490,7 +1493,7 @@ Choice ChoiceSlideshow {
 };
 
 Choice ChoiceTags {
-	"Default 3D Detection",
+	"Force 3D Format",
 	{ "SBS Full", "SBS Half", "TAB Full", "TAB Half", "Color Only", "Anaglyph" },
 };
 
@@ -1499,10 +1502,54 @@ Choice ChoiceEyes {
 	{ "Left / Right", "Right / Left" },
 };
 
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+Choice ChoiceInference {
+	"AI Engine (Restart Required)", { "CPU", "Nvidia CUDA", "AMD ROCm" }, {}, {}, false, true, true,
+};
+Choice ChoiceRuntimePacks {
+	"Installed Runtime Packs", { "None", "CUDA", "ROCm", "CUDA, ROCm" }, {}, {}, false, true, true,
+};
+Choice ChoiceRuntimeTools {
+	"GPU Support", { "View Status", "Open Pack Folder" }, {}, {}, false, false, true,
+};
+static int startupInferenceOption = 0;
+static bool inferenceRuntimeLoaded = false;
+static std::string inferenceStartupError;
+static void refreshInferenceSettings();
+static void changeInference(int option);
+static void runtimeTools(int option);
+#endif
+
+Choice ChoiceVersion {
+	.label = "Rendepth 3.0.0 (Pro License)",
+	.options = {},
+	.inlineText = true,
+	.bold = true,
+};
+
+Choice ChoiceCredit {
+	.label = "Made by Outmode.",
+	.options = {},
+	.readOnly = true,
+	.inlineText = true,
+};
+
 static std::vector menuChoices = { ChoiceStereo, ChoiceExport, ChoiceModel, ChoiceResolution,
-	ChoiceBackground, ChoiceSorting, ChoiceSlideshow,ChoiceEyes, ChoiceTags  };
+	ChoiceBackground, ChoiceSorting, ChoiceSlideshow,ChoiceEyes, ChoiceTags
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	, ChoiceInference, ChoiceRuntimePacks, ChoiceRuntimeTools
+#endif
+	, ChoiceVersion, ChoiceCredit
+};
 
 static std::unordered_map<std::string, int> menuSelection = {
+	{ ChoiceCredit.label, -1 },
+	{ ChoiceVersion.label, -1 },
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	{ ChoiceInference.label, 0 },
+	{ ChoiceRuntimePacks.label, 0 },
+	{ ChoiceRuntimeTools.label, -1 },
+#endif
 	{ ChoiceStereo.label, 0 },
 	{ ChoiceExport.label, 0 },
 	{ ChoiceModel.label, 0 },
@@ -1515,6 +1562,13 @@ static std::unordered_map<std::string, int> menuSelection = {
 };
 
 static std::unordered_map<std::string, int> menuRollover = {
+	{ ChoiceCredit.label, -1 },
+	{ ChoiceVersion.label, -1 },
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	{ ChoiceInference.label, -1 },
+	{ ChoiceRuntimePacks.label, -1 },
+	{ ChoiceRuntimeTools.label, -1 },
+#endif
 	{ ChoiceStereo.label, -1 },
 	{ ChoiceExport.label, -1 },
 	{ ChoiceModel.label, -1 },
@@ -2042,6 +2096,15 @@ static void changeSlideshow(int option) {
 
 static bool firstInit = true;
 static std::unordered_map<std::string, std::function<void(int)>> menuCallback = {
+	{ ChoiceVersion.label, [](int) {
+		menuSelection[ChoiceVersion.label] = -1;
+		if (!SDL_OpenURL("https://rendepth.com/"))
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Rendepth Website", SDL_GetError(), context.window);
+	} },
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	{ ChoiceInference.label, [](int option) { changeInference(option); } },
+	{ ChoiceRuntimeTools.label, [](int option) { runtimeTools(option); } },
+#endif
 	{ ChoiceStereo.label, [](int option) { changeStereo(option); } },
 	{ ChoiceExport.label, [](int option) { changeExport(option); } },
 	{ ChoiceModel.label, [](int option) { changeModel(option, firstInit); } },
@@ -2052,6 +2115,96 @@ static std::unordered_map<std::string, std::function<void(int)>> menuCallback = 
     { ChoiceTags.label, [](int option) { changeImport(option, firstInit); } },
 	{ ChoiceEyes.label, [](int option) { changeEyes(option); } }
 };
+
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+static bool transientInferenceSetting(const std::string& label) {
+	return label == ChoiceRuntimePacks.label || label == ChoiceRuntimeTools.label;
+}
+
+static void refreshInferenceSettings() {
+	const bool cuda = InferenceRuntime::installed(DepthEstimator::Provider::CUDA);
+	const bool rocm = InferenceRuntime::installed(DepthEstimator::Provider::ROCM);
+	menuSelection[ChoiceRuntimePacks.label] = (cuda ? 1 : 0) + (rocm ? 2 : 0);
+	const int selected = menuSelection[ChoiceInference.label];
+	const auto requested = selected == 1 ? DepthEstimator::Provider::CUDA :
+		selected == 2 ? DepthEstimator::Provider::ROCM : DepthEstimator::Provider::CPU;
+	const bool missingPack = (selected == 1 && !cuda) || (selected == 2 && !rocm);
+	// Keep the saved preference intact; availability is display-only. Only
+	// compare against the running backend when this preference was attempted
+	// at startup, not when a different engine is waiting for restart.
+	const bool failedStartup = selected == startupInferenceOption &&
+		(!inferenceRuntimeLoaded || InferenceRuntime::provider() != requested);
+	for (auto& choice : menuChoices) {
+		if (choice.label == ChoiceInference.label) {
+			choice.unavailable = missingPack || failedStartup;
+			break;
+		}
+	}
+}
+
+static void changeInference(int option) {
+	menuSelection[ChoiceInference.label] = std::clamp(option, 0, 2);
+	if (firstInit) return;
+	refreshInferenceSettings();
+	saveOptions();
+	const bool restart = menuSelection[ChoiceInference.label] != startupInferenceOption;
+	Core::drawText(&context, restart ? "Restart Rendepth to apply the AI inference preference" :
+		"AI inference preference unchanged", Image::helpFont,
+		Image::helpTexture, Image::helpTextSize, "Help Texture");
+	Image::displayTip = true;
+	displayTipTime = getTimeNow();
+}
+
+static void runtimeTools(int option) {
+	menuSelection[ChoiceRuntimeTools.label] = -1;
+	if (firstInit) return;
+	refreshInferenceSettings();
+	const auto directory = InferenceRuntime::packDirectory();
+	if (option == 1) {
+		std::error_code error;
+		if (!directory.empty()) std::filesystem::create_directories(directory, error);
+		if (directory.empty() || error) {
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs",
+				"Could not create the runtime pack folder.", context.window);
+			return;
+		}
+		// Encode a file URI; pack paths can contain spaces or URI metacharacters.
+		std::string url = "file://";
+		constexpr char hex[] = "0123456789ABCDEF";
+		for (unsigned char c : directory.string()) {
+			if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+				(c >= '0' && c <= '9') || c == '/' || c == '-' || c == '_' || c == '.' || c == '~')
+				url += static_cast<char>(c);
+			else { url += '%'; url += hex[c >> 4]; url += hex[c & 15]; }
+		}
+		if (!SDL_OpenURL(url.c_str()))
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs", SDL_GetError(), context.window);
+		return;
+	}
+	std::string message = InferenceRuntime::status();
+	if (!inferenceStartupError.empty()) message += "\n\n" + inferenceStartupError;
+	message += "\n\nNvidia pack: " + std::string((menuSelection[ChoiceRuntimePacks.label] & 1) ? "Installed" : "Not installed");
+	message += "\nAMD pack: " + std::string((menuSelection[ChoiceRuntimePacks.label] & 2) ? "Installed" : "Not installed");
+	message += "\n\nPack folder: " + directory.string();
+	message += "\n\nGPU packs are installed separately. In-app downloads are not available yet."
+		"\nAn installed pack still needs a compatible GPU and driver."
+		"\nRestart Rendepth after installing a pack or changing the inference preference.";
+	if (menuSelection[ChoiceInference.label] != startupInferenceOption)
+		message += "\n\nA preference change is waiting for restart.";
+	message += "\n\nChoose an AI engine below to apply after restart.";
+	const SDL_MessageBoxButtonData buttons[] = {
+		{ SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, -1, "Close" },
+		{ 0, 0, "CPU" }, { 0, 1, "Nvidia CUDA" }, { 0, 2, "AMD ROCm" }
+	};
+	const SDL_MessageBoxData dialog = {
+		SDL_MESSAGEBOX_INFORMATION, context.window, "AI Engine", message.c_str(),
+		static_cast<int>(std::size(buttons)), buttons, nullptr
+	};
+	int selected = -1;
+	if (SDL_ShowMessageBox(&dialog, &selected) && selected >= 0 && selected <= 2)
+		changeInference(selected);
+}
+#endif
 
 static double sliderStart = 0.5;
 static double currentStereoStrength = sliderStart * 0.8 + 0.1;
@@ -2804,7 +2957,11 @@ void saveOptions() {
 
 	std::vector<const char*> nameCache{};
     for (const auto& setting : menuSelection) {
-        if (setting.first == ChoiceTags.label) continue;
+        if (setting.first == ChoiceTags.label || setting.first == ChoiceVersion.label ||
+			setting.first == ChoiceCredit.label) continue;
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+		if (transientInferenceSetting(setting.first)) continue;
+#endif
         auto settingName = setting.first.c_str();
         document.AddMember(rapidjson::GenericStringRef(settingName), setting.second, allocator);
         nameCache.push_back(settingName);
@@ -2858,12 +3015,29 @@ void loadOptions() {
 	dataBuffer[dataSize] = '\0';
 	if (document.Parse(dataBuffer).HasParseError()) return;
 	if (!document.IsObject()) return;
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	// Preserve the engine preference saved under the previous Settings label.
+	constexpr const char* previousEngineKey = "AI Inference (Restart Required)";
+	if (!document.HasMember(ChoiceInference.label.c_str()) &&
+		document.HasMember(previousEngineKey) && document[previousEngineKey].IsInt()) {
+		rapidjson::Value key(ChoiceInference.label.c_str(), document.GetAllocator());
+		document.AddMember(key, document[previousEngineKey].GetInt(), document.GetAllocator());
+	}
+#endif
 
 	for (auto& setting : menuSelection) {
-		if (setting.first == ChoiceTags.label) continue;
+		if (setting.first == ChoiceTags.label || setting.first == ChoiceVersion.label ||
+			setting.first == ChoiceCredit.label) continue;
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+		if (transientInferenceSetting(setting.first)) continue;
+#endif
 		auto settingName = setting.first.c_str();
-		if (document.HasMember(settingName)) {
-			setting.second = document[settingName].GetInt();
+		if (document.HasMember(settingName) && document[settingName].IsInt()) {
+			const int value = document[settingName].GetInt();
+			const auto choice = std::find_if(menuChoices.begin(), menuChoices.end(),
+				[&](const Choice& entry) { return entry.label == setting.first; });
+			if (choice == menuChoices.end() || value < 0 || value >= static_cast<int>(choice->options.size())) continue;
+			setting.second = value;
 			if (menuCallback[settingName]) menuCallback[settingName](setting.second);
 		}
 	}
@@ -3664,6 +3838,19 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	context.swapLeftRight = false;
 
 	loadOptions();
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	startupInferenceOption = menuSelection[ChoiceInference.label];
+	const auto preferred = startupInferenceOption == 1 ? DepthEstimator::Provider::CUDA :
+		startupInferenceOption == 2 ? DepthEstimator::Provider::ROCM : DepthEstimator::Provider::CPU;
+	InferenceRuntime::configure(exePath, homePath / "Runtimes", preferred);
+	inferenceRuntimeLoaded = InferenceRuntime::initialize(DepthEstimator::Provider::Auto, inferenceStartupError);
+	if (!inferenceRuntimeLoaded) SDL_Log("%s", inferenceStartupError.c_str());
+	refreshInferenceSettings();
+#endif
+
+	// Restoring the stereo preference can enable 3D. Reset it before opening
+	// startup media so a video does not start depth inference on launch.
+	setDisplay3D(false);
 
 	firstInit = false;
 
@@ -3727,7 +3914,6 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 
 	const bool savedLenticular = preferredStereoMode == Lenticular &&
 		!fileList.empty();
-	setDisplay3D(false);
 	if (savedLenticular) Image::setNativeOutputActive(&context, true);
 
 	if (!fileList.empty() && fileList.size() > fileIndex) {
@@ -3942,6 +4128,14 @@ static void serviceDeferredMediaLoad() {
 }
 
 SDL_AppResult SDL_AppIterate(void* appstate) {
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	// Refresh only while settings is visible, and avoid filesystem polling per frame.
+	static double nextInferenceRefresh = 0.0;
+	if (context.displayMenu && getTimeNow() >= nextInferenceRefresh) {
+		refreshInferenceSettings();
+		nextInferenceRefresh = getTimeNow() + 1.0;
+	}
+#endif
 	if ((currentSlider != nullptr || videoSliderScrubbing) &&
 		!(SDL_GetGlobalMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK)) {
 		finishSliderDrag();
@@ -4489,13 +4683,16 @@ void checkMouseState() {
 		for (const auto& choice : *context.menuChoices) {
 			auto optionIndex = 0;
 			(*context.menuRollover)[choice.label] = -1;
-			for (const auto& option : choice.options) {
+			if (choice.readOnly || !choice.active) continue;
+			// Window controls keep priority if choices scroll beneath them.
+			if (isIconCaptured || context.mouse.y < 0.0f || context.mouse.y >= windowSize.y) continue;
+			for (const auto& layout : choice.layouts) {
 				if (withinArea(glm::vec2(context.mouse.x, windowSize.y - context.mouse.y),
-					choice.layouts[optionIndex].position * glm::vec3(1.0)
-					- choice.layouts[optionIndex].size * glm::vec3(0.5) *
+					layout.position * glm::vec3(1.0)
+					- layout.size * glm::vec3(0.5) *
 					glm::vec3(aspectScale, 1.0) - buttonBorder + Image::menuMargin,
-					choice.layouts[optionIndex].position * glm::vec3(1.0)
-					+ choice.layouts[optionIndex].size * glm::vec3(0.5) *
+					layout.position * glm::vec3(1.0)
+					+ layout.size * glm::vec3(0.5) *
 					glm::vec3(aspectScale, 1.0)
 					+ buttonBorder + Image::menuMargin)) {
 					(*context.menuRollover)[choice.label] = optionIndex;
@@ -5356,6 +5553,17 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		finishSliderDrag();
 	} else if (event->type == SDL_EVENT_WINDOW_HIT_TEST) {
 		} else if (event->type == SDL_EVENT_KEY_DOWN) {
+		if (context.displayMenu) {
+			const auto key = event->key.key;
+			if (key == SDLK_PAGEDOWN || key == SDLK_PAGEUP || key == SDLK_HOME || key == SDLK_END) {
+				const float distance = key == SDLK_HOME ? -Image::menuScrollLimit :
+					key == SDLK_END ? Image::menuScrollLimit :
+					(key == SDLK_PAGEDOWN ? 1.0f : -1.0f) * context.windowSize.y * 0.75f;
+				Image::scrollMenu(distance);
+				checkMouseState();
+				return SDL_APP_CONTINUE;
+			}
+		}
 		if (activeScreenCapture && event->key.key == SDLK_SPACE)
 			return SDL_APP_CONTINUE;
 		if (event->key.key == SDLK_ESCAPE) {
@@ -5575,6 +5783,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
 			if (menuWasOpen && context.displayMenu) {
 				for (const auto& choice : *context.menuChoices) {
+					if (choice.readOnly || !choice.active) continue;
 					auto optionIndex = (*context.menuRollover)[choice.label];
 					if (optionIndex >= 0) {
 						(*context.menuSelection)[choice.label] = optionIndex;
@@ -5664,7 +5873,13 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			finishSliderDrag();
 		}
 	} else if (event->type == SDL_EVENT_MOUSE_WHEEL) {
-		wheelSpeed += (int)event->wheel.y;
+		if (context.displayMenu) {
+			const float direction = event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
+			Image::scrollMenu(-event->wheel.y * direction * 64.0f * context.displayScale);
+			checkMouseState();
+		} else {
+			wheelSpeed += (int)event->wheel.y;
+		}
 		mouseLastActive = getTimeNow();
 	} else if (event->type == SDL_EVENT_DROP_FILE) {
 		std::string droppedFile = event->drop.data;

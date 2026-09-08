@@ -161,6 +161,10 @@ struct Choice {
 	MenuLayout layout;
 	std::vector<MenuLayout> layouts;
 	bool active;
+	bool readOnly = false;
+	bool inlineText = false;
+	bool unavailable = false;
+	bool bold = false;
 };
 
 struct OptionsTexture {

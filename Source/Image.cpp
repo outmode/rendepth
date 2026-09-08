@@ -1093,11 +1093,19 @@ void Image::initMenuTexture() {
 }
 
 void Image::createMenuAssets(Context* context) {
+	const auto originalStyle = TTF_GetFontStyle(menuFont);
 	for (const Choice& choice : *context->menuChoices) {
+		if (choice.bold) TTF_SetFontStyle(menuFont, originalStyle | TTF_STYLE_BOLD);
 		addToMenuText(context, choice.label);
 		for (const std::string& option : choice.options) {
 			addToMenuText(context, option);
+			if (choice.inlineText && (choice.readOnly || choice.options.size() == 1)) {
+				addToMenuText(context, choice.label + ": " + option);
+				addToMenuText(context, choice.label + ": " + option + " (Unavailable)");
+			}
 		}
+		if (choice.inlineText && !choice.options.empty()) addToMenuText(context, choice.label + ":");
+		if (choice.bold) TTF_SetFontStyle(menuFont, originalStyle);
 	}
 	uploadTexture(context, menuTextSurface, &menuTexture, "Menu Texture");
 }
@@ -1158,20 +1166,57 @@ void Image::saveMenuLayout(Context* context) {
 	auto menuWidth = (style.getOptionsSize(Style::getCurrentScale()) + buttonMargin) * 4.0f *
 		aspectScale.x * context->displayScale;
 	auto choiceCentered = (windowSize.x - menuWidth) * 0.5f;
-	auto choiceStart = glm::vec3(choiceCentered, windowSize.y + 8.0f, 0.0f);
+	// Initial breathing room above the choices scrolls with the content.
+	menuTopInset = std::min(128.0f, windowSize.y * 0.5f);
+	auto choiceStart = glm::vec3(choiceCentered, windowSize.y - menuTopInset - buttonMargin, 0.0f);
 	auto choiceIndex = 0;
 
-	auto firstChoice = 0.0f;
 	for (auto& choice : *context->menuChoices) {
 		if (choiceIndex > 0) choiceStart.y -= 24.0f;
 		choiceIndex++;
+		if (choice.inlineText) {
+			const bool singleLine = choice.readOnly || choice.options.size() <= 1;
+			const auto heading = choice.label + (choice.options.empty() ? "" : ":");
+			const float gap = 20.0f * context->displayScale;
+			float width = optionTextures[heading].size.x;
+			float height = optionTextures[heading].size.y;
+			if (singleLine) {
+				for (const auto& option : choice.options) {
+					const auto size = optionTextures[choice.label + ": " + option].size;
+					width = std::max(width, size.x);
+					height = std::max(height, size.y);
+				}
+			} else {
+				for (const auto& option : choice.options) width += gap + optionTextures[option].size.x;
+			}
+			const float centerY = choiceStart.y - height * 0.5f;
+			float left = (windowSize.x - width * aspectScale.x) * 0.5f;
+			choice.layout.position = { singleLine ? windowSize.x * 0.5f :
+				left + optionTextures[heading].size.x * aspectScale.x * 0.5f, centerY, 0.0f };
+			choice.layout.size = { optionTextures[heading].size, 1.0f };
+			choice.layouts.clear();
+			choice.active = true;
+			if (singleLine && !choice.readOnly) {
+				choice.layouts.push_back({ choice.layout.position, { width, height, 1.0f } });
+			} else if (!choice.readOnly) {
+				left += optionTextures[heading].size.x * aspectScale.x;
+				for (const auto& option : choice.options) {
+					const auto size = optionTextures[option].size;
+					left += gap * aspectScale.x;
+					choice.layouts.push_back({ { left + size.x * aspectScale.x * 0.5f, centerY, 0.0f },
+						{ size, 1.0f } });
+					left += size.x * aspectScale.x;
+				}
+			}
+			choiceStart.y -= height + buttonMargin * 2.0f;
+			continue;
+		}
 
 		auto centerPadChoice = menuWidth - optionTextures[choice.label].size.x * context->displayScale;
 		auto spritePosition = choiceStart + glm::vec3(centerPadChoice * 0.5f, 0.0f, 0.0f) +
 				glm::vec3(optionTextures[choice.label].size.x * context->displayScale,
 				-optionTextures[choice.label].size.y, 0.0) * glm::vec3(0.5, 0.5, 0.0);
 		auto spriteSize = glm::vec3(optionTextures[choice.label].size, 1.0);
-		if (choiceIndex > 0) firstChoice = optionTextures[choice.label].size.y;
 
 		choice.layout.position = spritePosition + glm::vec3(0.0f, -1.0f, 0.0f);
 		choice.layout.size = spriteSize;
@@ -1218,8 +1263,16 @@ void Image::saveMenuLayout(Context* context) {
 		choiceStart.x = choiceCentered;
 		choiceStart.y -= optionTextures[choice.label].size.y + buttonMargin * 2.0f;
 	}
-	menuMargin.y = (firstChoice + buttonMargin * 2.0f + 2.0f) - (style.getIconRadius(Style::getCurrentScale()) * context->displayScale
-		+ style.getIconSpacer(Style::getCurrentScale()) + style.getInfo(Style::getCurrentScale()));
+	menuMargin.y = 0.0f;
+	menuScrollLimit = std::max(0.0f, 24.0f - (choiceStart.y + menuMargin.y));
+	menuScroll = std::clamp(menuScroll, 0.0f, menuScrollLimit);
+	menuMargin.y += menuScroll;
+}
+
+void Image::scrollMenu(float pixels) {
+	const float previous = menuScroll;
+	menuScroll = std::clamp(menuScroll + pixels, 0.0f, menuScrollLimit);
+	menuMargin.y += menuScroll - previous;
 }
 
 
@@ -1594,7 +1647,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 			.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
 			.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
 			.color_blend_op = SDL_GPU_BLENDOP_ADD,
-			.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
+			.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE,
 			.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
 			.alpha_blend_op = SDL_GPU_BLENDOP_ADD,
 			.enable_blend = true
@@ -1629,7 +1682,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 			.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
 			.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
 			.color_blend_op = SDL_GPU_BLENDOP_ADD,
-			.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA,
+			.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE,
 			.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
 			.alpha_blend_op = SDL_GPU_BLENDOP_ADD,
 			.enable_blend = true
@@ -3192,6 +3245,37 @@ int Image::draw(Context* context) {
 
 				for (const auto& choice : *context->menuChoices) {
 					if (!choice.active) continue;
+					if (choice.inlineText) {
+						const bool singleLine = choice.readOnly || choice.options.size() <= 1;
+						menuSampleBindings[0] = { .texture = menuTexture, .sampler = imageSampler };
+						SDL_BindGPUFragmentSamplers(renderPass, 0, &menuSampleBindings[0], 1);
+						std::string heading = choice.label + (choice.options.empty() ? "" : ":");
+						if (singleLine) {
+							const int selected = choice.readOnly ? (*context->menuSelection)[choice.label] : 0;
+							if (selected >= 0 && selected < static_cast<int>(choice.options.size()))
+								heading += " " + choice.options[selected];
+							if (choice.unavailable) heading += " (Unavailable)";
+						}
+						const auto& text = optionTextures[heading];
+						const float visibility = context->mode == RGB_Depth && view > 0 ? 0.0f : 1.0f;
+						const bool linkHover = !choice.readOnly && singleLine && (*context->menuRollover)[choice.label] == 0;
+						setSpriteUniforms(choice.layout.position + menuMargin, glm::vec3(text.size, 1.0f),
+							linkHover ? viewColorPinkSolid : viewColorWhiteSolid, visibility, 1, text.offset / menuTextureSize,
+							text.size / menuTextureSize, glm::vec2(0.5), glm::vec3(aspectScale, 1.0));
+						drawSprite(commandBuffer, renderPass);
+						if (!singleLine) {
+							for (size_t i = 0; i < choice.options.size(); ++i) {
+								const auto& option = optionTextures[choice.options[i]];
+								const bool hover = (*context->menuRollover)[choice.label] == static_cast<int>(i);
+								setSpriteUniforms(choice.layouts[i].position + menuMargin, glm::vec3(option.size, 1.0f),
+									hover ? viewColorPinkSolid : viewColorWhiteSolid, visibility, 1,
+									option.offset / menuTextureSize, option.size / menuTextureSize,
+									glm::vec2(0.5), glm::vec3(aspectScale, 1.0));
+								drawSprite(commandBuffer, renderPass);
+							}
+						}
+						continue;
+					}
 					menuSampleBindings[0] = { .texture = sliderTexture, .sampler = imageSampler };
 					SDL_BindGPUFragmentSamplers(renderPass, 0, &menuSampleBindings[0], 1);
 
@@ -3329,7 +3413,9 @@ int Image::draw(Context* context) {
 						drawSprite(commandBuffer, renderPass);
 					}
 					SDL_BindGPUFragmentSamplers(renderPass, 0, &subtitleBindings[0], 1);
-					setSpriteUniforms(subtitleCenter, subtitleSize, viewColorWhiteSolid, 1.0f, 1,
+					// SDL alpha-blits this text onto a transparent surface, producing
+					// premultiplied RGB. Atlas and directly uploaded text stay straight.
+					setSpriteUniforms(subtitleCenter, subtitleSize, viewColorWhiteSolid, 1.0f, 2,
 						{0.0f, 0.0f}, {1.0f, 1.0f}, glm::vec2(0.5f), glm::vec3(aspectScale, 1.0f));
 					drawSprite(commandBuffer, renderPass);
 				}

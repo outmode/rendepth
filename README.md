@@ -36,10 +36,11 @@ Build Instructions
 - Folders `Assets` `Binary` `Library` `Shaders` must remain together.
 
 - Linux/macOS can use g++/clang. Windows builds use MSVC.
-- Linux builds use one universal executable and select ONNX Runtime providers
-  at runtime in this order: CUDA, ROCm, OpenVINO, then CPU. Optional provider
-  libraries can be placed in the app's `Library` directory or in the directory
-  named by `RENDEPTH_ONNXRUNTIME_EP_DIR`.
+- Linux builds use one executable with a bundled CPU inference runtime. Settings
+  selects CPU, NVIDIA CUDA, or AMD ROCm on the next launch. GPU runtime packs
+  live separately in `~/.Rendepth/Runtimes`; missing or failing packs fall back
+  to CPU. See [Linux inference packaging](Packaging/Linux/README.md) for build
+  inputs, pack layout, and validation. GPU downloads are not yet integrated.
 - To enable Windows video playback, install an MSVC-compatible FFmpeg SDK (for
   example with vcpkg) and configure with
   `-DRENDEPTH_ENABLE_FFMPEG=ON -DRENDEPTH_FFMPEG_ROOT=<vcpkg>/installed/x64-windows`.

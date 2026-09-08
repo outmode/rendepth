@@ -13,6 +13,9 @@
 
 #ifdef RENDEPTH_ENABLE_ONNX_RUNTIME
 #include <onnxruntime_cxx_api.h>
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+#include "InferenceRuntime.h"
+#endif
 #endif
 
 namespace {
@@ -48,6 +51,7 @@ void DepthEstimator::unload() {
 
 bool DepthEstimator::load(const Config& config, std::string& error) {
 	unload();
+	error.clear();
 
 #ifndef RENDEPTH_ENABLE_ONNX_RUNTIME
 	(void)config;
@@ -60,17 +64,25 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 		return false;
 	}
 
-	auto nextState = std::make_unique<State>();
-	nextState->config = config;
-	if (config.intraOpThreads > 0) {
-		nextState->sessionOptions.SetIntraOpNumThreads(static_cast<int>(config.intraOpThreads));
-	}
-	nextState->sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	if (!InferenceRuntime::initialize(config.provider, error)) return false;
+	const auto provider = config.provider == DepthEstimator::Provider::CPU
+		? DepthEstimator::Provider::CPU : InferenceRuntime::provider();
+#else
+	const auto provider = config.provider;
+#endif
 	std::string sessionStage = "creating ONNX Runtime session";
+	std::unique_ptr<State> nextState;
 	try {
-		if (config.provider == Provider::CUDA) {
-#ifdef RENDEPTH_ENABLE_CUDA
+		nextState = std::make_unique<State>();
+		nextState->config = config;
+		if (config.intraOpThreads > 0) {
+			nextState->sessionOptions.SetIntraOpNumThreads(static_cast<int>(config.intraOpThreads));
+		}
+		nextState->sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+
+		if (provider == Provider::CUDA) {
+#if defined(RENDEPTH_ENABLE_CUDA) || defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME)
 			OrtCUDAProviderOptions cudaOptions{};
 			nextState->sessionOptions.AppendExecutionProvider_CUDA(cudaOptions);
 #else
@@ -78,8 +90,8 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 				"RENDEPTH_ENABLE_CUDA=ON and rebuild against a CUDA-enabled ONNX Runtime.";
 			return false;
 #endif
-		} else if (config.provider == Provider::ROCM) {
-#ifdef RENDEPTH_ENABLE_ROCM
+		} else if (provider == Provider::ROCM) {
+#if defined(RENDEPTH_ENABLE_ROCM) || defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME)
 			OrtROCMProviderOptions rocmOptions{};
 			nextState->sessionOptions.AppendExecutionProvider_ROCM(rocmOptions);
 #else
@@ -113,6 +125,15 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 		nextState->inputWidth = config.processSize;
 	} catch (const Ort::Exception& exception) {
 		error = exception.what();
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+		if (provider != DepthEstimator::Provider::CPU) {
+			InferenceRuntime::useCpuFallback(error);
+			nextState.reset();
+			auto cpuConfig = config;
+			cpuConfig.provider = DepthEstimator::Provider::CPU;
+			return load(cpuConfig, error);
+		}
+#endif
 		return false;
 	} catch (const std::exception& exception) {
 		error = "ONNX Runtime session initialization failed while " + sessionStage + ": ";
@@ -120,7 +141,7 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 		return false;
 	}
 
-	switch (config.provider) {
+	switch (provider) {
 		case Provider::CUDA: activeProvider = "CUDA"; break;
 		case Provider::ROCM: activeProvider = "ROCm"; break;
 		default: activeProvider = "CPU"; break;

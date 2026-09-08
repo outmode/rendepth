@@ -260,6 +260,7 @@ public:
 	static void createMenuAssets(Context* context);
 	static void addToMenuText(Context* context, const std::string& text);
 	static void saveMenuLayout(Context* context);
+	static void scrollMenu(float pixels);
 	static glm::mat4 getTransform(glm::vec3 position, glm::vec3 size,
 		glm::vec3 aspect = glm::vec3(1.0));
 	static void setSpriteUniforms(glm::vec3 position, glm::vec3 size,
@@ -267,6 +268,9 @@ public:
 		glm::vec2 uvOffset = { 0.0, 0.0 }, glm::vec2 uvSize = { 1.0, 1.0 },
 		glm::vec2 slice = { 0.5, 0.5 }, glm::vec3 aspect = { 1.0, 1.0, 1.0 });
 	inline static glm::vec3 menuMargin{ 0 };
+	inline static float menuTopInset = 128.0f;
+	inline static float menuScroll = 0.0f;
+	inline static float menuScrollLimit = 0.0f;
 	inline static SDL_DisplayID currentDisplay = 0;
 	inline static float mouseScale = 1.0;
 	inline static bool useBorderlessWindow = true;
