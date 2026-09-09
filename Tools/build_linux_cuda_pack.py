@@ -15,6 +15,7 @@ import tempfile
 SYSTEM_LIBRARIES = {
     "libc.so.6", "libm.so.6", "libdl.so.2", "libpthread.so.0", "librt.so.1",
     "libstdc++.so.6", "libgcc_s.so.1", "libresolv.so.2", "libutil.so.1",
+    "libz.so.1",  # cuDNN 9.25+ uses the base-system zlib runtime.
     "ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1",
     "libcuda.so.1", "libnvidia-ptxjitcompiler.so.1",
 }

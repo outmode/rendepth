@@ -1458,7 +1458,7 @@ Icon IconSettings = {
 Choice ChoiceStereo {
 	"3D Mode",
 	{ "Natural Color", "Vivid Color", "SBS Full", "SBS Half", "Color + Depth",
-		"Horizontal", "Vertical", "Checkerboard", "Free View", "Disabled" },
+		"Horizontal", "Vertical", "Checkerboard", "Free View", "Light Field", "Disabled" },
 };
 
 Choice ChoiceExport {
@@ -1584,7 +1584,7 @@ static void setPreferredStereo(ViewMode mode, bool saveMode = true);
 static void setShowStereoSettings(bool show);
 static std::array stereoModes = {
 	Anaglyph_Accurate, Anaglyph_Vivid, SBS_Full, SBS_Half, RGB_Depth,
-	Horizontal, Vertical, Checkerboard, Free_View_Grid, Mono };
+	Horizontal, Vertical, Checkerboard, Free_View_Grid, Lenticular, Mono };
 static void changeStereo(int option) {
 	if (stereoModes[option] == Mono) {
 		setDisplay3D(false);
@@ -5612,8 +5612,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 				changeStereo(8);
 				menuSelection[ChoiceStereo.label] = 8;
 			} else if (event->key.key == SDLK_0) {
-				changeStereo(9);
-				menuSelection[ChoiceStereo.label] = 9;
+				changeStereo(10);
+				menuSelection[ChoiceStereo.label] = 10;
 		}
 
 		if (event->key.key == SDLK_MINUS || event->key.key == SDLK_KP_MINUS) {

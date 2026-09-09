@@ -68,6 +68,16 @@ class CudaPackTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     @unittest.skipUnless(shutil.which("patchelf"), "requires patchelf")
+    def test_cudnn_system_zlib_dependency(self):
+        zlib = self.root / "libz.so.1"
+        self.library(zlib, "libz.so.1")
+        self.library(self.vendor / "libcudnn.so.9.1", "libcudnn.so.9", dependency=zlib)
+        self.build()
+        manifest = json.loads((self.output / "pack.json").read_text())
+        self.assertIn("libz.so.1", manifest["system_dependencies"])
+        self.assertFalse((self.output / "lib/libz.so.1").exists())
+
+    @unittest.skipUnless(shutil.which("patchelf"), "requires patchelf")
     def test_relocatable_pack_and_manifest(self):
         original_hash = builder.sha256(self.ort / "libonnxruntime.so.1")
         self.build()

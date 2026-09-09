@@ -82,6 +82,10 @@ and includes ORT/NVIDIA notices plus a `pack.json` inventory with SHA-256 hashes
 It never modifies SDK files. NVIDIA driver libraries and toolkit stubs are not
 bundled. An existing output directory is rejected.
 
+The target system must provide zlib (`libz.so.1`, Ubuntu package `zlib1g`),
+which newer cuDNN libraries require, along with the standard C/C++ runtimes
+and NVIDIA driver. These external dependencies are listed in `pack.json`.
+
 ELF validation does not prove API, GPU, driver, glibc, or dynamically loaded
 library compatibility. The inventory is not a signed download manifest and the
 loader does not consume it. Review redistributable inputs and validate the pack
@@ -102,6 +106,83 @@ For local installation, close Rendepth and use
 `--output "$HOME/.Rendepth/Runtimes/cuda"` when building the pack. Select
 **Nvidia CUDA** through Settings → GPU Support → View Status, then restart.
 In-app downloads remain a separate step; no download endpoint is configured.
+
+### Archive naming and checksum format
+
+Use this naming convention for Linux CUDA packs:
+
+```text
+rendepth-cuda-linux-<arch>-ort<ort-version>-cuda<cuda-version>-cudnn<cudnn-version>.tar.gz
+<archive-filename>.sha256
+```
+
+Use `x64` for x86-64 and `arm64` for AArch64. Version fields describe the
+libraries packaged, not the maximum CUDA version reported by `nvidia-smi`.
+The current artifact uses CUDA's toolkit release `12.8`; individual component
+patch versions may differ. The filename is a label, not a complete dependency
+lock: preserve the exact SDK/library inputs and notices when rebuilding.
+This convention covers Linux CUDA packs; other backends/platforms do not yet
+have a validated archive convention here.
+
+The archive must contain one top-level `cuda/` directory, with `lib/`,
+`licenses/`, and `pack.json` beneath it. Preserve relative library symlinks;
+do not use tar's dereference option. After assembling `Distribution/cuda`,
+create the archive and sidecar checksum from inside `Distribution`:
+
+```sh
+cd Distribution
+archive=rendepth-cuda-linux-x64-ort1.22.0-cuda12.8-cudnn9.25.1.tar.gz
+tar -czf "$archive" cuda
+gzip -t "$archive"
+sha256sum "$archive" > "$archive.sha256"
+```
+
+The sidecar is a single UTF-8/ASCII line: 64 lowercase hexadecimal SHA-256
+characters, two spaces, the archive's basename (no directory), and a newline.
+It hashes the final compressed archive bytes. Transfer both files together;
+on another Linux computer, verify them from their containing directory:
+
+```sh
+sha256sum -c rendepth-cuda-linux-x64-ort1.22.0-cuda12.8-cudnn9.25.1.tar.gz.sha256
+```
+
+`pack.json` separately maps relative file paths to hashes of the unpacked file
+contents (including library aliases resolved through symlinks). Its hashes
+are not the archive checksum. Neither checksum format provides a signature.
+
+Rebuilding is not currently byte-for-byte reproducible: tar records file
+timestamps, ownership, and traversal order, and tool versions can change ELF
+patching/compression output. The same naming convention and library versions
+can therefore produce a different archive hash. To obtain exactly the recorded
+hash on another computer, copy the existing archive and verify its sidecar;
+for a new build, generate a new checksum rather than reusing the old one.
+
+### Ubuntu CUDA pack validation (2026-09-08)
+
+Assembled `Distribution/cuda` with the existing pack builder using:
+
+- ORT GPU SDK 1.22.0 (`/home/psyko/SDK/onnxruntime-linux-x64-gpu-1.22.0/lib`).
+- CUDA 12.8 libraries (`/usr/local/cuda-12.8/targets/x86_64-linux/lib`).
+- cuDNN 9.25.1 libraries (`/usr/lib/x86_64-linux-gnu`).
+- CUDA's `EULA.txt` in a separate notices directory, and
+  `/usr/share/doc/libcudnn9-cuda-12` for cuDNN notices.
+
+The archive is
+`Distribution/rendepth-cuda-linux-x64-ort1.22.0-cuda12.8-cudnn9.25.1.tar.gz`;
+it contains the `cuda/` directory, including licenses and the hashed inventory.
+The archive is approximately 2.3 GiB (3.5 GiB unpacked); `gzip -t` passed.
+SHA-256: `12e103c2d20933011eda811f86a0832b44ec0336e643493f1bc6197d5ecc5b5a`.
+Driver libraries are excluded.
+
+Built `InferenceRuntimeTest` with the ORT 1.22.0 headers and CPU SDK. All five
+pack-builder tests passed. The isolated inference suite passed CPU inference,
+missing/corrupt/incomplete runtime checks, session failure recovery, and actual
+CUDA depth (`DA2-SMALL-280.onnx`) and SR (`RFDN_x4.onnx`) inference on this
+Ubuntu NVIDIA machine with driver 580.178.04. The test executable has no ORT or
+CUDA startup dependency. GPU access required running outside the agent sandbox.
+This validates this host; clean-system portability and the supported driver/OS
+matrix still need testing before release. No pack was installed into user
+Settings, and no download endpoint was added.
 
 The current loader expects these user-owned directories:
 
