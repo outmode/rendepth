@@ -121,8 +121,8 @@ libraries packaged, not the maximum CUDA version reported by `nvidia-smi`.
 The current artifact uses CUDA's toolkit release `12.8`; individual component
 patch versions may differ. The filename is a label, not a complete dependency
 lock: preserve the exact SDK/library inputs and notices when rebuilding.
-This convention covers Linux CUDA packs; other backends/platforms do not yet
-have a validated archive convention here.
+The Fedora ROCm extension to this convention is documented below; other
+platforms do not yet have a validated archive convention here.
 
 The archive must contain one top-level `cuda/` directory, with `lib/`,
 `licenses/`, and `pack.json` beneath it. Preserve relative library symlinks;
@@ -156,6 +156,93 @@ patching/compression output. The same naming convention and library versions
 can therefore produce a different archive hash. To obtain exactly the recorded
 hash on another computer, copy the existing archive and verify its sidecar;
 for a new build, generate a new checksum rather than reusing the old one.
+
+### Build a Linux ROCm pack (Fedora RPM inputs)
+
+The ROCm builder assembles the matching ORT core and providers from installed
+Fedora RPMs, recursively copies non-system ELF dependencies, adds SONAME aliases,
+and sets `$ORIGIN` RPATHs. It includes HIPRTC builtins, hipBLASLt, rocBLAS and
+hipBLASLt kernel data, MIOpen databases, RPM license notices, and a format-1
+`pack.json` inventory. Source libraries and installed Rendepth packs are unchanged.
+Install `patchelf`, `readelf`, and the matching ROCm/ORT RPMs first:
+
+```sh
+python3 Tools/build_linux_rocm_pack.py \
+  --ort-directory /usr/lib64/rocm/lib \
+  --library-directory /usr/lib64 \
+  --output Distribution/rocm
+```
+
+This builder is specifically for Fedora's installed RPM layout, including its
+MIOpen database and license directories. It refuses existing output, unresolved
+ELF dependencies, conflicting libraries, mixed architectures, or missing notices.
+It does not download SDKs or create a portable build from a newer distro ABI.
+
+ROCm archives follow the same layout/checksum rules above, with a top-level
+`rocm/` directory containing `lib/`, `share/`, `licenses/`, `README.txt`, and
+`pack.json`. Include the distro baseline in this Fedora artifact's filename:
+
+```sh
+cd Distribution
+archive=rendepth-rocm-linux-x64-ort1.22.2-rocm7.1.1-fedora44.tar.gz
+tar -czf "$archive" rocm
+gzip -t "$archive"
+sha256sum "$archive" > "$archive.sha256"
+sha256sum -c "$archive.sha256"
+```
+
+The checksum sidecar uses the same single-line `64-hex-digits  archive-basename`
+format as CUDA. Preserve relative symlinks. The ROCm version label represents the
+7.1.1 runtime; some component RPMs are versioned 7.1.0. Exact package versions,
+platform symbol versions, external dependencies, and file hashes are in `pack.json`.
+
+Close Rendepth, then extract the top-level `rocm/` directory into
+`~/.Rendepth/Runtimes/` (do not overwrite a running or existing pack). This Fedora
+MIOpen build uses an absolute system database path; point it at the included data:
+
+```sh
+MIOPEN_SYSTEM_DB_PATH="$HOME/.Rendepth/Runtimes/rocm/share/miopen/db" rendepth
+```
+
+Select **AMD ROCm** under GPU Support → View Status and restart with that environment.
+No `LD_LIBRARY_PATH` override is needed. The OS supplies the AMD GPU driver/KFD,
+libdrm, libnuma, and standard C/C++ runtimes. This artifact requires **glibc 2.43**,
+**GLIBCXX_3.4.32**, and **CXXABI_1.3.15**. It is a Fedora 44 build, not a validated
+Ubuntu-compatible pack. A broadly compatible Linux release needs libraries built
+against the intended oldest supported distribution.
+
+Test both GPU inference paths in isolated directories, without changing Settings:
+
+```sh
+python3 Tools/test_linux_inference.py Binary/InferenceRuntimeTest \
+  Runtimes/cpu/lib/libonnxruntime.so.1 \
+  --depth-model /path/to/DA2-SMALL-280.onnx \
+  --sr-model /path/to/RFDN_x4.onnx \
+  --rocm-pack Distribution/rocm
+```
+
+The test sets the included MIOpen database path and fails on CPU fallback.
+
+### Fedora ROCm pack validation (2026-09-08)
+
+Assembled `Distribution/rocm` from ORT 1.22.2 and the installed Fedora 44 ROCm
+7.1.x packages. Validated ELF dependency closure and `$ORIGIN` RPATHs. The isolated
+runtime suite passed CPU inference, missing/corrupt/incomplete-pack checks,
+session failure recovery, and actual **ROCm depth and SR inference** on an
+**AMD Radeon RX 7900 XTX (gfx1100)**. GPU testing required host access outside the
+agent sandbox. A loader trace confirmed the exercised ORT/ROCm libraries loaded
+from `Distribution/rocm/lib`. `InferenceRuntimeTest` has no ORT or ROCm startup
+dependency.
+
+The archive is `Distribution/rendepth-rocm-linux-x64-ort1.22.2-rocm7.1.1-fedora44.tar.gz`.
+The archive is 1.86 GiB (about 6.1 GiB unpacked). Archive layout, gzip
+integrity, all 3,531 inventory entries, and the sidecar checksum passed validation.
+SHA-256: `e940a6c8c940e5bc3d337f99c5bbdcc2996ba021e4f42e508713595f39c8204a`.
+Its adjacent `.sha256` file records the checksum of the compressed archive.
+Clean-system portability and other GPU/driver combinations remain untested;
+the successful host test does not prove that every MIOpen JIT/compiler path is
+independent of the host's installed SDK. No pack was installed into Settings
+and no download endpoint was added.
 
 ### Ubuntu CUDA pack validation (2026-09-08)
 

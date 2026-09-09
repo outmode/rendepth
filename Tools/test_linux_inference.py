@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise isolated CPU/GPU runtime layouts without modifying user settings."""
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -12,11 +13,13 @@ parser.add_argument("--depth-model", type=Path)
 parser.add_argument("--sr-model", type=Path)
 parser.add_argument("--cuda-pack", type=Path,
                     help="also require real CUDA depth and SR inference using this pack directory")
+parser.add_argument("--rocm-pack", type=Path,
+                    help="also require real ROCm depth and SR inference using this pack directory")
 args = parser.parse_args()
 if bool(args.depth_model) != bool(args.sr_model):
     parser.error("Supply both models to include real inference tests")
-if args.cuda_pack and not args.depth_model:
-    parser.error("--cuda-pack requires both models; loading the core alone does not validate CUDA")
+if (args.cuda_pack or args.rocm_pack) and not args.depth_model:
+    parser.error("GPU pack tests require both models; loading the core alone does not validate GPU inference")
 probe = args.probe.resolve(strict=True)
 cpu = args.cpu_library.resolve(strict=True)
 
@@ -28,11 +31,13 @@ with tempfile.TemporaryDirectory(prefix="rendepth-runtime-test-") as temporary:
     cpu_dir.mkdir(parents=True)
     (cpu_dir / "libonnxruntime.so.1").symlink_to(cpu)
 
+    runtime_environment = os.environ.copy()
+
     def run(name, backend, expected, status, installed, models=False):
         command = [str(probe), str(app), str(packs), backend, expected, status, installed]
         if models:
             command += [str(args.depth_model.resolve()), str(args.sr_model.resolve())]
-        result = subprocess.run(command, text=True, capture_output=True, timeout=120, cwd=root)
+        result = subprocess.run(command, text=True, capture_output=True, timeout=120, cwd=root, env=runtime_environment)
         if result.returncode:
             raise RuntimeError(f"{name} failed:\n{result.stdout}\n{result.stderr}")
         print(f"PASS {name}: {result.stdout.strip()}")
@@ -59,12 +64,18 @@ with tempfile.TemporaryDirectory(prefix="rendepth-runtime-test-") as temporary:
         if args.depth_model:
             run(f"{backend} session failure retries CPU", backend, "cpu", "CPU fallback", "installed", True)
 
-    if args.cuda_pack:
+    for backend, pack in (("cuda", args.cuda_pack), ("rocm", args.rocm_pack)):
+        if not pack:
+            continue
         # Fresh process and isolated pack root; CPU fallback is a test failure.
-        packs = root / "real CUDA packs"
+        packs = root / f"real {backend.upper()} packs"
         packs.mkdir()
-        (packs / "cuda").symlink_to(args.cuda_pack.resolve(strict=True), target_is_directory=True)
-        run("CUDA depth and SR inference", "cuda", "cuda", "CUDA runtime", "installed", True)
+        (packs / backend).symlink_to(pack.resolve(strict=True), target_is_directory=True)
+        runtime_environment = os.environ.copy()
+        if backend == "rocm" and (pack / "share/miopen/db").is_dir():
+            runtime_environment["MIOPEN_SYSTEM_DB_PATH"] = str((pack / "share/miopen/db").resolve())
+        run(f"{backend.upper()} depth and SR inference", backend, backend,
+            ("ROCm runtime" if backend == "rocm" else "CUDA runtime"), "installed", True)
 
     (cpu_dir / "libonnxruntime.so.1").unlink()
     run("missing CPU", "cpu", "unavailable", "Inference unavailable", "missing")
