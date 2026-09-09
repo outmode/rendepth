@@ -51,6 +51,58 @@ refuses to replace an existing pack. Restart Rendepth after running it. These
 links depend on the host's ROCm packages and are **not a redistributable pack**;
 the self-contained release requirements below still apply.
 
+### Build a Linux CUDA pack
+
+CUDA session support is compiled into the universal Linux executable for both
+depth and super-resolution. No CUDA toolkit is needed to build that executable.
+Prepare a CUDA-enabled **Linux ORT SDK** with an API compatible with the build's
+headers, and the CUDA and cuDNN runtime versions required by that SDK. For
+example, an ORT CUDA 12/cuDNN 9 distribution needs CUDA 12 and cuDNN 9 libraries;
+cuDNN 8 is not interchangeable. Use the vendor's compatibility matrix for the
+specific SDK version, GPU architecture, minimum driver, and Linux baseline.
+
+Install `patchelf` and `readelf` (binutils) on the packaging machine, then run:
+
+```sh
+python3 Tools/build_linux_cuda_pack.py \
+  --ort-directory /path/to/onnxruntime-linux-x64-gpu/lib \
+  --library-directory /path/to/cuda/lib64 \
+  --library-directory /path/to/cudnn/lib \
+  --notices-directory /path/to/cuda-redistribution-notices \
+  --notices-directory /path/to/cudnn-redistribution-notices \
+  --output Distribution/cuda
+```
+
+Library directories are nonrecursive; repeat the option for each runtime
+directory (including split NVIDIA Python-package `lib` directories if used).
+The tool copies NVIDIA runtime libraries, including cuDNN engines and NVRTC
+builtins loaded on demand. It adds SONAME aliases, sets `$ORIGIN` RPATHs on
+copied libraries, rejects unresolved ELF dependencies and mixed architectures,
+and includes ORT/NVIDIA notices plus a `pack.json` inventory with SHA-256 hashes.
+It never modifies SDK files. NVIDIA driver libraries and toolkit stubs are not
+bundled. An existing output directory is rejected.
+
+ELF validation does not prove API, GPU, driver, glibc, or dynamically loaded
+library compatibility. The inventory is not a signed download manifest and the
+loader does not consume it. Review redistributable inputs and validate the pack
+on the supported Linux/NVIDIA systems before publishing it.
+
+Test the assembled pack on NVIDIA hardware without changing installed packs or
+Settings; any CPU fallback fails the CUDA test:
+
+```sh
+python3 Tools/test_linux_inference.py Binary/InferenceRuntimeTest \
+  Runtimes/cpu/lib/libonnxruntime.so.1 \
+  --depth-model /path/to/DA2-SMALL-280.onnx \
+  --sr-model /path/to/RFDN_x4.onnx \
+  --cuda-pack Distribution/cuda
+```
+
+For local installation, close Rendepth and use
+`--output "$HOME/.Rendepth/Runtimes/cuda"` when building the pack. Select
+**Nvidia CUDA** through Settings → GPU Support → View Status, then restart.
+In-app downloads remain a separate step; no download endpoint is configured.
+
 The current loader expects these user-owned directories:
 
 ```text

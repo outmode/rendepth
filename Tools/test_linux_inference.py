@@ -10,9 +10,13 @@ parser.add_argument("probe", type=Path)
 parser.add_argument("cpu_library", type=Path)
 parser.add_argument("--depth-model", type=Path)
 parser.add_argument("--sr-model", type=Path)
+parser.add_argument("--cuda-pack", type=Path,
+                    help="also require real CUDA depth and SR inference using this pack directory")
 args = parser.parse_args()
 if bool(args.depth_model) != bool(args.sr_model):
     parser.error("Supply both models to include real inference tests")
+if args.cuda_pack and not args.depth_model:
+    parser.error("--cuda-pack requires both models; loading the core alone does not validate CUDA")
 probe = args.probe.resolve(strict=True)
 cpu = args.cpu_library.resolve(strict=True)
 
@@ -28,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix="rendepth-runtime-test-") as temporary:
         command = [str(probe), str(app), str(packs), backend, expected, status, installed]
         if models:
             command += [str(args.depth_model.resolve()), str(args.sr_model.resolve())]
-        result = subprocess.run(command, text=True, capture_output=True, timeout=120)
+        result = subprocess.run(command, text=True, capture_output=True, timeout=120, cwd=root)
         if result.returncode:
             raise RuntimeError(f"{name} failed:\n{result.stdout}\n{result.stderr}")
         print(f"PASS {name}: {result.stdout.strip()}")
@@ -54,6 +58,13 @@ with tempfile.TemporaryDirectory(prefix="rendepth-runtime-test-") as temporary:
         run(f"{backend} core exposes provider dependencies", backend, backend, "runtime", "installed")
         if args.depth_model:
             run(f"{backend} session failure retries CPU", backend, "cpu", "CPU fallback", "installed", True)
+
+    if args.cuda_pack:
+        # Fresh process and isolated pack root; CPU fallback is a test failure.
+        packs = root / "real CUDA packs"
+        packs.mkdir()
+        (packs / "cuda").symlink_to(args.cuda_pack.resolve(strict=True), target_is_directory=True)
+        run("CUDA depth and SR inference", "cuda", "cuda", "CUDA runtime", "installed", True)
 
     (cpu_dir / "libonnxruntime.so.1").unlink()
     run("missing CPU", "cpu", "unavailable", "Inference unavailable", "missing")
