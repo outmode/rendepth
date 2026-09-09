@@ -277,15 +277,6 @@ void updateVideoSolidColor() {
 			return requested;
 
 		std::error_code error;
-		for (const auto& localCandidate : {
-			std::filesystem::current_path() / "calibration.json",
-			std::filesystem::current_path() / "visual.json",
-			Core::getHomeDirectory() / ".config" / "rendepth" / "calibration.json",
-			Core::getHomeDirectory() / ".rendepth" / "calibration.json"
-		}) {
-			if (std::filesystem::is_regular_file(localCandidate, error)) return localCandidate;
-		}
-
 		for (const auto& mediaRoot : {std::filesystem::path("/run/media"), std::filesystem::path("/media")}) {
 			if (!std::filesystem::is_directory(mediaRoot, error)) continue;
 			for (const auto& userRoot : std::filesystem::directory_iterator(mediaRoot, error)) {
@@ -297,6 +288,17 @@ void updateVideoSolidColor() {
 				}
 			}
 		}
+		// Prefer the attached Looking Glass calibration over saved experiments
+		// for other panels. RENDEPTH_NATIVE_CALIBRATION remains an explicit override.
+		for (const auto& localCandidate : {
+			std::filesystem::current_path() / "calibration.json",
+			std::filesystem::current_path() / "visual.json",
+			Core::getHomeDirectory() / ".config" / "rendepth" / "calibration.json",
+			Core::getHomeDirectory() / ".rendepth" / "calibration.json"
+		}) {
+			if (std::filesystem::is_regular_file(localCandidate, error)) return localCandidate;
+		}
+
 		return {};
 	}
 
@@ -3242,6 +3244,27 @@ int Image::draw(Context* context) {
 
 				auto buttonMargin = style.getButtonMargin(Style::getCurrentScale());
 				auto bgMargin = 32.0f;
+
+				// Keep the logo in the menu's top inset and scroll it with the choices.
+				bindPipeline(renderPass, iconPipeline);
+				SDL_GPUTextureSamplerBinding logoBinding{ .texture = iconTexture, .sampler = imageSampler };
+				SDL_BindGPUFragmentSamplers(renderPass, 0, &logoBinding, 1);
+				const float logoSize = std::min(
+					2.0f * style.getIconRadius(Style::getCurrentScale()) * context->displayScale,
+					menuTopInset * 0.75f);
+				const auto logoPosition = glm::vec3(windowSize.x * 0.5f,
+					windowSize.y - menuTopInset * 0.5f, 0.0f) + menuMargin;
+				iconDataVert.transform = glm::translate(glm::mat4(1.0f), logoPosition);
+				iconDataVert.transform = glm::scale(iconDataVert.transform,
+					glm::vec3(glm::vec2(logoSize) * aspectScale, 1.0f));
+				iconDataVert.gridOffset = getIconCoordinates(IconType::Logo_White);
+				iconDataFrag.color = viewColorWhiteSolid;
+				iconDataFrag.visibility = context->mode == RGB_Depth && view > 0 ? 0.0f : 1.0f;
+				iconDataFrag.animated = 0;
+				iconDataFrag.force = 0;
+				drawIcon(commandBuffer, renderPass);
+				bindPipeline(renderPass, spritePipeline);
+				SDL_BindGPUFragmentSamplers(renderPass, 0, &menuSampleBindings[0], 1);
 
 				for (const auto& choice : *context->menuChoices) {
 					if (!choice.active) continue;

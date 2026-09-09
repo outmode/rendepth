@@ -32,6 +32,7 @@ layout (set = 3, binding = 0) uniform InterlacerData {
 };
 
 const float stereoScaleLKG = 4000.0;
+const float offsetBoostLKG = -8.0;
 const float stereoScaleLenticular = 25000.0;
 const float zNear = 0.1;
 const float zFar = 100.0;
@@ -127,7 +128,34 @@ vec2 clampEdge(vec2 inUV, vec2 minUV, vec2 maxUV) {
 	return clamp(inUV, minUV, maxUV);
 }
 
+// Preserve the Looking Glass view direction and convergence used before the
+// two-view lenticular renderer was introduced.
+vec3 sampleRgbdLightField(vec2 uv, int view) {
+	vec2 colorUV = separateDepth != 0 ? uv : vec2(uv.x * 0.5, uv.y);
+	vec2 depthUV = separateDepth != 0 ? uv : vec2(uv.x * 0.5 + 0.5, uv.y);
+	float normalizedView = viewCount > 1 ? float(view) / float(viewCount - 1) - 0.5 : 0.0;
+	float viewAmount = abs(normalizedView) * 2.0;
+	float aspect = imageSize.x / imageSize.y;
+	vec2 minUVDepth = separateDepth != 0 ? vec2(0.001, 0.0) : vec2(0.501, 0.0);
+	vec2 maxUVDepth = separateDepth != 0 ? vec2(0.999, 1.0) : vec2(0.999, 1.0);
+	float centerDepth = getDepth(quiltTexture, clampEdge(depthUV, minUVDepth, maxUVDepth));
+	float minDepth = centerDepth;
+	float offsetSign = normalizedView < 0.0 ? 1.0 : -1.0;
+	for (int i = 0; i < sampleCount; ++i) {
+		float depthOffset = (depthSamples[i] * stereoStrength * viewAmount / aspect) /
+			stereoScaleLKG + stereoOffset * offsetBoostLKG * viewAmount / aspect;
+		minDepth = min(minDepth, getDepth(quiltTexture, clampEdge(
+			depthUV + vec2(offsetSign * depthOffset, 0.0), minUVDepth, maxUVDepth)));
+	}
+	float parallax = (stereoStrength * viewAmount / aspect * (stereoDepth / minDepth)) /
+		stereoScaleLKG + stereoOffset * offsetBoostLKG * viewAmount / aspect;
+	colorUV = clampEdge(colorUV + vec2(offsetSign * parallax, 0.0),
+		vec2(0.001, 0.0), separateDepth != 0 ? vec2(0.999, 1.0) : vec2(0.499, 1.0));
+	return textureLod(quiltTexture, colorUV, 0.0).rgb;
+}
+
 vec3 sampleRgbd(vec2 uv, int view) {
+	if (viewCount > 2) return sampleRgbdLightField(uv, view);
 	vec2 colorUV = separateDepth != 0 ? uv : vec2(uv.x * 0.5, uv.y);
 	vec2 depthUV = separateDepth != 0 ? uv : vec2(uv.x * 0.5 + 0.5, uv.y);
 	float normalizedView = viewCount > 1 ? (float(view) / float(viewCount - 1) - 0.5) * 2.0 : 0.0;
@@ -136,8 +164,7 @@ vec3 sampleRgbd(vec2 uv, int view) {
 	vec2 maxUVDepth = separateDepth != 0 ? vec2(0.999, 1.0) : vec2(0.999, 1.0);
 	float centerDepth = getDepth(quiltTexture, clampEdge(depthUV, minUVDepth, maxUVDepth));
 	float minDepth = centerDepth;
-	bool isLightField = (viewCount > 2);
-	float stereoScale = isLightField ? stereoScaleLKG : stereoScaleLenticular;
+	float stereoScale = stereoScaleLenticular;
 	for (int i = 0; i < sampleCount; ++i) {
 		float depthOffset = (depthSamples[i] * stereoStrength / aspect) /
 			stereoScale + stereoOffset / aspect;
