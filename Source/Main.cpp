@@ -248,8 +248,8 @@ auto displayInfoTime = 0.0;
 auto displayInfoEnabled = true;
 auto showDisplayInfoOnce = false;
 auto currentStereoMode = Native;
-auto preferredStereoMode = Anaglyph_Accurate;
-auto defaultStereoMode = Anaglyph_Accurate;
+auto preferredStereoMode = Mono;
+auto defaultStereoMode = Mono;
 glm::vec2 pixelMotion = {0.0, 0.0 };
 bool isDragging = false;
 bool isIconCaptured = false;
@@ -1568,7 +1568,7 @@ static std::unordered_map<std::string, int> menuSelection = {
 	{ ChoiceRuntimePacks.label, 0 },
 	{ ChoiceRuntimeTools.label, -1 },
 #endif
-	{ ChoiceStereo.label, 0 },
+	{ ChoiceStereo.label, 10 }, // Disabled
 	{ ChoiceExport.label, 0 },
 	{ ChoiceModel.label, 0 },
 	{ ChoiceResolution.label, 0 },
@@ -3937,7 +3937,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	updateFullscreenState();
 
 	const bool onLenticularDisplay = Image::isNativeDisplayOnMainWindow();
-	if (onLenticularDisplay) {
+	if (onLenticularDisplay && preferredStereoMode != Mono) {
 		preferredStereoMode = Lenticular;
 		currentStereoMode = Lenticular;
 		context.mode = Lenticular;
