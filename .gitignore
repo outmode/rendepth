@@ -3,10 +3,20 @@
 /Binary/*
 /Debug/
 /Library/*
+/Runtimes/
 /Shaders/Temp/
 
 /Assets/Settings.json
 .idea/
 /cmake-*/
+/build-*/
+/_CPack_Packages/
+/Distribution/*
+!/Distribution/.gitkeep
+*.deb
+*.rpm
+*.AppImage
+*.dmg
+*.exe
 .DS_Store
 Thumbs.db

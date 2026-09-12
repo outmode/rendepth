@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+app_root=/usr/libexec/rendepth
+# GPU packs are selected inside the application. Do not inject vendor library
+# paths into the base application's process-wide dependency search path.
+exec "$app_root/Binary/Rendepth" "$@"

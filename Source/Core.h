@@ -48,7 +48,8 @@ enum ViewMode {
 	Vertical,
 	Checkerboard,
 	Depth_Zoom,
-	Light_Field
+	Lenticular,
+	Light_Field = Lenticular
 };
 
 enum StereoFormat {
@@ -61,6 +62,8 @@ enum StereoFormat {
 	Stereo_Free_View_Grid,
 	Stereo_Free_View_LRL,
 	Light_Field_LKG,
+	Top_And_Bottom_Full,
+	Top_And_Bottom_Half,
 	Unknown_Format
 };
 
@@ -74,7 +77,8 @@ enum class IconType {
 	Fullscreen, Window, Sort, Sort_Reverse, Info, Minimize, Maximize, Close,
 	Loading, Loading_Fade, Options, Settings, Folder, Save, Delete, Crop,
 	Glasses, Focus, Layers, Stereo_2D, Stereo_3D, Cursor_Empty, Cursor_Black, Cursor_Pink,
-	Logo_White, Logo_Dark, Logo_Light, Play, Pause, File, Mono_SD, Mono_SR
+	Logo_White, Logo_Dark, Logo_Light, Play, Pause, File, Mono_SD, Mono_SR,
+	VideoSeek, VideoVolume, VideoAudio, VideoCaption
 };
 
 enum class IconGroup {
@@ -95,6 +99,8 @@ static inline std::vector<std::pair<std::string, StereoFormat>> tagType = {
 	{ "_rgb", Color_Only },
 	{ "_sbs_half_width", Side_By_Side_Half },
 	{ "_sbs", Side_By_Side_Full },
+	{ "_tab_half_height", Top_And_Bottom_Half },
+	{ "_tab", Top_And_Bottom_Full },
 	{ "_free_view_lrl", Stereo_Free_View_LRL },
 	{ "_free_view", Stereo_Free_View_Grid },
 	{ "_qs", Light_Field_LKG },
@@ -155,6 +161,10 @@ struct Choice {
 	MenuLayout layout;
 	std::vector<MenuLayout> layouts;
 	bool active;
+	bool readOnly = false;
+	bool inlineText = false;
+	bool unavailable = false;
+	bool bold = false;
 };
 
 struct OptionsTexture {
@@ -229,17 +239,18 @@ struct Context {
 	int effectRandom;
 	int swapLeftRight;
 	glm::vec2 imageBounds;
+	std::vector<double> chapterMarkers;
 };
 
 struct NativeDisplayConfig {
 	std::string displayName;
 	glm::vec2 quiltGrid{2.0f, 1.0f};
 	int viewCount = 2;
-	float pitch = 50.0f;
-	float slope = -5.0f;
+	float pitch = 141.2f;
+	float slope = 0.0f;
 	float center = 0.5f;
-	float dpi = 300.0f;
-	glm::ivec2 screenSize{0, 0};
+	float dpi = 282.4f;
+	glm::ivec2 screenSize{3840, 2160};
 	float viewCone = 40.0f;
 	float subpixel = 0.0f;
 	bool invertView = false;
@@ -274,12 +285,14 @@ public:
 	static void quit(Context* context);
 	static SDL_GPUShader* loadShader(SDL_GPUDevice* device, const std::string& shaderFilename, Uint32 samplerCount,
 		Uint32 uniformBufferCount, Uint32 storageBufferCount, Uint32 storageTextureCount);
+	static SDL_Surface* orientSurface(SDL_Surface* surface, const std::string& filepath = "");
 	static SDL_Surface* loadImageDirect(const std::string& imageFilename);
 	static int loadImageThread(void* ptr);
 	static SDL_Thread* loadImageAsync(AsyncData& asyncData);
 	static glm::vec2 getTextSize(TTF_Font* font, const std::string& text);
 	static std::string getFileText(const FileInfo& imageInfo, glm::vec2 imageSize);
 	static StereoFormat getImageType(const std::string& file);
+	static StereoFormat getImageType(const std::filesystem::path& file) { return getImageType(file.string()); }
 	static glm::vec3 getGridInfo(const std::string& file);
 	static void drawText(Context* context, const std::string& text, TTF_Font* font,
 		SDL_GPUTexture*& texture, glm::vec2& size, const std::string& name);

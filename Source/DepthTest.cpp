@@ -124,7 +124,7 @@ static float sampleCatmullRomDepth(const std::vector<float>& source,
 int main(int argc, char** argv) {
 	if (argc < 4) {
 		std::cerr << "Usage: DepthTest <model.onnx> <input-image> <output-depth.png> "
-			"[process-size] [--provider auto|cpu|cuda|rocm] [--upscale cpu|gpu]\n";
+			"[process-size] [--provider auto|cpu|cuda|rocm|directml] [--upscale cpu|gpu]\n";
 		return 2;
 	}
 
@@ -152,6 +152,7 @@ int main(int argc, char** argv) {
 			else if (provider == "cpu") config.provider = DepthEstimator::Provider::CPU;
 			else if (provider == "cuda") config.provider = DepthEstimator::Provider::CUDA;
 			else if (provider == "rocm") config.provider = DepthEstimator::Provider::ROCM;
+			else if (provider == "directml") config.provider = DepthEstimator::Provider::DirectML;
 			else {
 				std::cerr << "Unknown provider: " << provider << '\n';
 				return 2;
@@ -207,8 +208,8 @@ int main(int argc, char** argv) {
 			for (int x = 0; x < depth.width; ++x) {
 				const float normalized = range > std::numeric_limits<float>::epsilon()
 					? (depth.values[static_cast<size_t>(y * depth.width + x)] - minimum) / range : 0.0f;
-				const Uint8 value = static_cast<Uint8>((1.0f -
-					std::clamp(normalized, 0.0f, 1.0f)) * 255.0f);
+				const Uint8 value = static_cast<Uint8>(
+					std::clamp(normalized, 0.0f, 1.0f) * 255.0f);
 				lowResolution[static_cast<size_t>(y * depth.width + x)] =
 					SDL_MapRGBA(format, nullptr, value, value, value, 255);
 			}
@@ -252,8 +253,8 @@ int main(int argc, char** argv) {
 				depth.values, depth.width, depth.height, sourceX, sourceY);
 			const float normalized = range > std::numeric_limits<float>::epsilon()
 				? (resizedValue - minimum) / range : 0.0f;
-			const Uint8 value = static_cast<Uint8>((1.0f -
-				std::clamp(normalized, 0.0f, 1.0f)) * 255.0f);
+			const Uint8 value = static_cast<Uint8>(
+				std::clamp(normalized, 0.0f, 1.0f) * 255.0f);
 			pixels[static_cast<size_t>(y * sourceWidth + x)] = SDL_MapRGBA(format, nullptr, value, value, value, 255);
 		}
 	}

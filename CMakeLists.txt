@@ -15,22 +15,18 @@ foreach(RENDEPTH_BUILD_FEATURE IN ITEMS
         RENDEPTH_ENABLE_ROCM
         RENDEPTH_ENABLE_CUDA
         RENDEPTH_BUILD_DEPTH_TEST
+        RENDEPTH_BUILD_SUPER_TEST
         RENDEPTH_COMPILE_SHADERS)
     unset(${RENDEPTH_BUILD_FEATURE} CACHE)
 endforeach()
 
-if(WIN32)
-    set(RENDEPTH_ENABLE_ONNX_RUNTIME ON)
-    set(RENDEPTH_ENABLE_FFMPEG ON)
-    set(RENDEPTH_ENABLE_ROCM OFF)
-    set(RENDEPTH_ENABLE_CUDA ON)
-else()
-    set(RENDEPTH_ENABLE_ONNX_RUNTIME ON)
-    set(RENDEPTH_ENABLE_FFMPEG ON)
-    set(RENDEPTH_ENABLE_ROCM ON)
-    set(RENDEPTH_ENABLE_CUDA OFF)
-endif()
-set(RENDEPTH_BUILD_DEPTH_TEST OFF)
+# Windows and Linux ship a CPU base and discover optional GPU runtime packs.
+set(RENDEPTH_ENABLE_ONNX_RUNTIME ON)
+set(RENDEPTH_ENABLE_FFMPEG ON)
+set(RENDEPTH_ENABLE_ROCM OFF)
+set(RENDEPTH_ENABLE_CUDA OFF)
+set(RENDEPTH_BUILD_DEPTH_TEST ON)
+set(RENDEPTH_BUILD_SUPER_TEST ON)
 set(RENDEPTH_COMPILE_SHADERS OFF)
 
 # ONNX Runtime is not bundled, so these remain cache entries for each local
@@ -72,7 +68,7 @@ elseif(UNIX)
     set(CMAKE_INSTALL_RPATH "\$ORIGIN/../Library")
 endif()
 
-set(SDL_AUDIO OFF)
+set(SDL_AUDIO ON)
 set(SDL_CAMERA OFF)
 set(SDL_VIDEO ON)
 set(SDL_HIDAPI OFF)
@@ -83,20 +79,25 @@ set(SDL_SENSOR OFF)
 set(SDL_TEST_LIBRARY OFF)
 
 set(SDLIMAGE_VENDORED ON)
-set(SDLIMAGE_AVIF OFF)
+# Modern image codecs are grouped behind one switch so they can be disabled
+# for a lightweight test build when needed.
+option(RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
+        "Build AVIF, JPEG XL, and WebP image support" ON)
+set(SDLIMAGE_AVIF ${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS})
 set(SDLIMAGE_BMP ON)
+# GIFs are treated as animated video and decoded by the FFmpeg pipeline.
 set(SDLIMAGE_GIF OFF)
 set(SDLIMAGE_JPG ON)
-set(SDLIMAGE_JXL OFF)
+set(SDLIMAGE_JXL ${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS})
 set(SDLIMAGE_LBM OFF)
 set(SDLIMAGE_PCX OFF)
 set(SDLIMAGE_PNG ON)
 set(SDLIMAGE_PNM OFF)
-set(SDLIMAGE_QOI OFF)
+set(SDLIMAGE_QOI ON)
 set(SDLIMAGE_SVG OFF)
 set(SDLIMAGE_TGA ON)
-set(SDLIMAGE_TIF OFF)
-set(SDLIMAGE_WEBP OFF)
+set(SDLIMAGE_TIF ON)
+set(SDLIMAGE_WEBP ${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS})
 set(SDLIMAGE_XCF OFF)
 set(SDLIMAGE_XPM OFF)
 set(SDLIMAGE_XV OFF)
@@ -173,7 +174,9 @@ if(RENDEPTH_COMPILE_SHADERS)
     set(RENDEPTH_SHADER_OUTPUTS)
     set(QUILTTEST_SHADER_OUTPUTS)
     foreach(shader IN ITEMS
-            Image.vert Image.frag Icon.vert Icon.frag Sprite.vert Sprite.frag Interlacer.frag
+            Image.vert Image.frag DepthRefine.frag VideoYUV.vert VideoYUV.frag
+            Lanczos.frag
+            Icon.vert Icon.frag Sprite.vert Sprite.frag Interlacer.frag
             QuiltTest.vert QuiltTest.frag)
         set(shader_spv "${CMAKE_SOURCE_DIR}/Shaders/Compiled/${shader}.spv")
         set(shader_dxil "${CMAKE_SOURCE_DIR}/Shaders/Compiled/${shader}.dxil")
@@ -240,6 +243,7 @@ elseif(APPLE)
                 ${CMAKE_SOURCE_DIR}/Assets/AppIcons.png ${CMAKE_SOURCE_DIR}/Assets/CircleIcon.png
                 ${CMAKE_SOURCE_DIR}/Assets/Lato.ttf
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Image.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Image.frag.msl
+                ${CMAKE_SOURCE_DIR}/Shaders/Compiled/VideoYUV.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/VideoYUV.frag.msl
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.frag.msl
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.frag.msl
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3.0.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3.dylib
@@ -269,6 +273,7 @@ elseif(APPLE)
                 MACOSX_PACKAGE_LOCATION Assets)
         set_source_files_properties(
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Image.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Image.frag.msl
+                ${CMAKE_SOURCE_DIR}/Shaders/Compiled/VideoYUV.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/VideoYUV.frag.msl
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.frag.msl
                 ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.frag.msl
                 PROPERTIES
@@ -286,11 +291,15 @@ if(RENDEPTH_COMPILE_SHADERS)
     add_dependencies(Rendepth Shaders)
 endif()
 
-target_compile_definitions(Rendepth PUBLIC SDL_MAIN_USE_CALLBACKS)
+target_compile_definitions(Rendepth PUBLIC
+        SDL_MAIN_USE_CALLBACKS
+        RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS=$<BOOL:${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS}>)
 
 target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp
+		Source/VideoDepthProcessor.cpp
+		Source/ScreenCapture.cpp
         Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
-        Source/ModelDownloader.cpp)
+        Source/ModelDownloader.cpp Source/SuperResolution.cpp)
 
 target_include_directories(Rendepth PUBLIC
         ThirdParty/glm ThirdParty/SDL/include ThirdParty/SDL_image/include
@@ -330,7 +339,7 @@ if(RENDEPTH_ENABLE_FFMPEG)
                     "Could not find FFmpeg headers under ${RENDEPTH_FFMPEG_ROOT}/include.")
         endif()
 
-        foreach(ffmpeg_library IN ITEMS avformat avcodec swscale avutil)
+        foreach(ffmpeg_library IN ITEMS avformat avcodec swresample swscale avutil)
             string(TOUPPER "${ffmpeg_library}" ffmpeg_library_upper)
             find_library(RENDEPTH_FFMPEG_${ffmpeg_library_upper}_RELEASE
                     NAMES ${ffmpeg_library} lib${ffmpeg_library}
@@ -381,19 +390,37 @@ if(RENDEPTH_ENABLE_FFMPEG)
         if(PkgConfig_FOUND)
             pkg_check_modules(DAV1D QUIET IMPORTED_TARGET "dav1d >= 0.5.0")
         endif()
+        set(RENDEPTH_FFMPEG_COMMON_DECODERS
+                cinepak,dnxhd,ffv1,gif,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3,aac,aac_latm,ac3,alac,dca,eac3,flac,mp1,mp2,mp3,opus,pcm_alaw,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_mulaw,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_u8,truehd,vorbis,wavpack,wmalossless,wmapro,wmav1,wmav2,wmavoice,subrip,ass,mov_text,webvtt,pgssub,dvdsub)
+        set(RENDEPTH_FFMPEG_COMMON_PARSERS
+                aac,aac_latm,ac3,dca,flac,gif,mpegaudio,opus,vorbis)
         if(DAV1D_FOUND)
             set(RENDEPTH_FFMPEG_DAV1D_OPTIONS
                     --enable-libdav1d
-                    --enable-decoder=av1,libdav1d,cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3)
+                    --enable-decoder=av1,libdav1d,${RENDEPTH_FFMPEG_COMMON_DECODERS})
             set(RENDEPTH_FFMPEG_DAV1D_LINK PkgConfig::DAV1D)
             message(STATUS "Rendepth: using system dav1d for FFmpeg AV1 decoding")
         else()
             set(RENDEPTH_FFMPEG_DAV1D_OPTIONS
-                    --enable-decoder=av1,cinepak,dnxhd,ffv1,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3)
+                    --enable-decoder=av1,${RENDEPTH_FFMPEG_COMMON_DECODERS})
             message(STATUS "Rendepth: system dav1d not found; using FFmpeg's native AV1 decoder")
         endif()
         include(ExternalProject)
         find_program(RENDEPTH_FFMPEG_MAKE NAMES gmake make REQUIRED)
+        set(RENDEPTH_FFMPEG_VAAPI_OPTIONS)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(RENDEPTH_VAAPI QUIET libva)
+            if(RENDEPTH_VAAPI_FOUND)
+                pkg_check_modules(RENDEPTH_VAAPI_DRM QUIET libva-drm)
+                list(APPEND RENDEPTH_FFMPEG_VAAPI_OPTIONS
+                        --enable-vaapi
+                        --enable-hwaccel=h264_vaapi
+                        --enable-hwaccel=hevc_vaapi
+                        --enable-hwaccel=vp8_vaapi
+                        --enable-hwaccel=vp9_vaapi)
+                message(STATUS "Rendepth: enabling optional FFmpeg VA-API decoding")
+            endif()
+        endif()
         set(RENDEPTH_FFMPEG_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg")
         set(RENDEPTH_FFMPEG_BUILD "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg-build")
         set(RENDEPTH_FFMPEG_LIBRARY_DIR "${RENDEPTH_FFMPEG_PREFIX}/lib")
@@ -405,6 +432,8 @@ if(RENDEPTH_ENABLE_FFMPEG)
             BINARY_DIR "${RENDEPTH_FFMPEG_BUILD}"
             CONFIGURE_COMMAND
                 "${CMAKE_SOURCE_DIR}/ThirdParty/FFmpeg/configure"
+                "--cc=${CMAKE_C_COMPILER}"
+                "--host-cc=${CMAKE_C_COMPILER}"
                 "--prefix=${RENDEPTH_FFMPEG_PREFIX}"
                 --disable-programs
                 --disable-doc
@@ -413,9 +442,7 @@ if(RENDEPTH_ENABLE_FFMPEG)
                 --disable-autodetect
                 --disable-avdevice
                 --disable-avfilter
-                --disable-swresample
                 --disable-iconv
-                --disable-x86asm
                 --disable-shared
                 --enable-static
                 --enable-pic
@@ -424,21 +451,25 @@ if(RENDEPTH_ENABLE_FFMPEG)
                 --enable-avcodec
                 --enable-avformat
                 --enable-avutil
+                --enable-swresample
                 --enable-swscale
                 --enable-protocol=file
-                --enable-demuxer=avi,asf,matroska,mov,mpegps,mpegts,mpegvideo
+                --enable-demuxer=aac,avi,asf,flac,gif,matroska,mp3,mov,mpegps,mpegts,mpegvideo,ogg,wav
+                --enable-parser=${RENDEPTH_FFMPEG_COMMON_PARSERS}
                 ${RENDEPTH_FFMPEG_DAV1D_OPTIONS}
+                ${RENDEPTH_FFMPEG_VAAPI_OPTIONS}
             BUILD_COMMAND "${RENDEPTH_FFMPEG_MAKE}"
             INSTALL_COMMAND "${RENDEPTH_FFMPEG_MAKE}" install
             BUILD_BYPRODUCTS
                 "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavformat.a"
                 "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavcodec.a"
+                "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libswresample.a"
                 "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libswscale.a"
                 "${RENDEPTH_FFMPEG_LIBRARY_DIR}/libavutil.a"
             UPDATE_COMMAND ""
             TEST_COMMAND "")
 
-        foreach(ffmpeg_library IN ITEMS avformat avcodec swscale avutil)
+        foreach(ffmpeg_library IN ITEMS avformat avcodec swresample swscale avutil)
             add_library(RendepthFFmpeg_${ffmpeg_library} STATIC IMPORTED GLOBAL)
             set_target_properties(RendepthFFmpeg_${ffmpeg_library} PROPERTIES
                 IMPORTED_LOCATION
@@ -451,17 +482,27 @@ if(RENDEPTH_ENABLE_FFMPEG)
     target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_FFMPEG)
     target_link_libraries(Rendepth PUBLIC
         RendepthFFmpeg_avformat RendepthFFmpeg_avcodec
+        RendepthFFmpeg_swresample
         RendepthFFmpeg_swscale RendepthFFmpeg_avutil
         ${RENDEPTH_FFMPEG_DAV1D_LINK} ${CMAKE_DL_LIBS})
     if(UNIX)
         target_link_libraries(Rendepth PUBLIC m pthread)
     endif()
+    if(RENDEPTH_VAAPI_FOUND)
+        target_link_directories(Rendepth PUBLIC ${RENDEPTH_VAAPI_LIBRARY_DIRS})
+        target_link_libraries(Rendepth PUBLIC ${RENDEPTH_VAAPI_LIBRARIES})
+        if(RENDEPTH_VAAPI_DRM_FOUND)
+            target_link_directories(Rendepth PUBLIC ${RENDEPTH_VAAPI_DRM_LIBRARY_DIRS})
+            target_link_libraries(Rendepth PUBLIC ${RENDEPTH_VAAPI_DRM_LIBRARIES})
+        endif()
+    endif()
 endif()
 
-if(RENDEPTH_ENABLE_ONNX_RUNTIME)
-    if(RENDEPTH_ENABLE_CUDA AND NOT WIN32)
-        message(FATAL_ERROR "RENDEPTH_ENABLE_CUDA currently requires the Windows CUDA ONNX Runtime package")
-    endif()
+if(RENDEPTH_ENABLE_ONNX_RUNTIME AND WIN32)
+    include(Packaging/Windows/Inference.cmake)
+elseif(RENDEPTH_ENABLE_ONNX_RUNTIME AND UNIX AND NOT APPLE)
+    include(Packaging/Linux/Inference.cmake)
+elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
     if(NOT RENDEPTH_ENABLE_ROCM AND NOT RENDEPTH_ONNXRUNTIME_DIR)
         message(FATAL_ERROR "RENDEPTH_ONNXRUNTIME_DIR must point to an ONNX Runtime installation")
     endif()
@@ -514,10 +555,43 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
                         "RENDEPTH_CUDNN_BIN_DIR must contain cudnn64_9.dll when RENDEPTH_ENABLE_CUDA=ON")
             endif()
             file(GLOB RENDEPTH_CUDA_RUNTIME_DLLS "${RENDEPTH_CUDNN_BIN_DIR}/*.dll")
+            find_package(CUDAToolkit QUIET)
+            set(RENDEPTH_CUDA_BIN_DIRS)
+            if(CUDAToolkit_BIN_DIR)
+                list(APPEND RENDEPTH_CUDA_BIN_DIRS "${CUDAToolkit_BIN_DIR}")
+            endif()
+            if(DEFINED ENV{CUDA_PATH})
+                list(APPEND RENDEPTH_CUDA_BIN_DIRS "$ENV{CUDA_PATH}/bin")
+            endif()
+            if(RENDEPTH_CUDA_BIN_DIRS)
+                list(REMOVE_DUPLICATES RENDEPTH_CUDA_BIN_DIRS)
+            endif()
+            set(RENDEPTH_CUDA_TOOLKIT_DLLS)
+            foreach(cuda_bin_dir IN LISTS RENDEPTH_CUDA_BIN_DIRS)
+                if(EXISTS "${cuda_bin_dir}")
+                    file(GLOB _cuda_dlls
+                            "${cuda_bin_dir}/cublas64_*.dll"
+                            "${cuda_bin_dir}/cublasLt64_*.dll"
+                            "${cuda_bin_dir}/cudart64_*.dll"
+                            "${cuda_bin_dir}/cufft64_*.dll"
+                            "${cuda_bin_dir}/cufftw64_*.dll"
+                            "${cuda_bin_dir}/curand64_*.dll"
+                            "${cuda_bin_dir}/cusolver64_*.dll"
+                            "${cuda_bin_dir}/cusparse64_*.dll")
+                    list(APPEND RENDEPTH_CUDA_TOOLKIT_DLLS ${_cuda_dlls})
+                endif()
+            endforeach()
+            if(RENDEPTH_CUDA_TOOLKIT_DLLS)
+                list(REMOVE_DUPLICATES RENDEPTH_CUDA_TOOLKIT_DLLS)
+            endif()
+            list(APPEND RENDEPTH_CUDA_RUNTIME_DLLS ${RENDEPTH_CUDA_TOOLKIT_DLLS})
         endif()
+        set(RENDEPTH_RUNTIME_DLLS
+                ${RENDEPTH_ONNXRUNTIME_RUNTIME_DLLS}
+                ${RENDEPTH_CUDA_RUNTIME_DLLS})
         add_custom_command(TARGET Rendepth POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        ${RENDEPTH_ONNXRUNTIME_RUNTIME_DLLS} ${RENDEPTH_CUDA_RUNTIME_DLLS}
+                        ${RENDEPTH_RUNTIME_DLLS}
                         "$<TARGET_FILE_DIR:Rendepth>")
     elseif(APPLE)
         target_link_libraries(Rendepth PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/libonnxruntime.dylib")
@@ -529,7 +603,7 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
     endif()
     set_target_properties(Rendepth PROPERTIES
             SKIP_BUILD_RPATH FALSE
-            BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib;${RENDEPTH_ROCM_DIR}/lib"
+            BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib"
             INSTALL_RPATH "\$ORIGIN/../Library")
     if(RENDEPTH_ENABLE_ROCM)
         set_target_properties(Rendepth PROPERTIES
@@ -545,7 +619,9 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
     endif()
 
     if(RENDEPTH_BUILD_DEPTH_TEST)
-        add_executable(DepthTest Source/DepthTest.cpp Source/DepthEstimator.cpp)
+        # Development-only test executable; keep it out of the default and
+        # packaging builds. It can still be built explicitly when requested.
+        add_executable(DepthTest EXCLUDE_FROM_ALL Source/DepthTest.cpp Source/DepthEstimator.cpp)
         target_compile_definitions(DepthTest PUBLIC RENDEPTH_ENABLE_ONNX_RUNTIME)
         target_include_directories(DepthTest PUBLIC
                 Source ThirdParty/SDL/include ThirdParty/SDL_image/include
@@ -559,6 +635,10 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
                     "${RENDEPTH_ROCM_DIR}/lib")
         elseif(WIN32)
             target_link_libraries(DepthTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/onnxruntime.lib")
+            add_custom_command(TARGET DepthTest POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            ${RENDEPTH_RUNTIME_DLLS}
+                            "$<TARGET_FILE_DIR:DepthTest>")
         elseif(APPLE)
             target_link_libraries(DepthTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/libonnxruntime.dylib")
         else()
@@ -569,7 +649,7 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
         endif()
         set_target_properties(DepthTest PROPERTIES
                 SKIP_BUILD_RPATH FALSE
-                BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib;${RENDEPTH_ROCM_DIR}/lib"
+                BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib"
                 INSTALL_RPATH "\$ORIGIN/../Library")
         if(RENDEPTH_ENABLE_ROCM)
             set_target_properties(DepthTest PROPERTIES
@@ -577,6 +657,39 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
                     INSTALL_RPATH "\$ORIGIN/../Library;${RENDEPTH_ROCM_DIR}/lib")
             target_link_options(DepthTest PRIVATE "-Wl,--disable-new-dtags")
         endif()
+    endif()
+
+    if(RENDEPTH_BUILD_SUPER_TEST)
+        # Development-only test executable; keep it out of the default and
+        # packaging builds. It can still be built explicitly when requested.
+        add_executable(SuperTest EXCLUDE_FROM_ALL Source/SuperTest.cpp Source/SuperResolution.cpp)
+        target_compile_definitions(SuperTest PUBLIC RENDEPTH_ENABLE_ONNX_RUNTIME)
+        target_include_directories(SuperTest PUBLIC
+                Source ThirdParty/SDL/include ThirdParty/SDL_image/include
+                "${RENDEPTH_ONNXRUNTIME_INCLUDE_DIR}")
+        target_link_libraries(SuperTest PUBLIC SDL3::SDL3 SDL3_image::SDL3_image)
+        if(RENDEPTH_ENABLE_ROCM)
+            target_compile_definitions(SuperTest PUBLIC RENDEPTH_ENABLE_ROCM)
+            target_link_libraries(SuperTest PUBLIC "${RENDEPTH_ROCM_ONNXRUNTIME_LIBRARY}")
+            set_property(TARGET SuperTest APPEND PROPERTY BUILD_RPATH "${RENDEPTH_ROCM_DIR}/lib")
+        elseif(WIN32)
+            target_link_libraries(SuperTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/onnxruntime.lib")
+            add_custom_command(TARGET SuperTest POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            ${RENDEPTH_RUNTIME_DLLS}
+                            "$<TARGET_FILE_DIR:SuperTest>")
+        elseif(APPLE)
+            target_link_libraries(SuperTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/libonnxruntime.dylib")
+        else()
+            target_link_libraries(SuperTest PUBLIC "${RENDEPTH_ONNXRUNTIME_DIR}/lib/libonnxruntime.so")
+        endif()
+        if(RENDEPTH_ENABLE_CUDA)
+            target_compile_definitions(SuperTest PUBLIC RENDEPTH_ENABLE_CUDA)
+        endif()
+        set_target_properties(SuperTest PROPERTIES
+                SKIP_BUILD_RPATH FALSE
+                BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib"
+                INSTALL_RPATH "\$ORIGIN/../Library")
     endif()
 
 endif()
@@ -588,6 +701,41 @@ install(TARGETS SDL3-shared SDL3_image-shared SDL3_ttf-shared glm
         RUNTIME DESTINATION libexec/rendepth/Library
         LIBRARY DESTINATION libexec/rendepth/Library
         ARCHIVE DESTINATION libexec/rendepth/Library)
+if(RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS)
+    # SDL_image is included as a subdirectory, so its optional dependency
+    # targets are not installed by SDLIMAGE_INSTALL. Install the shared codec
+    # libraries with the application package as well.
+    set(RENDEPTH_MODERN_IMAGE_TARGETS)
+    foreach(RENDEPTH_IMAGE_TARGET IN ITEMS
+            avif dav1d aom jxl brotlicommon brotlidec brotlienc
+            webp webpdemux libwebpmux)
+        if(TARGET ${RENDEPTH_IMAGE_TARGET})
+            list(APPEND RENDEPTH_MODERN_IMAGE_TARGETS ${RENDEPTH_IMAGE_TARGET})
+        endif()
+    endforeach()
+    set_property(TARGET ${RENDEPTH_MODERN_IMAGE_TARGETS} PROPERTY PUBLIC_HEADER "")
+    install(TARGETS ${RENDEPTH_MODERN_IMAGE_TARGETS}
+            RUNTIME DESTINATION libexec/rendepth/Library
+            LIBRARY DESTINATION libexec/rendepth/Library
+            ARCHIVE DESTINATION libexec/rendepth/Library)
+    install(FILES
+            ThirdParty/SDL_image/external/aom/LICENSE
+            ThirdParty/SDL_image/external/dav1d/COPYING
+            ThirdParty/SDL_image/external/libavif/LICENSE
+            ThirdParty/SDL_image/external/libjxl/LICENSE
+            ThirdParty/SDL_image/external/libwebp/COPYING
+            DESTINATION share/licenses/rendepth/optional)
+endif()
+if(TARGET tiff)
+    # SDL_image's vendored TIFF target is not installed transitively.
+    set_property(TARGET tiff PROPERTY PUBLIC_HEADER "")
+    install(TARGETS tiff
+            RUNTIME DESTINATION libexec/rendepth/Library
+            LIBRARY DESTINATION libexec/rendepth/Library
+            ARCHIVE DESTINATION libexec/rendepth/Library)
+    install(FILES ThirdParty/SDL_image/external/libtiff/LICENSE.md
+            DESTINATION share/licenses/rendepth/optional)
+endif()
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/Assets/"
         DESTINATION libexec/rendepth/Assets)
 if(WIN32)
@@ -601,47 +749,34 @@ elseif(APPLE)
 elseif(UNIX)
     install(DIRECTORY "${CMAKE_SOURCE_DIR}/Shaders/Compiled/"
             DESTINATION libexec/rendepth/Shaders/Compiled
-            FILES_MATCHING PATTERN "*.spv")
-endif()
-if(RENDEPTH_ENABLE_ONNX_RUNTIME AND UNIX AND NOT APPLE AND NOT RENDEPTH_ENABLE_ROCM)
-    install(DIRECTORY "${RENDEPTH_ONNXRUNTIME_DIR}/lib/"
-            DESTINATION libexec/rendepth/Library
-            FILES_MATCHING PATTERN "libonnxruntime.so*"
-                           PATTERN "libonnxruntime_providers_shared.so*"
-            PATTERN "pkgconfig" EXCLUDE
-            PATTERN "cmake" EXCLUDE)
-endif()
-if(RENDEPTH_ENABLE_ROCM AND UNIX AND NOT APPLE)
-    install(CODE
-            "set(_rendepth_library_dir
-                    \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/libexec/rendepth/Library\")
-             if(NOT EXISTS
-                    \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/libexec/rendepth/Binary\")
-                 set(_rendepth_library_dir
-                     \"\$ENV{DESTDIR}/usr/libexec/rendepth/Library\")
-             endif()
-             execute_process(COMMAND \"${CMAKE_COMMAND}\" -E make_directory
-                    \"\${_rendepth_library_dir}\")
-             execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
-                    \"${RENDEPTH_ROCM_ONNXRUNTIME_LIBRARY}\"
-                    \"\${_rendepth_library_dir}/libonnxruntime.so.1\")
-             execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
-                    \"${RENDEPTH_ROCM_DIR}/lib/libonnxruntime_providers_rocm.so\"
-                    \"\${_rendepth_library_dir}/libonnxruntime_providers_rocm.so\")")
+            FILES_MATCHING PATTERN "*.spv"
+            PATTERN "QuiltTest.*" EXCLUDE)
 endif()
 install(FILES "${CMAKE_SOURCE_DIR}/LICENSE"
         DESTINATION share/licenses/rendepth)
 if(UNIX AND NOT APPLE)
-    install(PROGRAMS "${CMAKE_SOURCE_DIR}/Packaging/rendepth-launcher"
+    install(PROGRAMS "${CMAKE_SOURCE_DIR}/Packaging/Linux/rendepth-launcher"
             DESTINATION bin
             RENAME rendepth)
-    install(FILES "${CMAKE_SOURCE_DIR}/Packaging/rendepth.desktop"
+    install(FILES "${CMAKE_SOURCE_DIR}/Packaging/Linux/rendepth.desktop"
             DESTINATION share/applications)
     install(FILES "${CMAKE_SOURCE_DIR}/Assets/Rendepth.png"
             DESTINATION share/icons/hicolor/512x512/apps
             RENAME rendepth.png)
 endif()
 
+if(WIN32)
+    set(RENDEPTH_DISTRIBUTION_PLATFORM "Windows")
+elseif(APPLE)
+    set(RENDEPTH_DISTRIBUTION_PLATFORM "macOS")
+elseif(UNIX)
+    set(RENDEPTH_DISTRIBUTION_PLATFORM "Linux")
+else()
+    set(RENDEPTH_DISTRIBUTION_PLATFORM "Unknown")
+endif()
+
+set(CPACK_PACKAGE_DIRECTORY
+        "${CMAKE_SOURCE_DIR}/Distribution/${PROJECT_VERSION}/${RENDEPTH_DISTRIBUTION_PLATFORM}")
 set(CPACK_PACKAGE_NAME "rendepth")
 set(CPACK_PACKAGE_VENDOR "Outmode")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Convert any image to 3D")
@@ -649,15 +784,23 @@ set(CPACK_PACKAGE_DESCRIPTION "Make any normal photo into UHD 3D. Rendepth uses 
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_CONTACT "Outmode")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Outmode")
+set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
+set(CPACK_DEBIAN_PACKAGE_SECTION "graphics")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+# SDL and ONNX Runtime are bundled or supplied by the platform-specific
+# runtime setup. These are the Debian-family libraries used by the Linux
+# executable itself; alternatives cover the current t64 transitions.
+set(CPACK_DEBIAN_PACKAGE_DEPENDS
+        "libc6, libstdc++6, libgcc-s1, libcurl4 | libcurl4t64, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0")
 set(CPACK_RPM_PACKAGE_LICENSE "MIT")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
-set(CPACK_RPM_PACKAGE_RELEASE 1)
+# Increment the RPM release for rebuilds of the same application version so
+# package managers do not treat a freshly built artifact as the old package.
+set(CPACK_RPM_PACKAGE_RELEASE 14)
 set(RENDEPTH_RPM_REQUIRES)
 if(RENDEPTH_ENABLE_FFMPEG AND DAV1D_FOUND)
     list(APPEND RENDEPTH_RPM_REQUIRES "libdav1d >= 0.5.0")
-endif()
-if(RENDEPTH_ENABLE_ROCM AND UNIX AND NOT APPLE)
-    list(APPEND RENDEPTH_RPM_REQUIRES "onnxruntime-rocm >= 1.22.2")
 endif()
 if(RENDEPTH_RPM_REQUIRES)
     list(JOIN RENDEPTH_RPM_REQUIRES ", " CPACK_RPM_PACKAGE_REQUIRES)
@@ -679,11 +822,25 @@ elseif(UNIX)
     target_link_libraries(Rendepth PUBLIC stdc++)
 endif()
 
-add_executable(QuiltTest Source/QuiltTest.cpp)
+# Development-only test executable; keep it out of the default and packaging
+# builds. It can still be built explicitly when requested.
+add_executable(QuiltTest EXCLUDE_FROM_ALL Source/QuiltTest.cpp)
 target_compile_definitions(QuiltTest PRIVATE SDL_MAIN_USE_CALLBACKS)
 target_include_directories(QuiltTest PRIVATE
         ThirdParty/SDL/include ThirdParty/rapidjson/include)
 target_link_libraries(QuiltTest PRIVATE SDL3::SDL3)
 if(RENDEPTH_COMPILE_SHADERS)
-    add_dependencies(QuiltTest QuiltTestShaders)
+	add_dependencies(QuiltTest QuiltTestShaders)
+endif()
+
+if(UNIX AND NOT APPLE)
+	find_package(PkgConfig REQUIRED)
+	pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
+	pkg_check_modules(GIO_UNIX REQUIRED IMPORTED_TARGET gio-unix-2.0)
+	pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-1.0 gstreamer-app-1.0)
+	target_link_libraries(Rendepth PUBLIC PkgConfig::GIO PkgConfig::GIO_UNIX PkgConfig::GSTREAMER)
+	add_executable(ScreenCaptureTest EXCLUDE_FROM_ALL Source/ScreenCaptureTest.cpp)
+	target_include_directories(ScreenCaptureTest PRIVATE ThirdParty/SDL/include)
+	target_link_libraries(ScreenCaptureTest PRIVATE
+		SDL3::SDL3 PkgConfig::GIO PkgConfig::GIO_UNIX PkgConfig::GSTREAMER)
 endif()

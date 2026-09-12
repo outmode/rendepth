@@ -36,6 +36,16 @@ Build Instructions
 - Folders `Assets` `Binary` `Library` `Shaders` must remain together.
 
 - Linux/macOS can use g++/clang. Windows builds use MSVC.
+- Windows builds bundle a CPU inference runtime and offer optional NVIDIA CUDA
+  and DirectML (AMD, Intel Arc, NVIDIA) packs. Configure a CPU-only x64 SDK with
+  `RENDEPTH_CPU_RUNTIME_DIR`; select the engine in Settings and restart.
+  See [Windows inference packaging](Packaging/Windows/README.md) for pack
+  assembly, installation, and validation. Keep `Runtimes` beside `Binary`.
+- Linux builds use one executable with a bundled CPU inference runtime. Settings
+  selects CPU, NVIDIA CUDA, or AMD ROCm on the next launch. GPU runtime packs
+  live separately in `~/.Rendepth/Runtimes`; missing or failing packs fall back
+  to CPU. See [Linux inference packaging](Packaging/Linux/README.md) for build
+  inputs, pack layout, and validation. GPU downloads are not yet integrated.
 - To enable Windows video playback, install an MSVC-compatible FFmpeg SDK (for
   example with vcpkg) and configure with
   `-DRENDEPTH_ENABLE_FFMPEG=ON -DRENDEPTH_FFMPEG_ROOT=<vcpkg>/installed/x64-windows`.
