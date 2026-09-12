@@ -246,6 +246,8 @@ struct NativeDisplayConfig {
 	std::string displayName;
 	glm::vec2 quiltGrid{2.0f, 1.0f};
 	int viewCount = 2;
+	bool cubeVi = false;
+	float lineNumber = 0.0f;
 	float pitch = 141.2f;
 	float slope = 0.0f;
 	float center = 0.5f;

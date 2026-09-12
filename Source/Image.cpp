@@ -213,8 +213,21 @@ void updateVideoSolidColor() {
 		float pitch = loaded.pitch, slope = loaded.slope, center = loaded.center, dpi = loaded.dpi;
 		float screenWidth = (float)loaded.screenSize.x, screenHeight = (float)loaded.screenSize.y, viewCone = loaded.viewCone;
 		float subpixel = loaded.subpixel;
+		float lineNumber = loaded.lineNumber;
+		const bool cubeViCalibration =
+			readCalibrationNumber(document, "lineNumber", lineNumber) ||
+			readCalibrationNumber(document, "line_number", lineNumber) ||
+			readCalibrationNumber(document, "line number", lineNumber) ||
+			readCalibrationNumber(document, "LineNumber", lineNumber);
 
-		const bool complete =
+		// CubeVi files use a different set of required calibration fields.
+		const bool complete = cubeViCalibration ?
+			std::isfinite(lineNumber) && lineNumber > 0.0f &&
+			(readCalibrationNumber(document, "obliquity", slope) ||
+				readCalibrationNumber(document, "Obliquity", slope)) &&
+			std::isfinite(slope) && std::abs(slope) > 0.001f &&
+			(readCalibrationNumber(document, "deviation", center) ||
+				readCalibrationNumber(document, "Deviation", center)) && std::isfinite(center) :
 			readCalibrationNumber(document, "pitch", pitch) && pitch > 0.0f &&
 			(readCalibrationNumber(document, "slope", slope) ||
 				readCalibrationNumber(document, "tilt", slope)) && std::abs(slope) > 0.001f &&
@@ -228,11 +241,22 @@ void updateVideoSolidColor() {
 				readCalibrationNumber(document, "screenHeight", screenHeight) ||
 				readCalibrationNumber(document, "height", screenHeight)) && screenHeight > 0.0f;
 		if (!complete) {
-			SDL_Log("Incomplete Looking Glass calibration in %s", source.c_str());
+			SDL_Log("Incomplete %s calibration in %s",
+				cubeViCalibration ? "CubeVi" : "Looking Glass", source.c_str());
 			return false;
 		}
 		if (!readCalibrationNumber(document, "subpixel", subpixel)) {
 			readCalibrationNumber(document, "subpixelOffset", subpixel);
+		}
+		if (cubeViCalibration) {
+			loaded.cubeVi = true;
+			loaded.lineNumber = lineNumber;
+			loaded.quiltGrid = {8.0f, 5.0f};
+			loaded.viewCount = 40;
+			pitch = lineNumber;
+			dpi = 1.0f;
+			screenWidth = 1440.0f;
+			screenHeight = 2560.0f;
 		}
 
 		if (pitch > 0.0f) loaded.pitch = pitch;
@@ -263,14 +287,15 @@ void updateVideoSolidColor() {
 			if (loaded.viewCount == 2) loaded.quiltGrid = {2.0f, 1.0f};
 		}
 		loaded.calibrated = true;
-		if (loaded.screenSize == glm::ivec2(1440, 2560) && loaded.viewCount == 2) {
+		if (!loaded.cubeVi && loaded.screenSize == glm::ivec2(1440, 2560) && loaded.viewCount == 2) {
 			loaded.quiltGrid = {11.0f, 6.0f};
 			loaded.viewCount = 66;
 		}
 		config = loaded;
-		SDL_Log("Loaded Looking Glass calibration from %s: pitch=%.6f slope=%.6f "
+		SDL_Log("Loaded %s calibration from %s: pitch=%.6f slope=%.6f "
 			"center=%.6f DPI=%.3f screen=%dx%d viewCone=%.3f invert=%d "
 			"flipX=%d flipY=%d flipSubp=%d",
+			cubeViCalibration ? "CubeVi" : "Looking Glass",
 			source.c_str(), config.pitch, config.slope, config.center, config.dpi,
 			config.screenSize.x, config.screenSize.y, config.viewCone,
 			config.invertView ? 1 : 0, config.flipImageX ? 1 : 0,
@@ -343,6 +368,26 @@ void updateVideoSolidColor() {
 		}) {
 			if (std::filesystem::is_regular_file(localCandidate, error)) return localCandidate;
 		}
+		if (const char* appData = std::getenv("APPDATA")) {
+			const auto cubeViCalibration = std::filesystem::path(appData) /
+				"3DGallery" / "screen_params.json";
+			if (std::filesystem::is_regular_file(cubeViCalibration, error))
+				return cubeViCalibration;
+		}
+
+		return {};
+	}
+
+	std::filesystem::path findCubeViCalibration() {
+		if (const char* requested = std::getenv("RENDEPTH_NATIVE_CALIBRATION"))
+			return requested;
+
+		if (const char* appData = std::getenv("APPDATA")) {
+			const auto candidate = std::filesystem::path(appData) /
+				"3DGallery" / "screen_params.json";
+			std::error_code error;
+			if (std::filesystem::is_regular_file(candidate, error)) return candidate;
+		}
 
 		return {};
 	}
@@ -364,6 +409,18 @@ void updateVideoSolidColor() {
 			config.subpixel = std::strtof(value, nullptr);
 		if (const char* value = std::getenv("RENDEPTH_NATIVE_DPI"))
 			config.dpi = std::strtof(value, nullptr);
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_LINE_NUMBER")) {
+			config.cubeVi = true;
+			config.lineNumber = std::strtof(value, nullptr);
+		}
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_OBLIQUITY")) {
+			config.cubeVi = true;
+			config.slope = std::strtof(value, nullptr);
+		}
+		if (const char* value = std::getenv("RENDEPTH_NATIVE_DEVIATION")) {
+			config.cubeVi = true;
+			config.center = std::strtof(value, nullptr);
+		}
 		if (const char* value = std::getenv("RENDEPTH_NATIVE_VIEWS")) {
 			config.viewCount = (int)std::strtol(value, nullptr, 10);
 			if (config.viewCount == 2) config.quiltGrid = {2.0f, 1.0f};
@@ -429,6 +486,7 @@ int Image::initNativeOutput(Context* context) {
 	SDL_DisplayID appDisplay = context->window != nullptr ? SDL_GetDisplayForWindow(context->window) : 0;
 	SDL_DisplayID matchedDisplay = 0;
 	std::string matchedDisplayName;
+	bool matchedCubeVi = false;
 
 	for (int i = 0; displays != nullptr && i < displayCount; ++i) {
 		const char* name = SDL_GetDisplayName(displays[i]);
@@ -441,26 +499,89 @@ int Image::initNativeOutput(Context* context) {
 				[](unsigned char c) { return (char)std::tolower(c); });
 			return value;
 		}();
+		const SDL_DisplayMode* currentMode = SDL_GetCurrentDisplayMode(displays[i]);
+		const bool c1Resolution = currentMode != nullptr &&
+			((currentMode->w == 1440 && currentMode->h == 2560) ||
+			 (currentMode->w == 2560 && currentMode->h == 1440));
 		const bool isLookingGlass = lowerName.find("lkg") != std::string::npos ||
 			lowerName.find("looking glass") != std::string::npos ||
 			lowerName.find("cubevi") != std::string::npos ||
-			lowerName.find("c1") != std::string::npos;
+			lowerName.find("c1") != std::string::npos ||
+			lowerName.find("companion") != std::string::npos;
+		const bool isCubeVi = lowerName.find("cubevi") != std::string::npos ||
+			lowerName.find("companion") != std::string::npos ||
+			lowerName.find("cube c1") != std::string::npos ||
+			lowerName.find("opcode inc 6") != std::string::npos;
 		const bool isGenericLenticular = lowerName.find("3d display") != std::string::npos ||
 			lowerName.find("lenticular") != std::string::npos;
-		const bool knownQuiltDisplay = isLookingGlass || isGenericLenticular;
+		const bool knownQuiltDisplay = isLookingGlass || isCubeVi || isGenericLenticular;
+		SDL_Log("Native display %u: %s (%dx%d)%s", (unsigned int)displays[i],
+			displayName.c_str(), currentMode != nullptr ? currentMode->w : 0,
+			currentMode != nullptr ? currentMode->h : 0,
+			isCubeVi ? " [CubeVi profile]" : (c1Resolution ? " [C1-like resolution]" : ""));
 		if (!requested && requestedName == nullptr && !knownQuiltDisplay) continue;
 		if (!requested && requestedName != nullptr) continue;
 
 		matchedDisplay = displays[i];
 		matchedDisplayName = displayName;
+		matchedCubeVi = isCubeVi;
 		break;
 	}
 
 	if (matchedDisplay != 0) {
 		nativeDisplay = matchedDisplay;
 		nativeDisplayConfig.displayName = matchedDisplayName;
+		SDL_Log("Native output routing: app display %u, selected display %u (%s).",
+			(unsigned int)appDisplay, (unsigned int)nativeDisplay,
+			matchedDisplayName.c_str());
+		const std::string lowerMatchedName = [&matchedDisplayName] {
+			std::string value = matchedDisplayName;
+			std::transform(value.begin(), value.end(), value.begin(),
+				[](unsigned char c) { return (char)std::tolower(c); });
+			return value;
+		}();
+		if (matchedCubeVi || lowerMatchedName.find("cubevi") != std::string::npos ||
+			lowerMatchedName.find("companion") != std::string::npos ||
+			lowerMatchedName.find("cube c1") != std::string::npos ||
+			lowerMatchedName.find("opcode inc 6") != std::string::npos) {
+			// Do not carry Looking Glass calibration from another attached
+			// device into the C1 profile.
+			const auto displayName = nativeDisplayConfig.displayName;
+			nativeDisplayConfig = NativeDisplayConfig{};
+			nativeDisplayConfig.displayName = displayName;
+			nativeDisplayConfig.cubeVi = true;
+			nativeDisplayConfig.quiltGrid = {8.0f, 5.0f};
+			nativeDisplayConfig.viewCount = 40;
+			nativeDisplayConfig.screenSize = {1440, 2560};
+			nativeDisplayConfig.pitch = 0.15f;
+			nativeDisplayConfig.dpi = 1.0f;
+			nativeDisplayConfig.lineNumber = 0.15f;
+			const auto cubeViCalibration = findCubeViCalibration();
+			if (!cubeViCalibration.empty()) {
+				if (loadLookingGlassCalibration(cubeViCalibration, nativeDisplayConfig)) {
+					SDL_Log("CubeVi calibration loaded from %s.", cubeViCalibration.string().c_str());
+				} else {
+					SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+						"CubeVi calibration file could not be parsed: %s.",
+						cubeViCalibration.string().c_str());
+				}
+			} else {
+				SDL_Log("No CubeVi screen_params.json found; using C1 defaults with 2D output. "
+					"Set RENDEPTH_NATIVE_CALIBRATION to provide one.");
+			}
+			applyNativeDisplayOverrides(nativeDisplayConfig);
+			nativeDisplayConfig.cubeVi = true;
+			nativeDisplayConfig.quiltGrid = {8.0f, 5.0f};
+			nativeDisplayConfig.viewCount = 40;
+			nativeDisplayConfig.screenSize = {1440, 2560};
+			if (nativeDisplayConfig.lineNumber <= 0.0f)
+				nativeDisplayConfig.lineNumber = nativeDisplayConfig.pitch;
+			SDL_Log("CubeVi C1 profile selected for %s: 8x5 quilt, 40 views.",
+				matchedDisplayName.c_str());
+		}
 
 		if (appDisplay == nativeDisplay) {
+			SDL_Log("Native display is the application's current display; using the main window.");
 			if (context->nativeOutputWindow != nullptr) {
 				SDL_ReleaseWindowFromGPUDevice(context->device, context->nativeOutputWindow);
 				SDL_DestroyWindow(context->nativeOutputWindow);
@@ -469,6 +590,7 @@ int Image::initNativeOutput(Context* context) {
 			nativeOutputEnabled = true;
 			nativeDisplayOnMainWindow = true;
 		} else {
+			SDL_Log("Native display is separate; creating the secondary output window.");
 			nativeDisplayOnMainWindow = false;
 			if (context->nativeOutputWindow == nullptr) {
 				SDL_Rect bounds{};
@@ -477,9 +599,14 @@ int Image::initNativeOutput(Context* context) {
 						bounds.w, bounds.h, SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIGH_PIXEL_DENSITY |
 						SDL_WINDOW_HIDDEN | SDL_WINDOW_NOT_FOCUSABLE | SDL_WINDOW_UTILITY);
 					if (context->nativeOutputWindow != nullptr) {
-						SDL_SetWindowPosition(context->nativeOutputWindow,
+						SDL_Log("Creating native output window for %s at display bounds %d,%d %dx%d.",
+							matchedDisplayName.c_str(), bounds.x, bounds.y, bounds.w, bounds.h);
+						if (!SDL_SetWindowPosition(context->nativeOutputWindow,
 							SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay),
-							SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay));
+							SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay))) {
+							SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+								"Could not position native output window: %s", SDL_GetError());
+						}
 						configureFullscreenMode(context->nativeOutputWindow, nativeDisplay);
 						if (!SDL_SetWindowFullscreen(context->nativeOutputWindow, true)) {
 							SDL_Log("Native output fullscreen failed for %s: %s",
@@ -507,7 +634,15 @@ int Image::initNativeOutput(Context* context) {
 						} else {
 							SDL_ShowWindow(context->nativeOutputWindow);
 						}
+					} else {
+						SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+							"Could not create native output window for %s: %s",
+							matchedDisplayName.c_str(), SDL_GetError());
 					}
+				} else {
+					SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+						"Could not get bounds for native display %s: %s",
+						matchedDisplayName.c_str(), SDL_GetError());
 				}
 			}
 			nativeOutputEnabled = (context->nativeOutputWindow != nullptr);
@@ -3617,7 +3752,9 @@ void Image::updateInterlacerUniforms(Context* context, int width, int height) {
 	interlacerDataFrag.quiltSize = nativeDisplayConfig.quiltGrid;
 	interlacerDataFrag.tileSize = 1.0f / nativeDisplayConfig.quiltGrid;
 	const bool hasSlope = std::abs(nativeDisplayConfig.slope) > 0.001f;
-	float phaseX = nativeDisplayConfig.pitch / std::max(nativeDisplayConfig.dpi, 1.0f);
+	float phaseX = nativeDisplayConfig.cubeVi && nativeDisplayConfig.lineNumber > 0.0f
+		? nativeDisplayConfig.lineNumber
+		: nativeDisplayConfig.pitch / std::max(nativeDisplayConfig.dpi, 1.0f);
 	if (hasSlope)
 		phaseX *= std::cos(std::atan(1.0f / nativeDisplayConfig.slope));
 	const float phaseY = hasSlope ? phaseX / nativeDisplayConfig.slope : 0.0f;
@@ -3677,11 +3814,12 @@ int Image::drawNativeOutput(Context* context) {
 	updateInterlacerUniforms(context, width, height);
 	if (outputSizeChanged) {
 		SDL_Log("Native phase: X=%.8f Y=%.8f center=%.8f subpixel=%.8f "
-			"origin=%d view=%s",
+			"origin=%d view=%s lineNumber=%.8f obliquity=%.8f",
 			interlacerDataFrag.phaseScale.x, interlacerDataFrag.phaseScale.y,
 			interlacerDataFrag.center,
 			interlacerDataFrag.subpixelPhase, 1,
-			interlacerDataFrag.invertView != 0 ? "inverted" : "forward");
+			interlacerDataFrag.invertView != 0 ? "inverted" : "forward",
+			nativeDisplayConfig.lineNumber, nativeDisplayConfig.slope);
 	}
 
 	SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(context->device);
