@@ -75,6 +75,7 @@ static void setVideoControlsVisible(bool visible);
 static void finishSliderDrag();
 static Icon& getIcon(IconType type);
 static void checkMouseState();
+static bool shouldShowCustomCursor();
 
 static bool isSupportedVideo(const std::string& path) {
 	return VideoPlayer::supported(std::filesystem::path(path));
@@ -1756,6 +1757,7 @@ static void setStereoMode(ViewMode mode) {
 static void setPreferredStereo(ViewMode mode, bool saveMode) {
 	if (saveMode) defaultStereoMode = mode;
 	preferredStereoMode = mode;
+	showCustomCursor(shouldShowCustomCursor());
 	if (saveMode && mode != Light_Field)
 		Image::setNativeOutputActive(&context, false);
 	updateStereoIcon();
@@ -1840,6 +1842,13 @@ static glm::vec2 refreshWindowSize() {
 	SDL_GetWindowSizeInPixels(context.window, &windowWidth, &windowHeight);
 	windowSize = { (float)windowWidth, (float)windowHeight };
 	context.windowSize = windowSize;
+	int logicalWidth, logicalHeight;
+	if (SDL_GetWindowSize(context.window, &logicalWidth, &logicalHeight) &&
+		logicalWidth > 0 && logicalHeight > 0) {
+		const auto scaleX = (float)windowWidth / (float)logicalWidth;
+		const auto scaleY = (float)windowHeight / (float)logicalHeight;
+		Image::mouseScale = (scaleX + scaleY) * 0.5f;
+	}
 	return windowSize;
 }
 
@@ -1852,6 +1861,7 @@ static glm::vec2 refreshWindowSizeBase() {
 }
 
 static void updateFullscreenState() {
+	isFullscreen = (SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) != 0;
 	auto& icon = getIcon(IconType::Fullscreen);
 	icon.image = isFullscreen ? IconType::Window : IconType::Fullscreen;
 	context.offset = glm::vec2(0.0f);
@@ -1862,14 +1872,16 @@ static void updateFullscreenState() {
 }
 
 static void setFullscreen(bool fullscreen = true) {
-	SDL_SetWindowFullscreen(context.window, fullscreen);
-	SDL_SyncWindow(context.window);
+	if (!SDL_SetWindowFullscreen(context.window, fullscreen))
+		SDL_Log("Could not change main window fullscreen state: %s", SDL_GetError());
+	else if (!SDL_SyncWindow(context.window))
+		SDL_Log("Could not synchronize main window fullscreen state: %s", SDL_GetError());
 	updateFullscreenState();
+	showCustomCursor(true);
 }
 
 static void toggleFullscreen() {
-	isFullscreen = !isFullscreen;
-	setFullscreen(isFullscreen);
+	setFullscreen((SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) == 0);
 }
 
 void toggleStereo() {
@@ -1964,7 +1976,6 @@ static void toggleMaximized() {
 		isMaximized = !isMaximized;
 		setMaximize(isMaximized);
 	} else {
-		isFullscreen = false;
 		setFullscreen(false);
 	}
 }
@@ -2176,7 +2187,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	context.offset = { 0.0, 0.0 };
 	context.displayScale = 1.0;
 	context.mouse = { mouseValueNull, mouseValueNull };
-	context.mouseVisibility = 1.0;
+	context.mouseVisibility = 0.0;
 	context.infoVisibility = 0.0;
 	context.loadingRotation = 0.0;
 	context.currentZoom = 1.0;
@@ -2234,6 +2245,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	hideUI();
 	refreshWindowSize();
 	refreshWindowSizeBase();
+	updateFullscreenState();
 
 	return SDL_APP_CONTINUE;
 }
@@ -2582,12 +2594,11 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	}
 	processBatchExport();
 
-	if (windowDraggable && isFullscreen) {
+	if (windowDraggable && isFullscreen && SDL_GetMouseFocus() == context.window) {
 		auto mouseX = 0.0f, mouseY = 0.0f;
 		auto mouseFlags = SDL_GetGlobalMouseState(&mouseX, &mouseY);
 		if (mouseFlags & SDL_BUTTON_LMASK) {
-			isFullscreen = false;
-			setFullscreen(isFullscreen);
+			setFullscreen(false);
 		}
 	}
 
@@ -2740,20 +2751,21 @@ void hideUI(bool hideCustomMouse, bool hideRealMouse) {
 		context.mouse.y = mouseValueNull;
 		mouseMoveDelay = mouseDelayCount;
 	}
-	if (hideRealMouse && SDL_CursorVisible()) {
+	if (hideRealMouse && shouldShowCustomCursor() &&
+		SDL_GetMouseFocus() == context.window && SDL_CursorVisible()) {
 		SDL_HideCursor();
 	}
 }
 
 static bool shouldShowCustomCursor() {
-	if (isFullscreen) return true;
-	return isFullscreen &&
-		(preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half
-			|| preferredStereoMode == RGB_Depth);
+	// SBS and RGBD split the UI only in fullscreen (see Image::draw).
+	// A saved stereo preference alone must not replace the windowed OS cursor.
+	return context.window != nullptr &&
+		(SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) != 0;
 }
 
 static void showCustomCursor(bool show) {
-	if (shouldShowCustomCursor() && show) {
+	if (shouldShowCustomCursor() && show && SDL_GetMouseFocus() == context.window) {
 		if (mouseMoveDelay < 0)
 			context.mouseVisibility = 1.0;
 		if (SDL_CursorVisible()) SDL_HideCursor();
@@ -3127,10 +3139,22 @@ static void callDepthGen(int imageIndex, bool speculative) {
 
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 	if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
+	// The native output has its own fullscreen window and local coordinates.
+	// Its events must not change the main window's state or drive its UI.
+	// Queued events can outlive the output window, so compare the stored ID
+	// before resolving it to a pointer (a destroyed window resolves to null).
+	if (event->type >= SDL_EVENT_WINDOW_FIRST && event->type <= SDL_EVENT_WINDOW_LAST &&
+		event->window.windowID != SDL_GetWindowID(context.window)) {
+		return SDL_APP_CONTINUE;
+	}
+	if (const auto eventWindow = SDL_GetWindowFromEvent(event);
+		eventWindow != nullptr && eventWindow != context.window) {
+		return SDL_APP_CONTINUE;
+	}
 	if (event->type == SDL_EVENT_WINDOW_DISPLAY_CHANGED) {
 		refreshWindowSize();
 
-		auto currentDisplay = event->display.data1;
+		auto currentDisplay = event->window.data1;
 		auto displayMode = SDL_GetCurrentDisplayMode(currentDisplay);
 		Image::currentDisplay = currentDisplay;
 		auto virtualSize = glm::vec2(displayMode->w, displayMode->h) * displayMode->pixel_density;
@@ -3143,13 +3167,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		context.displayScale = displayScale;
 		auto pixelDensity = SDL_GetWindowPixelDensity(context.window);
 		context.pixelDensity = pixelDensity;
-#if defined(__APPLE__)
-		Image::mouseScale = pixelDensity;
-#elif defined(__linux__) || defined(__unix__)
-		Image::mouseScale = pixelDensity;
-#else
-		Image::mouseScale = 1.0;
-#endif
+		updateDisplayScale();
+	} else if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
+		event->type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
+		refreshWindowSize();
+		context.displayScale = SDL_GetWindowDisplayScale(context.window);
+		context.pixelDensity = SDL_GetWindowPixelDensity(context.window);
 		updateDisplayScale();
 	} else if (event->type == SDL_EVENT_WINDOW_RESIZED) {
 		showCustomCursor(false);
@@ -3177,16 +3200,15 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		showCustomCursor(false);
 		Image::updateSize(&context);
 		Image::saveMenuLayout(&context);
-	} else if (event->type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN) {
-		isFullscreen = true;
+	} else if (event->type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN ||
+		event->type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
 		updateFullscreenState();
-	} else if (event->type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
-		isFullscreen = false;
-		updateFullscreenState();
+		showCustomCursor(true);
 	} else if (event->type == SDL_EVENT_WINDOW_MOUSE_ENTER) {
 		mouseLeftWindow = false;
 	} else if (event->type == SDL_EVENT_WINDOW_MOUSE_LEAVE) {
 		mouseLeftWindow = true;
+		showCustomCursor(false);
 		if (currentSlider != nullptr || videoSliderScrubbing)
 			finishSliderDrag();
 		hideUI(false);
@@ -3200,8 +3222,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 				auto& icon = getIcon(IconType::Options);
 				icon.image = IconType::Options;
 			} else if (isFullscreen) {
-				isFullscreen = false;
-				setFullscreen(isFullscreen);
+				setFullscreen(false);
 			} else if (isMaximized) {
 				isMaximized = false;
 				setMaximize(isMaximized);

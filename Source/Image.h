@@ -48,6 +48,7 @@ public:
 	inline static SDL_GPUTexture* infoTexture = nullptr;
 	inline static SDL_GPUTexture* menuTexture = nullptr;
 	inline static SDL_GPUTexture* sliderTexture = nullptr;
+	inline static SDL_GPUTexture* nativeCalibrationTexture = nullptr;
 	inline static SDL_GPUTexture* exportTexture = nullptr;
 	inline static glm::uvec2 exportTextureSize{0, 0};
 	inline static SDL_GPUGraphicsPipeline* interlacerPipeline = nullptr;
@@ -159,6 +160,7 @@ public:
 	inline static bool useBackgroundSolid = false;
 	inline static glm::vec2 helpTextSize;
 	inline static glm::vec2 infoTextSize;
+	inline static glm::vec2 nativeCalibrationTextSize;
 	inline static glm::vec2 menuTextureSize { 1024.0, 1024.0 };
 	inline static glm::vec2 menuTextureOffset { 2.0, 2.0 };
 	inline static bool displayHelp = false;

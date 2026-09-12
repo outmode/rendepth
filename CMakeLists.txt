@@ -304,7 +304,7 @@ target_link_libraries(Rendepth PUBLIC
         glm)
 
 if(WIN32)
-    target_link_libraries(Rendepth PUBLIC winhttp)
+    target_link_libraries(Rendepth PUBLIC winhttp ole32 shell32 uuid)
 else()
     target_link_libraries(Rendepth PUBLIC CURL::libcurl)
 endif()

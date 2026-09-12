@@ -20,6 +20,7 @@
 
 #include "Image.h"
 #include "Utils.h"
+#include "WindowsCalibration.h"
 #include "rapidjson/document.h"
 #include <algorithm>
 #include <cctype>
@@ -28,6 +29,13 @@
 #include <cstdlib>
 #include <fstream>
 #include <limits>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
 	using BlurClock = std::chrono::steady_clock;
@@ -58,15 +66,8 @@ namespace {
 		return true;
 	}
 
-	bool loadLookingGlassCalibration(const std::filesystem::path& path,
+	bool parseLookingGlassCalibration(const std::string& text, const std::string& source,
 		NativeDisplayConfig& config) {
-		std::error_code error;
-		const auto size = std::filesystem::file_size(path, error);
-		if (error || size == 0 || size > 64 * 1024) return false;
-		std::ifstream file(path);
-		std::string text((std::istreambuf_iterator<char>(file)), {});
-		if (!file && text.empty()) return false;
-
 		rapidjson::Document document;
 		document.Parse(text.data(), text.size());
 		if (document.HasParseError() || !document.IsObject()) return false;
@@ -82,7 +83,7 @@ namespace {
 			readCalibrationNumber(document, "screenW", screenWidth) && screenWidth > 0.0f &&
 			readCalibrationNumber(document, "screenH", screenHeight) && screenHeight > 0.0f;
 		if (!complete) {
-			SDL_Log("Incomplete Looking Glass calibration in %s", path.string().c_str());
+			SDL_Log("Incomplete Looking Glass calibration in %s", source.c_str());
 			return false;
 		}
 		loaded.pitch = pitch;
@@ -103,8 +104,26 @@ namespace {
 			loaded.viewCount = 66;
 		}
 		config = loaded;
+		SDL_Log("Loaded Looking Glass calibration from %s: pitch=%.6f slope=%.6f "
+			"center=%.6f DPI=%.3f screen=%dx%d viewCone=%.3f invert=%d "
+			"flipX=%d flipY=%d flipSubp=%d",
+			source.c_str(), config.pitch, config.slope, config.center, config.dpi,
+			config.screenSize.x, config.screenSize.y, config.viewCone,
+			config.invertView ? 1 : 0, config.flipImageX ? 1 : 0,
+			config.flipImageY ? 1 : 0, config.flipSubpixel ? 1 : 0);
 
 		return true;
+	}
+
+	bool loadLookingGlassCalibration(const std::filesystem::path& path,
+		NativeDisplayConfig& config) {
+		std::error_code error;
+		const auto size = std::filesystem::file_size(path, error);
+		if (error || size == 0 || size > 64 * 1024) return false;
+		std::ifstream file(path);
+		std::string text((std::istreambuf_iterator<char>(file)), {});
+		if (!file && text.empty()) return false;
+		return parseLookingGlassCalibration(text, path.string(), config);
 	}
 
 	std::filesystem::path findLookingGlassCalibration() {
@@ -112,6 +131,33 @@ namespace {
 			return requested;
 
 		std::error_code error;
+	#if defined(_WIN32)
+		// Looking Glass devices expose their calibration on the volume root.
+		// Scan drive letters so USB volumes and ordinary mounted drives work
+		// without requiring a Linux-style mount point. Keep the device search
+		// ahead of local paths so a connected device always wins.
+		for (char drive = 'A'; drive <= 'Z'; ++drive) {
+			const auto volumeRoot = std::filesystem::path(std::string(1, drive) + ":\\");
+			const auto candidate = volumeRoot / "LKG_calibration" / "visual.json";
+			if (std::filesystem::is_regular_file(candidate, error)) return candidate;
+		}
+
+		// Also support calibration copied from the device or installed by
+		// Looking Glass Bridge. These environment variables are the native
+		// Windows locations and avoid assuming a particular user name.
+		for (const char* variable : {"LOCALAPPDATA", "APPDATA", "PROGRAMDATA"}) {
+			if (const char* root = std::getenv(variable); root != nullptr && *root != '\0') {
+				const auto rootPath = std::filesystem::path(root);
+				for (const auto& relative : {
+					std::filesystem::path("LKG_calibration") / "visual.json",
+					std::filesystem::path("Looking Glass") / "LKG_calibration" / "visual.json",
+					std::filesystem::path("Looking Glass") / "visual.json"}) {
+					const auto candidate = rootPath / relative;
+					if (std::filesystem::is_regular_file(candidate, error)) return candidate;
+				}
+			}
+		}
+	#endif
 		for (const auto& mediaRoot : {std::filesystem::path("/run/media"), std::filesystem::path("/media")}) {
 			if (!std::filesystem::is_directory(mediaRoot, error)) continue;
 			for (const auto& userRoot : std::filesystem::directory_iterator(mediaRoot, error)) {
@@ -140,8 +186,25 @@ namespace {
 	void reloadNativeDisplayConfig(NativeDisplayConfig& config) {
 		const auto displayName = config.displayName;
 		NativeDisplayConfig reloaded{};
-		if (const auto path = findLookingGlassCalibration(); !path.empty())
-			loadLookingGlassCalibration(path, reloaded);
+	#ifdef _WIN32
+		std::string portableCalibration;
+		if (std::getenv("RENDEPTH_NATIVE_CALIBRATION") == nullptr &&
+			WindowsCalibration::load(portableCalibration)) {
+			parseLookingGlassCalibration(portableCalibration,
+				"Looking Glass portable device/LKG_calibration/visual.json", reloaded);
+		}
+	#endif
+		if (!reloaded.calibrated) {
+			if (const auto path = findLookingGlassCalibration(); !path.empty()) {
+				if (!loadLookingGlassCalibration(path, reloaded))
+					SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+						"Could not load Looking Glass calibration from %s; using defaults.",
+						path.string().c_str());
+			} else {
+				SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+					"No Looking Glass calibration found; using default native output calibration.");
+			}
+		}
 		applyNativeDisplayOverrides(reloaded);
 		reloaded.displayName = displayName;
 		config = reloaded;
@@ -187,7 +250,8 @@ int Image::initNativeOutput(Context* context) {
 		nativeDisplay = displays[i];
 		nativeDisplayConfig.displayName = displayName;
 		context->nativeOutputWindow = SDL_CreateWindow("Rendepth Native Output",
-			bounds.w, bounds.h, SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+			bounds.w, bounds.h, SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+			SDL_WINDOW_HIDDEN | SDL_WINDOW_NOT_FOCUSABLE | SDL_WINDOW_UTILITY);
 		if (context->nativeOutputWindow == nullptr) {
 			SDL_Log("Could not create native output window for %s: %s",
 				displayName.c_str(), SDL_GetError());
@@ -201,6 +265,20 @@ int Image::initNativeOutput(Context* context) {
 			SDL_Log("Native output fullscreen failed for %s: %s",
 				displayName.c_str(), SDL_GetError());
 		}
+#ifdef _WIN32
+		// NOT_FOCUSABLE prevents activation; disabling the HWND also prevents
+		// mouse input and SDL's automatic mouse capture on this output surface.
+		const auto outputHwnd = static_cast<HWND>(SDL_GetPointerProperty(
+			SDL_GetWindowProperties(context->nativeOutputWindow),
+			SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+		if (outputHwnd == nullptr) {
+			SDL_Log("Could not disable native output input: missing Windows handle");
+			SDL_DestroyWindow(context->nativeOutputWindow);
+			context->nativeOutputWindow = nullptr;
+			break;
+		}
+		EnableWindow(outputHwnd, FALSE);
+#endif
 		if (!SDL_ClaimWindowForGPUDevice(context->device, context->nativeOutputWindow)) {
 			SDL_Log("Could not claim native output window for %s: %s",
 				displayName.c_str(), SDL_GetError());
@@ -208,8 +286,14 @@ int Image::initNativeOutput(Context* context) {
 			context->nativeOutputWindow = nullptr;
 			break;
 		}
+		SDL_ShowWindow(context->nativeOutputWindow);
 			nativeOutputEnabled = true;
 			nativeOutputLastSize = {0, 0};
+			if (!nativeDisplayConfig.calibrated) {
+				Core::drawText(context, "Calibration Not Found", helpFont,
+					nativeCalibrationTexture, nativeCalibrationTextSize,
+					"Native Calibration Help Texture");
+			}
 		break;
 	}
 	if (displays != nullptr) SDL_free(displays);
@@ -2302,7 +2386,11 @@ int Image::drawNativeOutput(Context* context) {
 		(int)(nativeDisplayConfig.quiltGrid.x * nativeDisplayConfig.quiltGrid.y));
 	interlacerDataFrag.gridColumns = (int)nativeDisplayConfig.quiltGrid.x;
 	interlacerDataFrag.gridRows = (int)nativeDisplayConfig.quiltGrid.y;
-	interlacerDataFrag.output2D = context->mode != Light_Field || !context->display3D ? 1 : 0;
+	// Without device calibration, the lenticular phase is unknown. Keep the
+	// source image flat and explain the unavailable light field output on the
+	// native display instead of applying the fallback phase values.
+	interlacerDataFrag.output2D = !nativeDisplayConfig.calibrated ||
+		context->mode != Light_Field || !context->display3D ? 1 : 0;
 	interlacerDataFrag.sourceFlat = context->imageType != Color_Plus_Depth &&
 		context->imageType != Light_Field_LKG ? 1 : 0;
 	interlacerDataFrag.invertView = nativeDisplayConfig.invertView ? 1 : 0;
@@ -2378,6 +2466,46 @@ int Image::drawNativeOutput(Context* context) {
 	SDL_PushGPUFragmentUniformData(commandBuffer, 0, &interlacerDataFrag,
 		sizeof(interlacerDataFrag));
 	SDL_DrawGPUIndexedPrimitives(renderPass, 6, 1, 0, 0, 0);
+
+	if (!nativeDisplayConfig.calibrated && nativeCalibrationTexture != nullptr) {
+		const auto nativeProjection = glm::ortho(0.0f, (float)width, 0.0f, (float)height);
+		const auto closeCenter = glm::vec2(width, height) * 0.5f;
+		const auto closeRadius = style.getIconRadius(Style::getCurrentScale()) * context->displayScale;
+
+		bindPipeline(renderPass, iconPipeline);
+		SDL_GPUTextureSamplerBinding iconBinding{
+			.texture = iconTexture, .sampler = imageSampler};
+		SDL_BindGPUFragmentSamplers(renderPass, 0, &iconBinding, 1);
+		iconDataVert.projection = nativeProjection;
+		iconDataVert.transform = glm::translate(glm::mat4(1.0f),
+			glm::vec3(closeCenter, 1.0f));
+		iconDataVert.transform = glm::scale(iconDataVert.transform,
+			glm::vec3(glm::vec2(2.0f * closeRadius), 1.0f));
+		iconDataVert.gridOffset = getIconCoordinates(IconType::Close);
+		iconDataFrag.color = context->backgroundStyle == Light
+			? style.getColor(Style::Color::Black, Style::Alpha::Solid)
+			: style.getColor(Style::Color::White, Style::Alpha::Solid);
+		iconDataFrag.visibility = 1.0f;
+		iconDataFrag.rotation = 0.0f;
+		iconDataFrag.animated = 0;
+		iconDataFrag.force = 0;
+		drawIcon(commandBuffer, renderPass);
+
+		bindPipeline(renderPass, spritePipeline);
+		SDL_GPUTextureSamplerBinding infoBinding{
+			.texture = nativeCalibrationTexture, .sampler = imageSampler};
+		SDL_BindGPUFragmentSamplers(renderPass, 0, &infoBinding, 1);
+		spriteDataVert.projection = nativeProjection;
+		const auto textColor = context->backgroundStyle == Light
+			? style.getColor(Style::Color::Black, Style::Alpha::Solid)
+			: style.getColor(Style::Color::White, Style::Alpha::Solid);
+		setSpriteUniforms(
+			glm::vec3(closeCenter, 0.0f) -
+				glm::vec3(0.0f, closeRadius + 32.0f * context->displayScale, 0.0f),
+			glm::vec3(nativeCalibrationTextSize, 1.0f), textColor, 1.0f, 1,
+			{0.0f, 0.0f}, {1.0f, 1.0f}, glm::vec2(0.5f), glm::vec3(1.0f));
+		drawSprite(commandBuffer, renderPass);
+	}
 	SDL_EndGPURenderPass(renderPass);
 	SDL_SubmitGPUCommandBuffer(commandBuffer);
 	return 0;
@@ -2402,6 +2530,8 @@ void Image::quit(Context* context){
 	SDL_ReleaseGPUTexture(context->device, helpTexture);
 	SDL_ReleaseGPUTexture(context->device, menuTexture);
 	SDL_ReleaseGPUTexture(context->device, sliderTexture);
+	if (nativeCalibrationTexture != nullptr)
+		SDL_ReleaseGPUTexture(context->device, nativeCalibrationTexture);
 	if (exportTexture != nullptr) SDL_ReleaseGPUTexture(context->device, exportTexture);
 	exportTexture = nullptr;
 	exportTextureSize = {0, 0};
