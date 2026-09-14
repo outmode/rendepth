@@ -39,7 +39,9 @@
 #include "rapidjson/document.h"
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"
+#include "AIEngineSettings.h"
 #include <filesystem>
+#include <fstream>
 #include <format>
 #include <algorithm>
 #include <array>
@@ -248,8 +250,8 @@ auto displayInfoTime = 0.0;
 auto displayInfoEnabled = true;
 auto showDisplayInfoOnce = false;
 auto currentStereoMode = Native;
-auto preferredStereoMode = Anaglyph_Accurate;
-auto defaultStereoMode = Anaglyph_Accurate;
+auto preferredStereoMode = Mono;
+auto defaultStereoMode = Mono;
 glm::vec2 pixelMotion = {0.0, 0.0 };
 bool isDragging = false;
 bool isIconCaptured = false;
@@ -1465,7 +1467,7 @@ Choice ChoiceStereo {
 Choice ChoiceExport {
 	"Export Format",
 	{ "Anaglyph", "Color + Depth", "SBS Full", "SBS Half",
-		"Free View", "Free View LRL", "Light Field LKG" },
+		"Free View", "Free View LRL", "Light Field" },
 };
 
 Choice ChoiceModel {
@@ -1531,6 +1533,7 @@ Choice ChoiceRuntimeTools {
 	"GPU Support", { "Choose AI Engine", "Open Pack Folder" }, {}, {}, false, false, true,
 };
 static int startupInferenceOption = 0;
+static bool inferencePreferenceDirty = false;
 static bool inferenceRuntimeLoaded = false;
 static std::string inferenceStartupError;
 static void refreshInferenceSettings();
@@ -1568,7 +1571,7 @@ static std::unordered_map<std::string, int> menuSelection = {
 	{ ChoiceRuntimePacks.label, 0 },
 	{ ChoiceRuntimeTools.label, -1 },
 #endif
-	{ ChoiceStereo.label, 0 },
+	{ ChoiceStereo.label, 10 }, // Disabled
 	{ ChoiceExport.label, 0 },
 	{ ChoiceModel.label, 0 },
 	{ ChoiceResolution.label, 0 },
@@ -2162,6 +2165,8 @@ static void refreshInferenceSettings() {
 static void changeInference(int option) {
 	menuSelection[ChoiceInference.label] = std::clamp(option, 0, 2);
 	if (firstInit) return;
+	inferencePreferenceDirty = true;
+	SDL_Log("AI Engine explicitly selected: %d", menuSelection[ChoiceInference.label]);
 	refreshInferenceSettings();
 	saveOptions();
 	const bool restart = menuSelection[ChoiceInference.label] != startupInferenceOption;
@@ -2976,6 +2981,22 @@ void saveOptions() {
     rapidjson::Document document(&allocator, 256);
     document.SetObject();
 
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	// Another instance may have saved a newer engine choice. Unrelated saves
+	// and shutdown must not replace it with this process's startup preference.
+	rapidjson::Document existing;
+	std::ifstream previous(optionsAbsPath, std::ios::binary);
+	if (previous) {
+		char json[65536]{};
+		previous.read(json, sizeof(json) - 1);
+		// Legacy settings may end with a null byte.
+		if (existing.Parse(json).HasParseError()) existing.SetNull();
+		previous.close();
+	}
+	const int engineToSave = AIEngineSettings::forSave(
+		menuSelection[ChoiceInference.label], inferencePreferenceDirty, existing);
+#endif
+
 	std::vector<const char*> nameCache{};
     for (const auto& setting : menuSelection) {
         if (setting.first == ChoiceTags.label || setting.first == ChoiceVersion.label ||
@@ -2983,8 +3004,15 @@ void saveOptions() {
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 		if (transientInferenceSetting(setting.first)) continue;
 #endif
-        auto settingName = setting.first.c_str();
-        document.AddMember(rapidjson::GenericStringRef(settingName), setting.second, allocator);
+        const char* settingName = setting.first.c_str();
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+		if (setting.first == ChoiceInference.label) settingName = AIEngineSettings::key;
+#endif
+        int settingValue = setting.second;
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+		if (setting.first == ChoiceInference.label) settingValue = engineToSave;
+#endif
+        document.AddMember(rapidjson::GenericStringRef(settingName), settingValue, allocator);
         nameCache.push_back(settingName);
     }
 	for (const auto& conversion : conversionOptions) {
@@ -3017,10 +3045,23 @@ void saveOptions() {
 	if (!exists(optionsFolderPath)) create_directories(optionsFolderPath);
 
 	SDL_IOStream* optionsFile = SDL_IOFromFile(optionsFilePath.c_str(), "w" );
-	if (optionsFile) {
-		SDL_WriteIO(optionsFile, output.GetString(), output.GetSize() + 1);
-		SDL_CloseIO(optionsFile);
+	if (!optionsFile) {
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not save settings to %s: %s",
+			optionsFilePath.c_str(), SDL_GetError());
+		return;
 	}
+	const bool written = SDL_WriteIO(optionsFile, output.GetString(), output.GetSize()) == output.GetSize();
+	const bool closed = SDL_CloseIO(optionsFile);
+	if (!written || !closed)
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not finish saving settings to %s: %s",
+			optionsFilePath.c_str(), SDL_GetError());
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	else {
+		SDL_Log("Saved AI Engine=%d to %s (explicit change=%d)", engineToSave,
+			optionsFilePath.c_str(), inferencePreferenceDirty ? 1 : 0);
+		inferencePreferenceDirty = false;
+	}
+#endif
 }
 
 void loadOptions() {
@@ -3037,12 +3078,10 @@ void loadOptions() {
 	if (document.Parse(dataBuffer).HasParseError()) return;
 	if (!document.IsObject()) return;
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
-	// Preserve the engine preference saved under the previous Settings label.
-	constexpr const char* previousEngineKey = "AI Inference (Restart Required)";
-	if (!document.HasMember(ChoiceInference.label.c_str()) &&
-		document.HasMember(previousEngineKey) && document[previousEngineKey].IsInt()) {
-		rapidjson::Value key(ChoiceInference.label.c_str(), document.GetAllocator());
-		document.AddMember(key, document[previousEngineKey].GetInt(), document.GetAllocator());
+	// Read the stable key, with compatibility for both historical UI labels.
+	if (const int engine = AIEngineSettings::read(document); engine >= 0) {
+		changeInference(engine);
+		SDL_Log("Restored AI Engine=%d from %s", engine, optionsFilePath.c_str());
 	}
 #endif
 
@@ -3050,7 +3089,7 @@ void loadOptions() {
 		if (setting.first == ChoiceTags.label || setting.first == ChoiceVersion.label ||
 			setting.first == ChoiceCredit.label) continue;
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
-		if (transientInferenceSetting(setting.first)) continue;
+		if (transientInferenceSetting(setting.first) || setting.first == ChoiceInference.label) continue;
 #endif
 		auto settingName = setting.first.c_str();
 		if (document.HasMember(settingName) && document[settingName].IsInt()) {
@@ -3942,7 +3981,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	const bool onLenticularDisplay = Image::isNativeDisplayOnMainWindow();
 	const bool forceNative = requestedNative && std::string(requestedNative) == "1" &&
 		Image::nativeOutputAvailable();
-	if (onLenticularDisplay || forceNative) {
+	if ((onLenticularDisplay && preferredStereoMode != Mono) || forceNative) {
 		preferredStereoMode = Lenticular;
 		currentStereoMode = Lenticular;
 		context.mode = Lenticular;

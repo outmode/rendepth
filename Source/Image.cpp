@@ -491,6 +491,8 @@ int Image::initNativeOutput(Context* context) {
 	if (matchedDisplay != 0) {
 		nativeDisplay = matchedDisplay;
 		nativeDisplayConfig.displayName = matchedDisplayName;
+		SDL_Log("Native output routing: app display %u, selected display %u (%s).",
+			(unsigned int)appDisplay, (unsigned int)nativeDisplay, matchedDisplayName.c_str());
 		nativeDisplayConfig.cubeViC1 = matchedCubeVi;
 		reloadNativeDisplayConfig(nativeDisplayConfig);
 		SDL_Log("Selected native display '%s', model=%s, calibrated=%d",
@@ -498,6 +500,7 @@ int Image::initNativeOutput(Context* context) {
 			nativeDisplayConfig.calibrated ? 1 : 0);
 
 		if (appDisplay == nativeDisplay) {
+			SDL_Log("Native display is the application's current display; using the main window.");
 			if (context->nativeOutputWindow != nullptr) {
 				SDL_ReleaseWindowFromGPUDevice(context->device, context->nativeOutputWindow);
 				SDL_DestroyWindow(context->nativeOutputWindow);
@@ -506,6 +509,7 @@ int Image::initNativeOutput(Context* context) {
 			nativeOutputEnabled = true;
 			nativeDisplayOnMainWindow = true;
 		} else {
+			SDL_Log("Native display is separate; creating the secondary output window.");
 			nativeDisplayOnMainWindow = false;
 			if (context->nativeOutputWindow == nullptr) {
 				SDL_Rect bounds{};
@@ -514,9 +518,14 @@ int Image::initNativeOutput(Context* context) {
 						bounds.w, bounds.h, SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIGH_PIXEL_DENSITY |
 						SDL_WINDOW_HIDDEN | SDL_WINDOW_NOT_FOCUSABLE | SDL_WINDOW_UTILITY);
 					if (context->nativeOutputWindow != nullptr) {
-						SDL_SetWindowPosition(context->nativeOutputWindow,
+						SDL_Log("Creating native output window for %s at display bounds %d,%d %dx%d.",
+							matchedDisplayName.c_str(), bounds.x, bounds.y, bounds.w, bounds.h);
+						if (!SDL_SetWindowPosition(context->nativeOutputWindow,
 							SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay),
-							SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay));
+							SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay))) {
+							SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+								"Could not position native output window: %s", SDL_GetError());
+						}
 						configureFullscreenMode(context->nativeOutputWindow, nativeDisplay);
 						if (!SDL_SetWindowFullscreen(context->nativeOutputWindow, true)) {
 							SDL_Log("Native output fullscreen failed for %s: %s",
@@ -544,7 +553,15 @@ int Image::initNativeOutput(Context* context) {
 						} else {
 							SDL_ShowWindow(context->nativeOutputWindow);
 						}
+					} else {
+						SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+							"Could not create native output window for %s: %s",
+							matchedDisplayName.c_str(), SDL_GetError());
 					}
+				} else {
+					SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+						"Could not get bounds for native display %s: %s",
+						matchedDisplayName.c_str(), SDL_GetError());
 				}
 			}
 			nativeOutputEnabled = (context->nativeOutputWindow != nullptr);

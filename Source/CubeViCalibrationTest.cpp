@@ -19,6 +19,13 @@ int main(int argc, char** argv) {
     check(CubeViCalibration::parse(
         R"({"lineNumber":20,"obliquity":-0.125,"deviation":0})", optics, error),
         "standalone optical object, negative slope and zero deviation");
+    for (const char* key : {"line_number", "line number", "LineNumber"}) {
+        const std::string legacy = std::string("{\"") + key +
+            "\":{\"value\":20},\"Obliquity\":{\"value\":0.125},\"Deviation\":8}";
+        check(CubeViCalibration::parse(legacy, optics, error), "legacy screen_params field aliases");
+        check(optics.interval == 20 && optics.obliquity == 0.125f && optics.deviation == 8,
+            "legacy fields use the same CubeVi optical model");
+    }
     for (const char* invalid : {"", "null", "[]", "{", R"({"config":[]})",
         R"({"lineNumber":0,"obliquity":0.1,"deviation":8})",
         R"({"lineNumber":-20,"obliquity":0.1,"deviation":8})",

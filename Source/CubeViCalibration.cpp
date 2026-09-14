@@ -84,8 +84,11 @@ bool decode(std::string_view encoded, std::string& decoded, std::string& error) 
 }
 
 bool number(const rapidjson::Value& value, const char* key, float& result) {
-    if (!value.HasMember(key) || !value[key].IsNumber()) return false;
-    const double candidate = value[key].GetDouble();
+    if (!value.HasMember(key)) return false;
+    const auto& entry = value[key];
+    const auto& number = entry.IsObject() && entry.HasMember("value") ? entry["value"] : entry;
+    if (!number.IsNumber()) return false;
+    const double candidate = number.GetDouble();
     result = static_cast<float>(candidate);
     return std::isfinite(candidate) && std::isfinite(result);
 }
@@ -115,9 +118,12 @@ bool parse(std::string_view json, Optics& optics, std::string& error) {
     }
     const auto& value = document.HasMember("config") ? document["config"] : document;
     Optics loaded;
-    if (!value.IsObject() || !number(value, "lineNumber", loaded.interval) ||
-        !number(value, "obliquity", loaded.obliquity) ||
-        !number(value, "deviation", loaded.deviation) || loaded.interval < 0.001f ||
+    if (!value.IsObject() ||
+        !(number(value, "lineNumber", loaded.interval) || number(value, "line_number", loaded.interval) ||
+          number(value, "line number", loaded.interval) || number(value, "LineNumber", loaded.interval)) ||
+        !(number(value, "obliquity", loaded.obliquity) || number(value, "Obliquity", loaded.obliquity)) ||
+        !(number(value, "deviation", loaded.deviation) || number(value, "Deviation", loaded.deviation)) ||
+        loaded.interval < 0.001f ||
         loaded.interval > 100000.0f || std::abs(loaded.obliquity) > 100.0f ||
         std::abs(loaded.deviation) > 100000.0f) {
         error = "missing or out-of-range CubeVi optical parameters";
@@ -151,6 +157,9 @@ std::filesystem::path find() {
             std::error_code ec;
             if (std::filesystem::is_regular_file(path, ec)) return path;
         }
+        const auto legacy = std::filesystem::path(root) / "3DGallery" / "screen_params.json";
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(legacy, ec)) return legacy;
     }
     return {};
 }
