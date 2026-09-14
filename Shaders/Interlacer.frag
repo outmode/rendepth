@@ -29,6 +29,7 @@ layout (set = 3, binding = 0) uniform InterlacerData {
 	float stereoOffset;
 	int sourceType;
 	int testPattern;
+	int cubeViC1;
 };
 
 const float stereoScaleLKG = 4000.0;
@@ -219,6 +220,14 @@ vec3 sampleView(vec2 uv, float phase) {
 		}
 		int column = targetView % gridColumns;
 		int row = gridRows - 1 - targetView / gridColumns;
+		if (cubeViC1 != 0) {
+			// Vendor quilts number columns right-to-left and rows bottom-to-top.
+			int sourceViews = gridColumns * gridRows;
+			int sourceView = min(sourceViews - 1, view * sourceViews / viewCount);
+			if (output2D != 0) sourceView = sourceViews / 2;
+			column = gridColumns - 1 - sourceView % gridColumns;
+			row = gridRows - 1 - sourceView / gridColumns;
+		}
 		if (flipImageX != 0) uv.x = 1.0 - uv.x;
 		if (flipImageY != 0) uv.y = 1.0 - uv.y;
 		vec2 quiltUV = (vec2(column, row) + clamp(uv, vec2(0.0), vec2(1.0))) * tileSize;
@@ -232,6 +241,20 @@ vec3 sampleView(vec2 uv, float phase) {
 
 void main() {
 	vec2 pixel = gl_FragCoord.xy;
+	if (cubeViC1 != 0) {
+		// SDL texture UVs and framebuffer coordinates start at the top. The
+		// vendor uses (1 - UnityUV.y), also measured from the top, then adds
+		// half a pixel in both axes. Its channel offsets are R=0, G=1, B=2.
+		vec2 vendorPixel = pixel + vec2(0.5);
+		float interval = max(phaseScale.x, 0.001);
+		float phase = 3.0 * (vendorPixel.x + vendorPixel.y * phaseScale.y) + center;
+		vec3 color;
+		color.r = sampleView(fragUV, phase / interval).r;
+		color.g = sampleView(fragUV, (phase + 1.0) / interval).g;
+		color.b = sampleView(fragUV, (phase + 2.0) / interval).b;
+		outColor = vec4(color, 1.0);
+		return;
+	}
 	pixel.y = outputSize.y - pixel.y;
 	float basePhase = dot(pixel, phaseScale);
 	basePhase -= center;

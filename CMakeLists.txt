@@ -299,7 +299,7 @@ target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp 
 		Source/VideoDepthProcessor.cpp
 		Source/ScreenCapture.cpp
         Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
-        Source/ModelDownloader.cpp Source/SuperResolution.cpp)
+        Source/ModelDownloader.cpp Source/SuperResolution.cpp Source/CubeViCalibration.cpp)
 
 target_include_directories(Rendepth PUBLIC
         ThirdParty/glm ThirdParty/SDL/include ThirdParty/SDL_image/include
@@ -313,7 +313,7 @@ target_link_libraries(Rendepth PUBLIC
         glm)
 
 if(WIN32)
-    target_link_libraries(Rendepth PUBLIC winhttp ole32 shell32 uuid)
+    target_link_libraries(Rendepth PUBLIC winhttp ole32 shell32 uuid bcrypt crypt32)
 else()
     target_link_libraries(Rendepth PUBLIC CURL::libcurl)
 endif()
@@ -825,6 +825,13 @@ endif()
 # Development-only test executable; keep it out of the default and packaging
 # builds. It can still be built explicitly when requested.
 add_executable(QuiltTest EXCLUDE_FROM_ALL Source/QuiltTest.cpp)
+add_executable(CubeViCalibrationTest EXCLUDE_FROM_ALL
+        Source/CubeViCalibrationTest.cpp Source/CubeViCalibration.cpp)
+target_include_directories(CubeViCalibrationTest PRIVATE ThirdParty/rapidjson/include)
+target_link_libraries(CubeViCalibrationTest PRIVATE SDL3::SDL3)
+if(WIN32)
+    target_link_libraries(CubeViCalibrationTest PRIVATE bcrypt crypt32 user32)
+endif()
 target_compile_definitions(QuiltTest PRIVATE SDL_MAIN_USE_CALLBACKS)
 target_include_directories(QuiltTest PRIVATE
         ThirdParty/SDL/include ThirdParty/rapidjson/include)

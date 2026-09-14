@@ -25,6 +25,7 @@
 #include "SDL3_shadercross/SDL_shadercross.h"
 #include "SDL3_ttf/SDL_ttf.h"
 #include "glm/glm.hpp"
+#include "CubeViCalibration.h"
 #include <functional>
 #include <vector>
 #include <string>
@@ -244,6 +245,8 @@ struct Context {
 
 struct NativeDisplayConfig {
 	std::string displayName;
+	bool cubeViC1 = false;
+	CubeViCalibration::Optics cubeViOptics;
 	glm::vec2 quiltGrid{2.0f, 1.0f};
 	int viewCount = 2;
 	float pitch = 141.2f;

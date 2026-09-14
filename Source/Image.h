@@ -153,6 +153,8 @@ public:
 		float stereoOffset;
 		int sourceType;
 		int testPattern;
+		int cubeViC1;
+		int padding[3]{};
 	};
 
 	struct IconDataVert {

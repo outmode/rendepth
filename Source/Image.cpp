@@ -21,6 +21,7 @@
 #include "Image.h"
 #include "Utils.h"
 #include "WindowsCalibration.h"
+#include "NativeDisplayIdentity.h"
 #include "rapidjson/document.h"
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"
@@ -42,6 +43,8 @@
 namespace {
 	static_assert(sizeof(Image::ImageDataFrag) % 16 == 0,
 		"Image shader uniform data must remain 16-byte aligned.");
+	static_assert(sizeof(Image::InterlacerDataFrag) == 128,
+		"Interlacer uniform data must match the shader layout.");
 	using BlurClock = std::chrono::steady_clock;
 	constexpr auto videoBlurInterval = std::chrono::milliseconds(670);
 	constexpr Uint32 blurSnapshotSize = 32;
@@ -381,6 +384,26 @@ void updateVideoSolidColor() {
 	void reloadNativeDisplayConfig(NativeDisplayConfig& config) {
 		const auto displayName = config.displayName;
 		NativeDisplayConfig reloaded{};
+		if (config.cubeViC1) {
+			reloaded.cubeViC1 = true;
+			reloaded.screenSize = {1440, 2560};
+			reloaded.quiltGrid = {8.0f, 5.0f};
+			reloaded.viewCount = 40;
+			std::string error;
+			const auto path = CubeViCalibration::find();
+			reloaded.calibrated = CubeViCalibration::load(path, reloaded.cubeViOptics, error);
+			if (reloaded.calibrated) {
+				SDL_Log("Loaded CubeVi C1 calibration from %s: interval=%.6f obliquity=%.6f deviation=%.6f",
+					path.string().c_str(), reloaded.cubeViOptics.interval,
+					reloaded.cubeViOptics.obliquity, reloaded.cubeViOptics.deviation);
+			} else {
+				SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "CubeVi C1 calibration unavailable: %s (%s)",
+					path.string().c_str(), error.c_str());
+			}
+			reloaded.displayName = displayName;
+			config = reloaded;
+			return;
+		}
 	#ifdef _WIN32
 		std::string portableCalibration;
 		if (std::getenv("RENDEPTH_NATIVE_CALIBRATION") == nullptr &&
@@ -422,17 +445,24 @@ int Image::initNativeOutput(Context* context) {
 	const char* enabled = std::getenv("RENDEPTH_NATIVE_OUTPUT");
 	if (enabled != nullptr && std::string(enabled) == "0") return 0;
 	const char* requestedName = std::getenv("RENDEPTH_NATIVE_DISPLAY");
-	reloadNativeDisplayConfig(nativeDisplayConfig);
 
 	int displayCount = 0;
 	SDL_DisplayID* displays = SDL_GetDisplays(&displayCount);
 	SDL_DisplayID appDisplay = context->window != nullptr ? SDL_GetDisplayForWindow(context->window) : 0;
 	SDL_DisplayID matchedDisplay = 0;
 	std::string matchedDisplayName;
+	bool matchedCubeVi = false;
 
 	for (int i = 0; displays != nullptr && i < displayCount; ++i) {
 		const char* name = SDL_GetDisplayName(displays[i]);
 		std::string displayName = name != nullptr ? name : "";
+		const auto* mode = SDL_GetCurrentDisplayMode(displays[i]);
+		const auto hardware = NativeDisplayIdentity::hardwareId(displays[i]);
+		const bool cubeVi = NativeDisplayIdentity::isCubeViC1(hardware,
+			mode ? mode->w : 0, mode ? mode->h : 0);
+		SDL_Log("Display %u: name='%s' hardware='%s' mode=%dx%d CubeViC1=%d",
+			displays[i], displayName.c_str(), hardware.c_str(), mode ? mode->w : 0,
+			mode ? mode->h : 0, cubeVi ? 1 : 0);
 		const bool requested = requestedName != nullptr &&
 			displayName.find(requestedName) != std::string::npos;
 		const std::string lowerName = [&displayName] {
@@ -442,23 +472,30 @@ int Image::initNativeOutput(Context* context) {
 			return value;
 		}();
 		const bool isLookingGlass = lowerName.find("lkg") != std::string::npos ||
-			lowerName.find("looking glass") != std::string::npos ||
-			lowerName.find("cubevi") != std::string::npos ||
-			lowerName.find("c1") != std::string::npos;
+			lowerName.find("looking glass") != std::string::npos;
 		const bool isGenericLenticular = lowerName.find("3d display") != std::string::npos ||
 			lowerName.find("lenticular") != std::string::npos;
-		const bool knownQuiltDisplay = isLookingGlass || isGenericLenticular;
+		const bool knownQuiltDisplay = cubeVi || isLookingGlass || isGenericLenticular;
 		if (!requested && requestedName == nullptr && !knownQuiltDisplay) continue;
 		if (!requested && requestedName != nullptr) continue;
 
 		matchedDisplay = displays[i];
 		matchedDisplayName = displayName;
+		matchedCubeVi = cubeVi;
+		// Explicit model override supports C1 hardware revisions not yet observed.
+		if (const char* model = std::getenv("RENDEPTH_NATIVE_MODEL"))
+			matchedCubeVi = std::string(model) == "cubevi-c1";
 		break;
 	}
 
 	if (matchedDisplay != 0) {
 		nativeDisplay = matchedDisplay;
 		nativeDisplayConfig.displayName = matchedDisplayName;
+		nativeDisplayConfig.cubeViC1 = matchedCubeVi;
+		reloadNativeDisplayConfig(nativeDisplayConfig);
+		SDL_Log("Selected native display '%s', model=%s, calibrated=%d",
+			matchedDisplayName.c_str(), matchedCubeVi ? "cubevi-c1" : "looking-glass/generic",
+			nativeDisplayConfig.calibrated ? 1 : 0);
 
 		if (appDisplay == nativeDisplay) {
 			if (context->nativeOutputWindow != nullptr) {
@@ -520,8 +557,10 @@ int Image::initNativeOutput(Context* context) {
 			SDL_DestroyWindow(context->nativeOutputWindow);
 			context->nativeOutputWindow = nullptr;
 		}
-		nativeOutputEnabled = true;
-		nativeDisplayOnMainWindow = true;
+		nativeOutputEnabled = false;
+		nativeDisplayOnMainWindow = false;
+		nativeDisplayConfig = NativeDisplayConfig{};
+		SDL_Log("No matching native display found.");
 	}
 
 	if (nativeOutputEnabled && !nativeDisplayConfig.calibrated && nativeCalibrationTexture == nullptr) {
@@ -587,30 +626,39 @@ bool Image::saveNativeDisplayConfig(const std::filesystem::path& path, const Nat
 	rapidjson::StringBuffer buffer;
 	rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
 	writer.StartObject();
-	writer.Key("pitch");
-	writer.Double(config.pitch);
-	writer.Key("slope");
-	writer.Double(config.slope);
-	writer.Key("center");
-	writer.Double(config.center);
-	writer.Key("dpi");
-	writer.Double(config.dpi);
-	writer.Key("screenWidth");
-	writer.Int(config.screenSize.x);
-	writer.Key("screenHeight");
-	writer.Int(config.screenSize.y);
-	writer.Key("viewCount");
-	writer.Int(config.viewCount);
-	writer.Key("subpixel");
-	writer.Double(config.subpixel);
-	writer.Key("invertView");
-	writer.Bool(config.invertView);
-	writer.Key("flipImageX");
-	writer.Bool(config.flipImageX);
-	writer.Key("flipImageY");
-	writer.Bool(config.flipImageY);
-	writer.Key("flipSubpixel");
-	writer.Bool(config.flipSubpixel);
+	if (config.cubeViC1) {
+		writer.Key("model"); writer.String("cubevi-c1");
+		writer.Key("config"); writer.StartObject();
+		writer.Key("lineNumber"); writer.Double(config.cubeViOptics.interval);
+		writer.Key("obliquity"); writer.Double(config.cubeViOptics.obliquity);
+		writer.Key("deviation"); writer.Double(config.cubeViOptics.deviation);
+		writer.EndObject();
+	} else {
+		writer.Key("pitch");
+		writer.Double(config.pitch);
+		writer.Key("slope");
+		writer.Double(config.slope);
+		writer.Key("center");
+		writer.Double(config.center);
+		writer.Key("dpi");
+		writer.Double(config.dpi);
+		writer.Key("screenWidth");
+		writer.Int(config.screenSize.x);
+		writer.Key("screenHeight");
+		writer.Int(config.screenSize.y);
+		writer.Key("viewCount");
+		writer.Int(config.viewCount);
+		writer.Key("subpixel");
+		writer.Double(config.subpixel);
+		writer.Key("invertView");
+		writer.Bool(config.invertView);
+		writer.Key("flipImageX");
+		writer.Bool(config.flipImageX);
+		writer.Key("flipImageY");
+		writer.Bool(config.flipImageY);
+		writer.Key("flipSubpixel");
+		writer.Bool(config.flipSubpixel);
+	}
 	writer.EndObject();
 
 	const std::string text = buffer.GetString();
@@ -632,6 +680,10 @@ bool Image::saveNativeDisplayConfig(const NativeDisplayConfig& config) {
 
 void Image::resetNativeDisplayConfig(Context* context) {
 	std::string currentDisplayName = nativeDisplayConfig.displayName;
+	if (nativeDisplayConfig.cubeViC1) {
+		reloadNativeDisplayConfig(nativeDisplayConfig);
+		return;
+	}
 	nativeDisplayConfig = NativeDisplayConfig{};
 	nativeDisplayConfig.displayName = currentDisplayName;
 	saveNativeDisplayConfig(nativeDisplayConfig);
@@ -3606,7 +3658,7 @@ int Image::draw(Context* context) {
 }
 
 void Image::updateInterlacerUniforms(Context* context, int width, int height) {
-	if (context->imageType == Light_Field_LKG && context->gridSize.x > 0.0f &&
+	if (!nativeDisplayConfig.cubeViC1 && context->imageType == Light_Field_LKG && context->gridSize.x > 0.0f &&
 		context->gridSize.y > 0.0f) {
 		nativeDisplayConfig.quiltGrid = {context->gridSize.x, context->gridSize.y};
 		nativeDisplayConfig.viewCount = (int)std::lround(
@@ -3626,10 +3678,23 @@ void Image::updateInterlacerUniforms(Context* context, int width, int height) {
 	interlacerDataFrag.subpixelPhase = phaseX / 3.0f + nativeDisplayConfig.subpixel;
 	if (nativeDisplayConfig.flipSubpixel)
 		interlacerDataFrag.subpixelPhase = -interlacerDataFrag.subpixelPhase;
+	interlacerDataFrag.cubeViC1 = nativeDisplayConfig.cubeViC1 ? 1 : 0;
+	if (nativeDisplayConfig.cubeViC1) {
+		const auto& optics = nativeDisplayConfig.cubeViOptics;
+		// Pass raw vendor parameters; preserve the vendor's operation order in
+		// the shader to avoid phase drift at view boundaries.
+		interlacerDataFrag.phaseScale = {optics.interval, optics.obliquity};
+		interlacerDataFrag.center = optics.deviation;
+		interlacerDataFrag.subpixelPhase = 0.0f;
+		if (context->imageType == Light_Field_LKG && context->gridSize.x > 0 && context->gridSize.y > 0) {
+			interlacerDataFrag.quiltSize = {context->gridSize.x, context->gridSize.y};
+			interlacerDataFrag.tileSize = 1.0f / interlacerDataFrag.quiltSize;
+		}
+	}
 	interlacerDataFrag.viewCount = std::min(nativeDisplayConfig.viewCount,
 		(int)(nativeDisplayConfig.quiltGrid.x * nativeDisplayConfig.quiltGrid.y));
-	interlacerDataFrag.gridColumns = (int)nativeDisplayConfig.quiltGrid.x;
-	interlacerDataFrag.gridRows = (int)nativeDisplayConfig.quiltGrid.y;
+	interlacerDataFrag.gridColumns = (int)interlacerDataFrag.quiltSize.x;
+	interlacerDataFrag.gridRows = (int)interlacerDataFrag.quiltSize.y;
 	interlacerDataFrag.output2D = (!nativeDisplayConfig.calibrated || context->mode != Lenticular || !context->display3D) ? 1 : 0;
 	const bool isLenticular2View = (nativeDisplayConfig.viewCount == 2);
 	if (isLenticular2View) {
@@ -3675,7 +3740,14 @@ int Image::drawNativeOutput(Context* context) {
 		}
 	}
 	updateInterlacerUniforms(context, width, height);
-	if (outputSizeChanged) {
+	static int lastCubeViOutput2D = -1;
+	if (nativeDisplayConfig.cubeViC1 &&
+		(outputSizeChanged || lastCubeViOutput2D != interlacerDataFrag.output2D)) {
+		SDL_Log("CubeVi output: views=%d quilt=%dx%d sourceType=%d output2D=%d",
+			interlacerDataFrag.viewCount, interlacerDataFrag.gridColumns,
+			interlacerDataFrag.gridRows, interlacerDataFrag.sourceType, interlacerDataFrag.output2D);
+		lastCubeViOutput2D = interlacerDataFrag.output2D;
+	} else if (outputSizeChanged && !nativeDisplayConfig.cubeViC1) {
 		SDL_Log("Native phase: X=%.8f Y=%.8f center=%.8f subpixel=%.8f "
 			"origin=%d view=%s",
 			interlacerDataFrag.phaseScale.x, interlacerDataFrag.phaseScale.y,

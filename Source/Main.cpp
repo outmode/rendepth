@@ -3936,11 +3936,19 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	refreshWindowSizeBase();
 	updateFullscreenState();
 
+	const char* requestedNative = std::getenv("RENDEPTH_NATIVE_OUTPUT");
+	if (requestedNative && std::string(requestedNative) == "1")
+		Image::setNativeOutputActive(&context, true);
 	const bool onLenticularDisplay = Image::isNativeDisplayOnMainWindow();
-	if (onLenticularDisplay) {
+	const bool forceNative = requestedNative && std::string(requestedNative) == "1" &&
+		Image::nativeOutputAvailable();
+	if (onLenticularDisplay || forceNative) {
 		preferredStereoMode = Lenticular;
 		currentStereoMode = Lenticular;
 		context.mode = Lenticular;
+		if (forceNative && !fileList.empty() && fileIndex >= 0 &&
+			(fileList[fileIndex].type == Light_Field_LKG || fileList[fileIndex].type == Color_Plus_Depth))
+			setDisplay3D(true);
 	}
 
 	const bool savedLenticular = preferredStereoMode == Lenticular &&
