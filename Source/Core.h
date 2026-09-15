@@ -246,6 +246,7 @@ struct Context {
 struct NativeDisplayConfig {
 	std::string displayName;
 	bool cubeViC1 = false;
+	bool lookingGlassGo = false;
 	CubeViCalibration::Optics cubeViOptics;
 	glm::vec2 quiltGrid{2.0f, 1.0f};
 	int viewCount = 2;
@@ -261,6 +262,7 @@ struct NativeDisplayConfig {
 	bool flipImageY = false;
 	bool flipSubpixel = false;
 	bool calibrated = false;
+	bool usingDefaultCalibration = true;
 };
 
 struct FileInfo {

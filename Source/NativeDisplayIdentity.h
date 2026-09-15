@@ -32,9 +32,11 @@ inline std::string hardwareId(SDL_DisplayID display) {
     return {};
 }
 
-inline bool isCubeViC1(const std::string& hardware, int width, int height) {
-    // Observed on the connected C1. Do not match arbitrary "C1" substrings
+inline bool isCubeViC1(const std::string& hardware, int width, int height,
+                      const std::string& displayName = {}) {
+    // Observed Windows hardware ID and Linux display name. Do not match arbitrary "C1" substrings
     // or infer the vendor from resolution alone.
-    return hardware.rfind("MONITOR\\OPC1155\\", 0) == 0 && width == 1440 && height == 2560;
+    return (hardware.rfind("MONITOR\\OPC1155\\", 0) == 0 || displayName == "Opcode Inc 6\"") &&
+        width == 1440 && height == 2560;
 }
 }

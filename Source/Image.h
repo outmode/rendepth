@@ -154,7 +154,7 @@ public:
 		int sourceType;
 		int testPattern;
 		int cubeViC1;
-		int padding[3]{};
+		int padding[3];
 	};
 
 	struct IconDataVert {
@@ -231,8 +231,12 @@ public:
 	static bool saveNativeDisplayConfig(const std::filesystem::path& path, const NativeDisplayConfig& config);
 	static bool saveNativeDisplayConfig(const NativeDisplayConfig& config);
 	static void resetNativeDisplayConfig(Context* context = nullptr);
-	static void updateInterlacerUniforms(Context* context, int width, int height);
+	static void updateInterlacerUniforms(Context* context, int width, int height,
+		NativeDisplayConfig& config = nativeDisplayConfig);
 	static int drawNativeOutput(Context* context);
+	static void drawNativeCalibrationWarning(Context* context, SDL_GPUCommandBuffer* commandBuffer,
+		SDL_GPURenderPass* renderPass, int width, int height,
+		const NativeDisplayConfig& config = nativeDisplayConfig);
 	static int reloadInterlacerShader(Context* context);
 	static void quit(Context* context);
 	static void bindPipeline(SDL_GPURenderPass* renderPass, SDL_GPUGraphicsPipeline* pipeline);
@@ -281,7 +285,14 @@ public:
 	inline static bool nativeOutputEnabled = false;
 	inline static bool nativeOutputSourceReady = false;
 	inline static bool nativeDisplayOnMainWindow = false;
-	inline static glm::ivec2 nativeOutputLastSize{0, 0};
+	struct NativeOutput {
+		SDL_DisplayID display = 0;
+		SDL_Window* window = nullptr; // Owned unless this is the main application window.
+		NativeDisplayConfig config;
+		glm::ivec2 lastSize{0, 0};
+	};
+	inline static std::vector<NativeOutput> nativeOutputs;
+	static int drawNativeOutput(Context* context, NativeOutput& output, NativeDisplayConfig& config);
 	inline static SDL_DisplayID nativeDisplay = 0;
 	inline static NativeDisplayConfig nativeDisplayConfig{};
 	inline static int testPatternMode = 0;

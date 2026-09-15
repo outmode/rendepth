@@ -5553,6 +5553,10 @@ static void callDepthGen(int imageIndex, bool speculative, SDL_Surface* inputSur
 
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 	if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
+	if (event->type == SDL_EVENT_DISPLAY_ADDED || event->type == SDL_EVENT_DISPLAY_REMOVED) {
+		if (preferredStereoMode == Lenticular) Image::initNativeOutput(&context);
+		return SDL_APP_CONTINUE;
+	}
 	// The native output has its own fullscreen window and local coordinates.
 	// Its events must not change the main window's state or drive its UI.
 	// Queued events can outlive the output window, so compare the stored ID
@@ -5587,6 +5591,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		auto pixelDensity = SDL_GetWindowPixelDensity(context.window);
 		context.pixelDensity = pixelDensity;
 		updateDisplayScale();
+		if (preferredStereoMode == Lenticular) Image::initNativeOutput(&context);
 	} else if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
 		event->type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
 		refreshWindowSize();

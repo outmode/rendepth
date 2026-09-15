@@ -825,6 +825,7 @@ endif()
 # Development-only test executable; keep it out of the default and packaging
 # builds. It can still be built explicitly when requested.
 add_executable(QuiltTest EXCLUDE_FROM_ALL Source/QuiltTest.cpp)
+add_executable(NativeDisplaySelectionTest EXCLUDE_FROM_ALL Source/NativeDisplaySelectionTest.cpp)
 add_executable(AIEngineSettingsTest EXCLUDE_FROM_ALL Source/AIEngineSettingsTest.cpp)
 target_include_directories(AIEngineSettingsTest PRIVATE ThirdParty/rapidjson/include)
 add_executable(CubeViCalibrationTest EXCLUDE_FROM_ALL

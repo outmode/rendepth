@@ -22,6 +22,8 @@
 #include "Utils.h"
 #include "WindowsCalibration.h"
 #include "NativeDisplayIdentity.h"
+#include "NativeDisplaySelection.h"
+#include "LookingGlassCalibration.h"
 #include "rapidjson/document.h"
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"
@@ -391,15 +393,21 @@ void updateVideoSolidColor() {
 			reloaded.viewCount = 40;
 			std::string error;
 			const auto path = CubeViCalibration::find();
-			reloaded.calibrated = CubeViCalibration::load(path, reloaded.cubeViOptics, error);
-			if (reloaded.calibrated) {
+			if (!path.empty() && CubeViCalibration::load(path, reloaded.cubeViOptics, error)) {
+				reloaded.usingDefaultCalibration = false;
 				SDL_Log("Loaded CubeVi C1 calibration from %s: interval=%.6f obliquity=%.6f deviation=%.6f",
 					path.string().c_str(), reloaded.cubeViOptics.interval,
 					reloaded.cubeViOptics.obliquity, reloaded.cubeViOptics.deviation);
 			} else {
-				SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "CubeVi C1 calibration unavailable: %s (%s)",
-					path.string().c_str(), error.c_str());
+				if (!path.empty())
+					SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "CubeVi C1 calibration unavailable: %s (%s)",
+						path.string().c_str(), error.c_str());
+				reloaded.cubeViOptics = CubeViCalibration::c1Defaults;
+				SDL_Log("Using built-in CubeVi C1 calibration: interval=%.6f obliquity=%.6f deviation=%.6f",
+					reloaded.cubeViOptics.interval, reloaded.cubeViOptics.obliquity,
+					reloaded.cubeViOptics.deviation);
 			}
+			reloaded.calibrated = true;
 			reloaded.displayName = displayName;
 			config = reloaded;
 			return;
@@ -418,11 +426,16 @@ void updateVideoSolidColor() {
 					SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
 						"Could not load Looking Glass calibration from %s; using defaults.",
 						path.string().c_str());
-			} else {
+			} else if (!config.lookingGlassGo) {
 				SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
 					"No Looking Glass calibration found; using default native output calibration.");
 			}
 		}
+		reloaded.usingDefaultCalibration = !reloaded.calibrated;
+		if (!reloaded.calibrated && config.lookingGlassGo)
+			parseLookingGlassCalibration(LookingGlassCalibration::goDefaults,
+				"built-in LKG Go fallback", reloaded);
+		reloaded.lookingGlassGo = config.lookingGlassGo;
 		applyNativeDisplayOverrides(reloaded);
 		reloaded.displayName = displayName;
 		config = reloaded;
@@ -443,23 +456,24 @@ glm::vec2 Image::getIconCoordinates(IconType iconType) {
 int Image::initNativeOutput(Context* context) {
 	if (context == nullptr || context->device == nullptr) return -1;
 	const char* enabled = std::getenv("RENDEPTH_NATIVE_OUTPUT");
-	if (enabled != nullptr && std::string(enabled) == "0") return 0;
+	if (enabled != nullptr && std::string(enabled) == "0") {
+		setNativeOutputActive(context, false);
+		return 0;
+	}
 	const char* requestedName = std::getenv("RENDEPTH_NATIVE_DISPLAY");
 
 	int displayCount = 0;
 	SDL_DisplayID* displays = SDL_GetDisplays(&displayCount);
 	SDL_DisplayID appDisplay = context->window != nullptr ? SDL_GetDisplayForWindow(context->window) : 0;
-	SDL_DisplayID matchedDisplay = 0;
-	std::string matchedDisplayName;
-	bool matchedCubeVi = false;
-
+	std::vector<NativeOutput> selected;
+	NativeDisplaySelection selection;
 	for (int i = 0; displays != nullptr && i < displayCount; ++i) {
 		const char* name = SDL_GetDisplayName(displays[i]);
 		std::string displayName = name != nullptr ? name : "";
 		const auto* mode = SDL_GetCurrentDisplayMode(displays[i]);
 		const auto hardware = NativeDisplayIdentity::hardwareId(displays[i]);
 		const bool cubeVi = NativeDisplayIdentity::isCubeViC1(hardware,
-			mode ? mode->w : 0, mode ? mode->h : 0);
+			mode ? mode->w : 0, mode ? mode->h : 0, displayName);
 		SDL_Log("Display %u: name='%s' hardware='%s' mode=%dx%d CubeViC1=%d",
 			displays[i], displayName.c_str(), hardware.c_str(), mode ? mode->w : 0,
 			mode ? mode->h : 0, cubeVi ? 1 : 0);
@@ -479,126 +493,104 @@ int Image::initNativeOutput(Context* context) {
 		if (!requested && requestedName == nullptr && !knownQuiltDisplay) continue;
 		if (!requested && requestedName != nullptr) continue;
 
-		matchedDisplay = displays[i];
-		matchedDisplayName = displayName;
-		matchedCubeVi = cubeVi;
-		// Explicit model override supports C1 hardware revisions not yet observed.
+		bool matchedCubeVi = cubeVi;
+		// Explicit model override supports hardware revisions not yet observed.
 		if (const char* model = std::getenv("RENDEPTH_NATIVE_MODEL"))
 			matchedCubeVi = std::string(model) == "cubevi-c1";
-		break;
+		if (!selection.add(matchedCubeVi)) {
+			SDL_Log("Skipping duplicate native display type: %s", displayName.c_str());
+			continue;
+		}
+		NativeOutput output;
+		output.display = displays[i];
+		output.config.displayName = displayName;
+		output.config.cubeViC1 = matchedCubeVi;
+		// Go panels advertise an LKG-E serial as their display name.
+		output.config.lookingGlassGo = !matchedCubeVi &&
+			(lowerName.rfind("lkg-e", 0) == 0 || lowerName.find("lkg go") != std::string::npos ||
+				lowerName.find("looking glass go") != std::string::npos);
+		selected.push_back(output);
 	}
-
-	if (matchedDisplay != 0) {
-		nativeDisplay = matchedDisplay;
-		nativeDisplayConfig.displayName = matchedDisplayName;
-		SDL_Log("Native output routing: app display %u, selected display %u (%s).",
-			(unsigned int)appDisplay, (unsigned int)nativeDisplay, matchedDisplayName.c_str());
-		nativeDisplayConfig.cubeViC1 = matchedCubeVi;
-		reloadNativeDisplayConfig(nativeDisplayConfig);
-		SDL_Log("Selected native display '%s', model=%s, calibrated=%d",
-			matchedDisplayName.c_str(), matchedCubeVi ? "cubevi-c1" : "looking-glass/generic",
-			nativeDisplayConfig.calibrated ? 1 : 0);
-
-		if (appDisplay == nativeDisplay) {
-			SDL_Log("Native display is the application's current display; using the main window.");
-			if (context->nativeOutputWindow != nullptr) {
-				SDL_ReleaseWindowFromGPUDevice(context->device, context->nativeOutputWindow);
-				SDL_DestroyWindow(context->nativeOutputWindow);
-				context->nativeOutputWindow = nullptr;
-			}
-			nativeOutputEnabled = true;
-			nativeDisplayOnMainWindow = true;
+	SDL_free(displays);
+	// Keep the main-window calibration as the public/default configuration.
+	const auto mainOutput = std::find_if(selected.begin(), selected.end(), [appDisplay](const NativeOutput& output) {
+		return output.display == appDisplay;
+	});
+	if (mainOutput != selected.end()) std::rotate(selected.begin(), mainOutput, mainOutput + 1);
+	const bool sameRouting = selected.size() == nativeOutputs.size() &&
+		std::equal(selected.begin(), selected.end(), nativeOutputs.begin(), [context, appDisplay](const NativeOutput& a, const NativeOutput& b) {
+			return a.display == b.display && a.config.cubeViC1 == b.config.cubeViC1 &&
+				a.config.lookingGlassGo == b.config.lookingGlassGo &&
+				(a.display == appDisplay) == (b.window == context->window);
+		});
+	if (sameRouting && !selected.empty()) return 0;
+	setNativeOutputActive(context, false);
+	for (auto& output : selected) {
+		reloadNativeDisplayConfig(output.config);
+		// configureFullscreenMode uses this until the output is registered.
+		nativeDisplayConfig = output.config;
+		if (output.display == appDisplay) {
+			output.window = context->window;
 		} else {
-			SDL_Log("Native display is separate; creating the secondary output window.");
-			nativeDisplayOnMainWindow = false;
-			if (context->nativeOutputWindow == nullptr) {
-				SDL_Rect bounds{};
-				if (SDL_GetDisplayBounds(nativeDisplay, &bounds)) {
-					context->nativeOutputWindow = SDL_CreateWindow("Rendepth Native Output",
-						bounds.w, bounds.h, SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIGH_PIXEL_DENSITY |
-						SDL_WINDOW_HIDDEN | SDL_WINDOW_NOT_FOCUSABLE | SDL_WINDOW_UTILITY);
-					if (context->nativeOutputWindow != nullptr) {
-						SDL_Log("Creating native output window for %s at display bounds %d,%d %dx%d.",
-							matchedDisplayName.c_str(), bounds.x, bounds.y, bounds.w, bounds.h);
-						if (!SDL_SetWindowPosition(context->nativeOutputWindow,
-							SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay),
-							SDL_WINDOWPOS_CENTERED_DISPLAY(nativeDisplay))) {
-							SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-								"Could not position native output window: %s", SDL_GetError());
-						}
-						configureFullscreenMode(context->nativeOutputWindow, nativeDisplay);
-						if (!SDL_SetWindowFullscreen(context->nativeOutputWindow, true)) {
-							SDL_Log("Native output fullscreen failed for %s: %s",
-								matchedDisplayName.c_str(), SDL_GetError());
-						}
+			SDL_Rect bounds{};
+			if (!SDL_GetDisplayBounds(output.display, &bounds)) continue;
+			output.window = SDL_CreateWindow("Rendepth Native Output", bounds.w, bounds.h,
+				SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN |
+				SDL_WINDOW_NOT_FOCUSABLE | SDL_WINDOW_UTILITY);
+			if (!output.window) continue;
+			SDL_SetWindowPosition(output.window, SDL_WINDOWPOS_CENTERED_DISPLAY(output.display),
+				SDL_WINDOWPOS_CENTERED_DISPLAY(output.display));
+			configureFullscreenMode(output.window, output.display);
+			SDL_SetWindowFullscreen(output.window, true);
 #ifdef _WIN32
-						// Keep the separate output window from activating or capturing input.
-						const auto outputHwnd = static_cast<HWND>(SDL_GetPointerProperty(
-							SDL_GetWindowProperties(context->nativeOutputWindow),
-							SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
-						if (outputHwnd == nullptr) {
-							SDL_Log("Could not disable native output input: missing Windows handle");
-							SDL_DestroyWindow(context->nativeOutputWindow);
-							context->nativeOutputWindow = nullptr;
-							SDL_free(displays);
-							return -1;
-						}
-						EnableWindow(outputHwnd, FALSE);
-#endif
-						if (!SDL_ClaimWindowForGPUDevice(context->device, context->nativeOutputWindow)) {
-							SDL_Log("Could not claim native output window for %s: %s",
-								matchedDisplayName.c_str(), SDL_GetError());
-							SDL_DestroyWindow(context->nativeOutputWindow);
-							context->nativeOutputWindow = nullptr;
-						} else {
-							SDL_ShowWindow(context->nativeOutputWindow);
-						}
-					} else {
-						SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-							"Could not create native output window for %s: %s",
-							matchedDisplayName.c_str(), SDL_GetError());
-					}
-				} else {
-					SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-						"Could not get bounds for native display %s: %s",
-						matchedDisplayName.c_str(), SDL_GetError());
-				}
+			const auto hwnd = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(output.window),
+				SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+			if (!hwnd) {
+				SDL_DestroyWindow(output.window);
+				continue;
 			}
-			nativeOutputEnabled = (context->nativeOutputWindow != nullptr);
-			nativeOutputLastSize = {0, 0};
+			EnableWindow(hwnd, FALSE);
+#endif
+			if (!SDL_ClaimWindowForGPUDevice(context->device, output.window)) {
+				SDL_Log("Could not claim native output for %s: %s", output.config.displayName.c_str(), SDL_GetError());
+				SDL_DestroyWindow(output.window);
+				continue;
+			}
+			SDL_ShowWindow(output.window);
 		}
-	} else {
-		nativeDisplay = 0;
-		if (context->nativeOutputWindow != nullptr) {
-			SDL_ReleaseWindowFromGPUDevice(context->device, context->nativeOutputWindow);
-			SDL_DestroyWindow(context->nativeOutputWindow);
-			context->nativeOutputWindow = nullptr;
-		}
-		nativeOutputEnabled = false;
-		nativeDisplayOnMainWindow = false;
-		nativeDisplayConfig = NativeDisplayConfig{};
-		SDL_Log("No matching native display found.");
+		SDL_Log("Native output: %s (%s)", output.config.displayName.c_str(),
+			output.config.cubeViC1 ? "cubevi-c1" : "looking-glass/generic");
+		if (output.config.usingDefaultCalibration && nativeCalibrationTexture == nullptr)
+			Core::drawText(context, "Calibration Not Found", helpFont,
+				nativeCalibrationTexture, nativeCalibrationTextSize, "Native Calibration Help Texture");
+		nativeOutputs.push_back(output);
 	}
-
-	if (nativeOutputEnabled && !nativeDisplayConfig.calibrated && nativeCalibrationTexture == nullptr) {
-		Core::drawText(context, "Calibration Not Found", helpFont,
-			nativeCalibrationTexture, nativeCalibrationTextSize, "Native Calibration Help Texture");
-	}
-	if (displays != nullptr) SDL_free(displays);
+	nativeOutputEnabled = !nativeOutputs.empty();
+	nativeDisplayOnMainWindow = nativeOutputEnabled && nativeOutputs.front().window == context->window;
+	nativeDisplay = nativeOutputEnabled ? nativeOutputs.front().display : 0;
+	nativeDisplayConfig = nativeOutputEnabled ? nativeOutputs.front().config : NativeDisplayConfig{};
+	// Compatibility alias for pipeline setup and main-window routing; ownership is in nativeOutputs.
+	context->nativeOutputWindow = nullptr;
+	for (const auto& output : nativeOutputs)
+		if (output.window != context->window) { context->nativeOutputWindow = output.window; break; }
 	return 0;
 }
 
 void Image::configureFullscreenMode(SDL_Window* window, SDL_DisplayID displayID) {
 	if (window == nullptr || displayID == 0) return;
+	const auto output = std::find_if(nativeOutputs.begin(), nativeOutputs.end(), [displayID](const NativeOutput& value) {
+		return value.display == displayID;
+	});
+	const auto& config = output != nativeOutputs.end() ? output->config : nativeDisplayConfig;
 	int modeCount = 0;
 	SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(displayID, &modeCount);
 	const SDL_DisplayMode* bestMode = nullptr;
 	if (modes != nullptr && modeCount > 0) {
-		if (nativeDisplayConfig.screenSize.x > 0 && nativeDisplayConfig.screenSize.y > 0) {
+		if (config.screenSize.x > 0 && config.screenSize.y > 0) {
 			for (int i = 0; i < modeCount; ++i) {
 				if (modes[i] != nullptr &&
-					modes[i]->w == nativeDisplayConfig.screenSize.x &&
-					modes[i]->h == nativeDisplayConfig.screenSize.y) {
+					modes[i]->w == config.screenSize.x &&
+					modes[i]->h == config.screenSize.y) {
 					bestMode = modes[i];
 					break;
 				}
@@ -697,7 +689,7 @@ bool Image::saveNativeDisplayConfig(const NativeDisplayConfig& config) {
 
 void Image::resetNativeDisplayConfig(Context* context) {
 	std::string currentDisplayName = nativeDisplayConfig.displayName;
-	if (nativeDisplayConfig.cubeViC1) {
+	if (nativeDisplayConfig.cubeViC1 || nativeDisplayConfig.lookingGlassGo) {
 		reloadNativeDisplayConfig(nativeDisplayConfig);
 		return;
 	}
@@ -720,11 +712,15 @@ void Image::setNativeOutputActive(Context* context, bool active) {
 			initNativeOutput(context);
 		return;
 	}
-	if (context->nativeOutputWindow != nullptr) {
-		SDL_ReleaseWindowFromGPUDevice(context->device, context->nativeOutputWindow);
-		SDL_DestroyWindow(context->nativeOutputWindow);
-		context->nativeOutputWindow = nullptr;
+	for (auto& output : nativeOutputs) {
+		if (output.window && output.window != context->window) {
+			SDL_ReleaseWindowFromGPUDevice(context->device, output.window);
+			SDL_DestroyWindow(output.window);
+		}
 	}
+	nativeOutputs.clear();
+	context->nativeOutputWindow = nullptr;
+	nativeDisplay = 0;
 	nativeOutputEnabled = false;
 	nativeOutputSourceReady = false;
 	nativeDisplayOnMainWindow = false;
@@ -3107,7 +3103,7 @@ int Image::draw(Context* context) {
 		}
 
 		const bool isMainInterlaced = (context->mode == Lenticular && context->display3D &&
-			context->fullscreen && context->nativeOutputWindow == nullptr && interlacerPipeline != nullptr &&
+			context->fullscreen && (nativeDisplayOnMainWindow || context->nativeOutputWindow == nullptr) && interlacerPipeline != nullptr &&
 			imageTexture != nullptr);
 
 		if (isMainInterlaced) {
@@ -3166,6 +3162,9 @@ int Image::draw(Context* context) {
 			SDL_PushGPUFragmentUniformData(commandBuffer, 0, &interlacerDataFrag,
 				sizeof(interlacerDataFrag));
 			SDL_DrawGPUIndexedPrimitives(renderPass, 6, 1, 0, 0, 0);
+			if (nativeDisplayOnMainWindow)
+				drawNativeCalibrationWarning(context, commandBuffer, renderPass,
+					(int)windowSize.x, (int)windowSize.y);
 		} else {
 			for (auto viewY = 0; viewY < viewsY; viewY++) {
 				for (auto viewX = 0; viewX < viewsX; viewX++) {
@@ -3674,30 +3673,30 @@ int Image::draw(Context* context) {
 	return 0;
 }
 
-void Image::updateInterlacerUniforms(Context* context, int width, int height) {
-	if (!nativeDisplayConfig.cubeViC1 && context->imageType == Light_Field_LKG && context->gridSize.x > 0.0f &&
+void Image::updateInterlacerUniforms(Context* context, int width, int height, NativeDisplayConfig& config) {
+	if (!config.cubeViC1 && context->imageType == Light_Field_LKG && context->gridSize.x > 0.0f &&
 		context->gridSize.y > 0.0f) {
-		nativeDisplayConfig.quiltGrid = {context->gridSize.x, context->gridSize.y};
-		nativeDisplayConfig.viewCount = (int)std::lround(
+		config.quiltGrid = {context->gridSize.x, context->gridSize.y};
+		config.viewCount = (int)std::lround(
 			context->gridSize.x * context->gridSize.y);
 	}
 	interlacerDataFrag.outputSize = {(float)width, (float)height};
 	interlacerDataFrag.imageSize = context->imageSize;
-	interlacerDataFrag.quiltSize = nativeDisplayConfig.quiltGrid;
-	interlacerDataFrag.tileSize = 1.0f / nativeDisplayConfig.quiltGrid;
-	const bool hasSlope = std::abs(nativeDisplayConfig.slope) > 0.001f;
-	float phaseX = nativeDisplayConfig.pitch / std::max(nativeDisplayConfig.dpi, 1.0f);
+	interlacerDataFrag.quiltSize = config.quiltGrid;
+	interlacerDataFrag.tileSize = 1.0f / config.quiltGrid;
+	const bool hasSlope = std::abs(config.slope) > 0.001f;
+	float phaseX = config.pitch / std::max(config.dpi, 1.0f);
 	if (hasSlope)
-		phaseX *= std::cos(std::atan(1.0f / nativeDisplayConfig.slope));
-	const float phaseY = hasSlope ? phaseX / nativeDisplayConfig.slope : 0.0f;
+		phaseX *= std::cos(std::atan(1.0f / config.slope));
+	const float phaseY = hasSlope ? phaseX / config.slope : 0.0f;
 	interlacerDataFrag.phaseScale = {phaseX, phaseY};
-	interlacerDataFrag.center = nativeDisplayConfig.center;
-	interlacerDataFrag.subpixelPhase = phaseX / 3.0f + nativeDisplayConfig.subpixel;
-	if (nativeDisplayConfig.flipSubpixel)
+	interlacerDataFrag.center = config.center;
+	interlacerDataFrag.subpixelPhase = phaseX / 3.0f + config.subpixel;
+	if (config.flipSubpixel)
 		interlacerDataFrag.subpixelPhase = -interlacerDataFrag.subpixelPhase;
-	interlacerDataFrag.cubeViC1 = nativeDisplayConfig.cubeViC1 ? 1 : 0;
-	if (nativeDisplayConfig.cubeViC1) {
-		const auto& optics = nativeDisplayConfig.cubeViOptics;
+	interlacerDataFrag.cubeViC1 = config.cubeViC1 ? 1 : 0;
+	if (config.cubeViC1) {
+		const auto& optics = config.cubeViOptics;
 		// Pass raw vendor parameters; preserve the vendor's operation order in
 		// the shader to avoid phase drift at view boundaries.
 		interlacerDataFrag.phaseScale = {optics.interval, optics.obliquity};
@@ -3708,21 +3707,21 @@ void Image::updateInterlacerUniforms(Context* context, int width, int height) {
 			interlacerDataFrag.tileSize = 1.0f / interlacerDataFrag.quiltSize;
 		}
 	}
-	interlacerDataFrag.viewCount = std::min(nativeDisplayConfig.viewCount,
-		(int)(nativeDisplayConfig.quiltGrid.x * nativeDisplayConfig.quiltGrid.y));
+	interlacerDataFrag.viewCount = std::min(config.viewCount,
+		(int)(config.quiltGrid.x * config.quiltGrid.y));
 	interlacerDataFrag.gridColumns = (int)interlacerDataFrag.quiltSize.x;
 	interlacerDataFrag.gridRows = (int)interlacerDataFrag.quiltSize.y;
-	interlacerDataFrag.output2D = (!nativeDisplayConfig.calibrated || context->mode != Lenticular || !context->display3D) ? 1 : 0;
-	const bool isLenticular2View = (nativeDisplayConfig.viewCount == 2);
+	interlacerDataFrag.output2D = (!config.calibrated || context->mode != Lenticular || !context->display3D) ? 1 : 0;
+	const bool isLenticular2View = (config.viewCount == 2);
 	if (isLenticular2View) {
 		interlacerDataFrag.sourceFlat = (context->imageType == Color_Only) ? 1 : 0;
 	} else {
 		interlacerDataFrag.sourceFlat = (context->imageType != Color_Plus_Depth &&
 			context->imageType != Light_Field_LKG) ? 1 : 0;
 	}
-	interlacerDataFrag.invertView = nativeDisplayConfig.invertView ? 1 : 0;
-	interlacerDataFrag.flipImageX = nativeDisplayConfig.flipImageX ? 1 : 0;
-	interlacerDataFrag.flipImageY = nativeDisplayConfig.flipImageY ? 1 : 0;
+	interlacerDataFrag.invertView = config.invertView ? 1 : 0;
+	interlacerDataFrag.flipImageX = config.flipImageX ? 1 : 0;
+	interlacerDataFrag.flipImageY = config.flipImageY ? 1 : 0;
 	interlacerDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;
 	interlacerDataFrag.swapLeftRight = context->swapLeftRight;
 	interlacerDataFrag.sourceRgbd = context->imageType == Color_Plus_Depth ? 1 : 0;
@@ -3733,38 +3732,104 @@ void Image::updateInterlacerUniforms(Context* context, int width, int height) {
 	interlacerDataFrag.testPattern = testPatternMode;
 }
 
+void Image::drawNativeCalibrationWarning(Context* context, SDL_GPUCommandBuffer* commandBuffer,
+	SDL_GPURenderPass* renderPass, int width, int height, const NativeDisplayConfig& config) {
+	if (!nativeOutputEnabled || !config.usingDefaultCalibration ||
+		context->mode != Lenticular || !context->display3D || nativeCalibrationTexture == nullptr) return;
+
+	// Session-only state: display reconnects and 3D toggles must not restart the notice.
+	static bool shown = false;
+	static Uint64 startedAt = 0;
+	const Uint64 now = SDL_GetTicks();
+	if (!shown) {
+		shown = true;
+		startedAt = now;
+	}
+	if (now - startedAt >= 3000) return;
+
+	const auto nativeProjection = glm::ortho(0.0f, (float)width, 0.0f, (float)height);
+	const auto closeCenter = glm::vec2(width, height) * 0.5f;
+	const auto closeRadius = style.getIconRadius(Style::getCurrentScale()) * context->displayScale;
+
+	bindPipeline(renderPass, iconPipeline);
+	SDL_GPUTextureSamplerBinding iconBinding{
+		.texture = iconTexture, .sampler = imageSampler};
+	SDL_BindGPUFragmentSamplers(renderPass, 0, &iconBinding, 1);
+	iconDataVert.projection = nativeProjection;
+	iconDataVert.transform = glm::translate(glm::mat4(1.0f),
+		glm::vec3(closeCenter, 1.0f));
+	iconDataVert.transform = glm::scale(iconDataVert.transform,
+		glm::vec3(glm::vec2(2.0f * closeRadius), 1.0f));
+	iconDataVert.gridOffset = getIconCoordinates(IconType::Close);
+	iconDataFrag.color = context->backgroundStyle == Light
+		? style.getColor(Style::Color::Black, Style::Alpha::Solid)
+		: style.getColor(Style::Color::White, Style::Alpha::Solid);
+	iconDataFrag.visibility = 1.0f;
+	iconDataFrag.rotation = 0.0f;
+	iconDataFrag.animated = 0;
+	iconDataFrag.force = 0;
+	drawIcon(commandBuffer, renderPass);
+
+	bindPipeline(renderPass, spritePipeline);
+	SDL_GPUTextureSamplerBinding infoBinding{
+		.texture = nativeCalibrationTexture, .sampler = imageSampler};
+	SDL_BindGPUFragmentSamplers(renderPass, 0, &infoBinding, 1);
+	spriteDataVert.projection = nativeProjection;
+	const auto textColor = context->backgroundStyle == Light
+		? style.getColor(Style::Color::Black, Style::Alpha::Solid)
+		: style.getColor(Style::Color::White, Style::Alpha::Solid);
+	setSpriteUniforms(
+		glm::vec3(closeCenter, 0.0f) -
+			glm::vec3(0.0f, closeRadius + 32.0f * context->displayScale, 0.0f),
+		glm::vec3(nativeCalibrationTextSize, 1.0f), textColor, 1.0f, 1,
+		{0.0f, 0.0f}, {1.0f, 1.0f}, glm::vec2(0.5f), glm::vec3(1.0f));
+	drawSprite(commandBuffer, renderPass);
+}
+
 int Image::drawNativeOutput(Context* context) {
+	if (!context) return 0;
+	int result = 0;
+	for (size_t i = 0; i < nativeOutputs.size(); ++i) {
+		auto& output = nativeOutputs[i];
+		if (output.window == context->window) continue;
+		if (drawNativeOutput(context, output, i == 0 ? nativeDisplayConfig : output.config) != 0)
+			result = -1;
+	}
+	return result;
+}
+
+int Image::drawNativeOutput(Context* context, NativeOutput& output, NativeDisplayConfig& config) {
 	if (!nativeOutputEnabled || !nativeOutputSourceReady || context == nullptr ||
-		context->nativeOutputWindow == nullptr ||
+		output.window == nullptr ||
 		interlacerPipeline == nullptr) return 0;
 	SDL_GPUTexture* quiltTexture = imageTexture;
 	if (quiltTexture == nullptr) return 0;
 
 	int width = 0, height = 0;
-	SDL_GetWindowSizeInPixels(context->nativeOutputWindow, &width, &height);
+	SDL_GetWindowSizeInPixels(output.window, &width, &height);
 	if (width <= 0 || height <= 0) return 0;
-	const bool outputSizeChanged = nativeOutputLastSize != glm::ivec2(width, height);
+	const bool outputSizeChanged = output.lastSize != glm::ivec2(width, height);
 	if (outputSizeChanged) {
-		nativeOutputLastSize = {width, height};
+		output.lastSize = {width, height};
 		SDL_Log("Native output swapchain: %dx%d physical pixels", width, height);
-		if (nativeDisplayConfig.calibrated &&
-			(width != nativeDisplayConfig.screenSize.x || height != nativeDisplayConfig.screenSize.y)) {
+		if (config.calibrated &&
+			(width != config.screenSize.x || height != config.screenSize.y)) {
 			SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
 				"Native output is %dx%d but calibration requires %dx%d. "
 				"Compositor scaling will prevent correct lenticular output.",
-				width, height, nativeDisplayConfig.screenSize.x,
-				nativeDisplayConfig.screenSize.y);
+				width, height, config.screenSize.x,
+				config.screenSize.y);
 		}
 	}
-	updateInterlacerUniforms(context, width, height);
+	updateInterlacerUniforms(context, width, height, config);
 	static int lastCubeViOutput2D = -1;
-	if (nativeDisplayConfig.cubeViC1 &&
+	if (config.cubeViC1 &&
 		(outputSizeChanged || lastCubeViOutput2D != interlacerDataFrag.output2D)) {
 		SDL_Log("CubeVi output: views=%d quilt=%dx%d sourceType=%d output2D=%d",
 			interlacerDataFrag.viewCount, interlacerDataFrag.gridColumns,
 			interlacerDataFrag.gridRows, interlacerDataFrag.sourceType, interlacerDataFrag.output2D);
 		lastCubeViOutput2D = interlacerDataFrag.output2D;
-	} else if (outputSizeChanged && !nativeDisplayConfig.cubeViC1) {
+	} else if (outputSizeChanged && !config.cubeViC1) {
 		SDL_Log("Native phase: X=%.8f Y=%.8f center=%.8f subpixel=%.8f "
 			"origin=%d view=%s",
 			interlacerDataFrag.phaseScale.x, interlacerDataFrag.phaseScale.y,
@@ -3776,8 +3841,15 @@ int Image::drawNativeOutput(Context* context) {
 	SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(context->device);
 	if (commandBuffer == nullptr) return -1;
 	SDL_GPUTexture* outputTexture = nullptr;
-	if (!SDL_AcquireGPUSwapchainTexture(commandBuffer, context->nativeOutputWindow,
-		&outputTexture, nullptr, nullptr) || outputTexture == nullptr) return -1;
+	if (!SDL_AcquireGPUSwapchainTexture(commandBuffer, output.window,
+		&outputTexture, nullptr, nullptr)) {
+		SDL_CancelGPUCommandBuffer(commandBuffer);
+		return -1;
+	}
+	if (outputTexture == nullptr) {
+		SDL_SubmitGPUCommandBuffer(commandBuffer);
+		return 0;
+	}
 	SDL_GPUColorTargetInfo targetInfo{};
 	targetInfo.texture = outputTexture;
 	targetInfo.load_op = SDL_GPU_LOADOP_CLEAR;
@@ -3788,7 +3860,10 @@ int Image::drawNativeOutput(Context* context) {
 	targetInfo.clear_color = {clearColorCurrent.r, clearColorCurrent.g,
 		clearColorCurrent.b, clearColorCurrent.a};
 	SDL_GPURenderPass* renderPass = SDL_BeginGPURenderPass(commandBuffer, &targetInfo, 1, nullptr);
-	if (renderPass == nullptr) return -1;
+	if (renderPass == nullptr) {
+		SDL_SubmitGPUCommandBuffer(commandBuffer);
+		return -1;
+	}
 
 	SDL_GPUViewport viewport{0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f};
 	SDL_SetGPUViewport(renderPass, &viewport);
@@ -3836,45 +3911,7 @@ int Image::drawNativeOutput(Context* context) {
 		sizeof(interlacerDataFrag));
 	SDL_DrawGPUIndexedPrimitives(renderPass, 6, 1, 0, 0, 0);
 
-	if (!nativeDisplayConfig.calibrated && nativeCalibrationTexture != nullptr) {
-		const auto nativeProjection = glm::ortho(0.0f, (float)width, 0.0f, (float)height);
-		const auto closeCenter = glm::vec2(width, height) * 0.5f;
-		const auto closeRadius = style.getIconRadius(Style::getCurrentScale()) * context->displayScale;
-
-		bindPipeline(renderPass, iconPipeline);
-		SDL_GPUTextureSamplerBinding iconBinding{
-			.texture = iconTexture, .sampler = imageSampler};
-		SDL_BindGPUFragmentSamplers(renderPass, 0, &iconBinding, 1);
-		iconDataVert.projection = nativeProjection;
-		iconDataVert.transform = glm::translate(glm::mat4(1.0f),
-			glm::vec3(closeCenter, 1.0f));
-		iconDataVert.transform = glm::scale(iconDataVert.transform,
-			glm::vec3(glm::vec2(2.0f * closeRadius), 1.0f));
-		iconDataVert.gridOffset = getIconCoordinates(IconType::Close);
-		iconDataFrag.color = context->backgroundStyle == Light
-			? style.getColor(Style::Color::Black, Style::Alpha::Solid)
-			: style.getColor(Style::Color::White, Style::Alpha::Solid);
-		iconDataFrag.visibility = 1.0f;
-		iconDataFrag.rotation = 0.0f;
-		iconDataFrag.animated = 0;
-		iconDataFrag.force = 0;
-		drawIcon(commandBuffer, renderPass);
-
-		bindPipeline(renderPass, spritePipeline);
-		SDL_GPUTextureSamplerBinding infoBinding{
-			.texture = nativeCalibrationTexture, .sampler = imageSampler};
-		SDL_BindGPUFragmentSamplers(renderPass, 0, &infoBinding, 1);
-		spriteDataVert.projection = nativeProjection;
-		const auto textColor = context->backgroundStyle == Light
-			? style.getColor(Style::Color::Black, Style::Alpha::Solid)
-			: style.getColor(Style::Color::White, Style::Alpha::Solid);
-		setSpriteUniforms(
-			glm::vec3(closeCenter, 0.0f) -
-				glm::vec3(0.0f, closeRadius + 32.0f * context->displayScale, 0.0f),
-			glm::vec3(nativeCalibrationTextSize, 1.0f), textColor, 1.0f, 1,
-			{0.0f, 0.0f}, {1.0f, 1.0f}, glm::vec2(0.5f), glm::vec3(1.0f));
-		drawSprite(commandBuffer, renderPass);
-	}
+	drawNativeCalibrationWarning(context, commandBuffer, renderPass, width, height, config);
 	SDL_EndGPURenderPass(renderPass);
 	SDL_SubmitGPUCommandBuffer(commandBuffer);
 	return 0;
@@ -3882,11 +3919,7 @@ int Image::drawNativeOutput(Context* context) {
 
 void Image::quit(Context* context){
 	if (context->device != nullptr) SDL_WaitForGPUIdle(context->device);
-	if (context->nativeOutputWindow != nullptr) {
-		SDL_ReleaseWindowFromGPUDevice(context->device, context->nativeOutputWindow);
-		SDL_DestroyWindow(context->nativeOutputWindow);
-		context->nativeOutputWindow = nullptr;
-	}
+	setNativeOutputActive(context, false);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, interlacerPipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, imagePipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, lanczosPipeline);

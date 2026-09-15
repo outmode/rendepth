@@ -8,6 +8,16 @@ Visit https://rendepth.com to Download the App.
 
 ###### Rendepth Source Code is MIT License. Third Party Dependencies Have Respective Licenses and Copyright.
 
+Lightfield Displays
+------
+In lightfield mode, Rendepth automatically selects up to two connected displays:
+one CubeVi C1 and one Looking Glass (including LKG Go). Each output uses its own
+model's calibration and shares the loaded image/depth source. Additional displays
+of the same type are skipped because calibration is shared within each model.
+Connecting or disconnecting a display refreshes the outputs automatically.
+
+`RENDEPTH_NATIVE_DISPLAY` still restricts selection to matching display names when set.
+
 Stereo 3D Samples
 ------
 ![Japan_1080P_anaglyph](https://github.com/user-attachments/assets/4488e967-21f0-4e29-82a0-26d6b5447944)

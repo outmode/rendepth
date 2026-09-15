@@ -71,10 +71,11 @@ int main(int argc, char** argv) {
         for (int i = 0; displays && i < count; ++i) {
             const auto hardware = NativeDisplayIdentity::hardwareId(displays[i]);
             const auto* mode = SDL_GetCurrentDisplayMode(displays[i]);
+            const char* name = SDL_GetDisplayName(displays[i]);
             std::printf("Display: %s | %s | %dx%d | CubeVi=%d\n",
                 SDL_GetDisplayName(displays[i]), hardware.c_str(), mode ? mode->w : 0,
                 mode ? mode->h : 0, NativeDisplayIdentity::isCubeViC1(hardware,
-                    mode ? mode->w : 0, mode ? mode->h : 0));
+                    mode ? mode->w : 0, mode ? mode->h : 0, name ? name : ""));
         }
         SDL_free(displays);
         SDL_Quit();
