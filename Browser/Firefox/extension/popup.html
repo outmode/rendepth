@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Rendepth</title>
+<style>body{font:14px system-ui;width:280px;padding:14px;background:#222;color:#eee}label,button,select{display:block;margin:12px 0}button,select{padding:8px;width:100%}p{line-height:1.4}label input{vertical-align:middle}</style></head>
+<body><strong>Open in Rendepth</strong>
+<label for="format">Video format</label>
+<select id="format"><option value="2d">2D Video</option><option value="sbs-half">Side-by-side — Half</option><option value="sbs-full">Side-by-side — Full</option></select>
+<p id="mono-help">Converts ordinary video to 3D using Rendepth’s video depth model.</p>
+<div id="half-options" hidden><label><input id="scale-half" type="checkbox" checked> Expand SBS Half up to 3840×1080</label>
+<p>Preserves more horizontal detail from 4K SBS Half. May reduce frame rate. Uncheck for faster capture.</p></div>
+<label><input id="swap" type="checkbox"> Swap eyes</label>
+<button id="open">Open Playing Video</button><button id="stop">Stop</button>
+<p id="status" role="status"></p><script src="popup.js"></script></body></html>

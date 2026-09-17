@@ -61,6 +61,41 @@ namespace {
 	glm::ivec2 videoYUVLumaSize{};
 	glm::ivec2 videoYUVChromaSize{};
 	VideoFrame::Format videoYUVFormat = VideoFrame::Format::RGBA;
+	double uploadedVideoTime = -1.0;
+
+	// Opt-in diagnostics count distinct video frames after a real window draw,
+	// not decoder output or repeated redraws. This is GPU completion, not a
+	// measurement of the compositor's physical scanout.
+	void recordBrowserDraw(Context* context, bool hasSwapchain) {
+		static const bool enabled = SDL_getenv("RENDEPTH_BROWSER_STATS") != nullptr;
+		if (!enabled) return;
+		static auto started = BlurClock::now(), lastFrameAt = started;
+		static double lastFrame = -1.0, maxGap = 0.0;
+		static int frames = 0;
+		const auto now = BlurClock::now();
+		if (context->fileName != "Firefox Video") {
+			started = lastFrameAt = now;
+			lastFrame = -1.0;
+			maxGap = 0.0;
+			frames = 0;
+			return;
+		}
+		if (hasSwapchain && uploadedVideoTime != lastFrame) {
+			if (lastFrame >= 0.0)
+				maxGap = std::max(maxGap, std::chrono::duration<double, std::milli>(now - lastFrameAt).count());
+			lastFrame = uploadedVideoTime;
+			lastFrameAt = now;
+			++frames;
+		}
+		const double elapsed = std::chrono::duration<double>(now - started).count();
+		if (elapsed >= 2.0) {
+			SDL_Log("Firefox viewer: %.1f unique frames/s, %.1f ms max gap, %dx%d uploaded",
+				frames / elapsed, maxGap, videoYUVLumaSize.x, videoYUVLumaSize.y);
+			started = now;
+			frames = 0;
+			maxGap = 0.0;
+		}
+	}
 
 	glm::vec2 getStereoImageSize(glm::vec2 packedSize, StereoFormat type,
 		glm::vec3 gridSize = glm::vec3(1.0f)) {
@@ -1040,6 +1075,7 @@ int Image::updateVideoFrame(Context* context, const VideoFrame& frame, bool firs
 			videoSolidTransitionActive = true;
 		}
 	}
+	uploadedVideoTime = frame.presentationTime;
 	return 0;
 }
 
@@ -1110,14 +1146,14 @@ int Image::updateVideoDepth(Context* context, const std::vector<std::uint16_t>& 
 	SDL_EndGPUCopyPass(copy);
 	SDL_SubmitGPUCommandBuffer(commands);
 	SDL_ReleaseGPUTransferBuffer(context->device, transfer);
-	// Apply the same RGB-guided median/Catmull-Rom reconstruction used for
-	// still images. Keep the result at inference resolution; the display path
-	// continues to sample it at video resolution with its existing filtering.
+	// Reconstruct between inference texels, rather than baking the RGB-guided
+	// edges onto the coarse inference grid and magnifying those stair steps.
 	if (imageTexture != nullptr) {
 		if (SDL_GPUTexture* refined = refineDepthTextureGPU(context, imageTexture,
-				videoDepthTexture, width, height); refined != nullptr) {
+				videoDepthTexture, width, height, 2); refined != nullptr) {
 			SDL_ReleaseGPUTexture(context->device, videoDepthTexture);
 			videoDepthTexture = refined;
+			videoDepthTextureSize = glm::ivec2(width * 2, height * 2);
 		}
 	}
 	return 0;
@@ -2511,7 +2547,7 @@ SDL_Surface* Image::refineDepthSurfaceGPU(Context* context, const SDL_Surface* c
 }
 
 SDL_GPUTexture* Image::refineDepthTextureGPU(Context* context, SDL_GPUTexture* color,
-		SDL_GPUTexture* depth, int width, int height) {
+		SDL_GPUTexture* depth, int width, int height, int scale) {
 	if (context == nullptr || context->device == nullptr || color == nullptr || depth == nullptr ||
 		width <= 0 || height <= 0 || depthRefineR16Pipeline == nullptr)
 		return nullptr;
@@ -2519,8 +2555,8 @@ SDL_GPUTexture* Image::refineDepthTextureGPU(Context* context, SDL_GPUTexture* c
 		.type = SDL_GPU_TEXTURETYPE_2D,
 		.format = SDL_GPU_TEXTUREFORMAT_R16_UNORM,
 		.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
-		.width = static_cast<Uint32>(width),
-		.height = static_cast<Uint32>(height),
+		.width = static_cast<Uint32>(width * scale),
+		.height = static_cast<Uint32>(height * scale),
 		.layer_count_or_depth = 1,
 		.num_levels = 1
 	};
@@ -2569,8 +2605,8 @@ SDL_GPUTexture* Image::refineDepthTextureGPU(Context* context, SDL_GPUTexture* c
 	};
 	SDL_PushGPUVertexUniformData(commands, 0, &vertexUniforms, sizeof(vertexUniforms));
 	SDL_PushGPUFragmentUniformData(commands, 0, &fragmentUniforms, sizeof(fragmentUniforms));
-	const SDL_GPUViewport viewport{0.0f, 0.0f, static_cast<float>(width),
-		static_cast<float>(height), 0.0f, 1.0f};
+	const SDL_GPUViewport viewport{0.0f, 0.0f, static_cast<float>(width * scale),
+		static_cast<float>(height * scale), 0.0f, 1.0f};
 	SDL_SetGPUViewport(pass, &viewport);
 	SDL_DrawGPUIndexedPrimitives(pass, 6, 1, 0, 0, 0);
 	SDL_EndGPURenderPass(pass);
@@ -3670,6 +3706,7 @@ int Image::draw(Context* context) {
 	SDL_WaitForGPUFences(context->device, true, &fence, 1);
 	SDL_ReleaseGPUFence(context->device, fence);
 
+	recordBrowserDraw(context, swapchainTexture != nullptr);
 	return 0;
 }
 

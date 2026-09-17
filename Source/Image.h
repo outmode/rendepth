@@ -251,7 +251,7 @@ public:
 	static SDL_Surface* refineDepthSurfaceGPU(Context* context, const SDL_Surface* color,
 		const SDL_Surface* depth, int outputWidth, int outputHeight);
 	static SDL_GPUTexture* refineDepthTextureGPU(Context* context, SDL_GPUTexture* color,
-		SDL_GPUTexture* depth, int width, int height);
+		SDL_GPUTexture* depth, int width, int height, int scale = 1);
 	static void blitBlurTexture(Context* context, SDL_GPUTexture* inputTexture,
 		Uint32 imageWidth, Uint32 imageHeight, bool nextSnapshotOnly = false,
 		bool waitForGpu = true);

@@ -6,6 +6,7 @@
 #include "ModelDownloader.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 
@@ -218,7 +219,13 @@ void VideoDepthProcessor::run() {
 		activeConfig.modelFilename, error);
 	estimatorConfig.provider = activeConfig.provider;
 	estimatorConfig.processSize = activeConfig.processSize;
-	estimatorConfig.intraOpThreads = activeConfig.intraOpThreads;
+	// Live decoding, browser encoding and rendering share this CPU. ORT's
+	// default pool uses every physical core and spins between jobs, which can
+	// starve playback even though inference itself runs on a separate thread.
+	estimatorConfig.intraOpThreads = activeConfig.intraOpThreads > 0
+		? activeConfig.intraOpThreads
+		: std::clamp(std::thread::hardware_concurrency() / 4, 1u, 4u);
+	estimatorConfig.allowThreadSpinning = false;
 	if (estimatorConfig.modelPath.empty() || !estimator.load(estimatorConfig, error)) {
 		std::lock_guard lock(mutex);
 		runtimeError = error.empty() ? "Could not load the video depth model." : error;
@@ -229,6 +236,13 @@ void VideoDepthProcessor::run() {
 		estimatorConfig.modelPath.string().c_str(), estimatorConfig.processSize,
 		estimatorConfig.processSize, estimator.providerName().c_str());
 	isReady = true;
+	SDL_Log("Video depth CPU budget: %u threads, spinning off, target %.1f maps/s.",
+		estimatorConfig.intraOpThreads, activeConfig.targetFramesPerSecond);
+	using InferenceClock = std::chrono::steady_clock;
+	auto nextInference = InferenceClock::time_point{};
+	const auto inferenceInterval = std::chrono::duration_cast<InferenceClock::duration>(
+		std::chrono::duration<double>(activeConfig.targetFramesPerSecond > 0
+			? 1.0 / activeConfig.targetFramesPerSecond : 0.0));
 
 	while (!stopRequested) {
 		std::shared_ptr<const VideoFrame> source;
@@ -236,9 +250,14 @@ void VideoDepthProcessor::run() {
 			std::unique_lock lock(mutex);
 			changed.wait(lock, [this] { return stopRequested || pendingFrame != nullptr; });
 			if (stopRequested) break;
+			// Leave pendingFrame replaceable while waiting: process the newest
+			// input at the configured rate, without accumulating a work queue.
+			changed.wait_until(lock, nextInference, [this] { return stopRequested.load(); });
+			if (stopRequested) break;
 			source = std::move(pendingFrame);
 		}
 		if (source == nullptr) continue;
+		nextInference = InferenceClock::now() + inferenceInterval;
 		SDL_Surface* surface = SDL_CreateSurfaceFrom(source->inferenceWidth,
 			source->inferenceHeight, SDL_PIXELFORMAT_RGBA32,
 			const_cast<std::uint8_t*>(source->inferenceRGBA.data()),

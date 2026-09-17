@@ -52,7 +52,7 @@ float bicubicDepth(vec2 uv, float referenceDepth) {
 void main() {
 	vec3 guide = texture(colorTexture, fragUV).rgb;
 	vec2 depthPixel = fragUV * depthSize - vec2(0.5);
-	ivec2 center = ivec2(floor(depthPixel));
+	ivec2 center = ivec2(floor(depthPixel + vec2(0.5)));
 	float spatialDenominator = 2.0 * spatialSigma * spatialSigma;
 	float colorDenominator = 2.0 * colorSigma * colorSigma;
 	const float depthSigma = 0.06;
@@ -100,10 +100,8 @@ void main() {
 	float accumulatedWeight = 0.0;
 	float median = candidates[24];
 	float localMinimum = candidates[0];
-	float localMaximum = candidates[0];
+	float localMaximum = candidates[24];
 	for (int i = 0; i < 25; ++i) {
-		localMinimum = min(localMinimum, candidates[i]);
-		localMaximum = max(localMaximum, candidates[i]);
 		float nextAccumulated = accumulatedWeight + weights[i];
 		if (nextAccumulated >= totalWeight * 0.5) {
 			float previous = i > 0 ? candidates[i - 1] : candidates[i];

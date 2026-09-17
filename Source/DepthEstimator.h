@@ -27,6 +27,7 @@ public:
 		Provider provider = Provider::Auto;
 		int processSize = 504;
 		unsigned int intraOpThreads = 0;
+		bool allowThreadSpinning = true;
 	};
 
 	struct Result {

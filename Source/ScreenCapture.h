@@ -20,6 +20,8 @@ public:
 	// Opens the desktop portal and begins capturing the display associated with
 	// the Rendepth window. The portal permission dialog may be shown here.
 	bool start(SDL_Window* parentWindow, std::string& error);
+	// Receive a live video-only WebRTC stream from a private Firefox session.
+	bool startBrowser(const std::string& directory, std::string& error, bool prepareDepth = false);
 	void stop();
 	bool running() const;
 

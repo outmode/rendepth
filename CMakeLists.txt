@@ -297,7 +297,7 @@ target_compile_definitions(Rendepth PUBLIC
 
 target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp
 		Source/VideoDepthProcessor.cpp
-		Source/ScreenCapture.cpp
+		Source/ScreenCapture.cpp Source/BrowserBridge.cpp
         Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
         Source/ModelDownloader.cpp Source/SuperResolution.cpp Source/CubeViCalibration.cpp)
 
@@ -792,13 +792,13 @@ set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 # runtime setup. These are the Debian-family libraries used by the Linux
 # executable itself; alternatives cover the current t64 transitions.
 set(CPACK_DEBIAN_PACKAGE_DEPENDS
-        "libc6, libstdc++6, libgcc-s1, libcurl4 | libcurl4t64, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0")
+        "libc6, libstdc++6, libgcc-s1, libcurl4 | libcurl4t64, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-nice")
 set(CPACK_RPM_PACKAGE_LICENSE "MIT")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
 # Increment the RPM release for rebuilds of the same application version so
 # package managers do not treat a freshly built artifact as the old package.
 set(CPACK_RPM_PACKAGE_RELEASE 14)
-set(RENDEPTH_RPM_REQUIRES)
+set(RENDEPTH_RPM_REQUIRES gstreamer1-plugins-good gstreamer1-plugins-bad-free libnice-gstreamer1)
 if(RENDEPTH_ENABLE_FFMPEG AND DAV1D_FOUND)
     list(APPEND RENDEPTH_RPM_REQUIRES "libdav1d >= 0.5.0")
 endif()
@@ -830,6 +830,7 @@ add_executable(AIEngineSettingsTest EXCLUDE_FROM_ALL Source/AIEngineSettingsTest
 target_include_directories(AIEngineSettingsTest PRIVATE ThirdParty/rapidjson/include)
 add_executable(CubeViCalibrationTest EXCLUDE_FROM_ALL
         Source/CubeViCalibrationTest.cpp Source/CubeViCalibration.cpp)
+add_executable(LiveVideoBufferTest EXCLUDE_FROM_ALL Source/LiveVideoBufferTest.cpp)
 target_include_directories(CubeViCalibrationTest PRIVATE ThirdParty/rapidjson/include)
 target_link_libraries(CubeViCalibrationTest PRIVATE SDL3::SDL3)
 if(WIN32)
@@ -847,10 +848,18 @@ if(UNIX AND NOT APPLE)
 	find_package(PkgConfig REQUIRED)
 	pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
 	pkg_check_modules(GIO_UNIX REQUIRED IMPORTED_TARGET gio-unix-2.0)
-	pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-1.0 gstreamer-app-1.0)
+	pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-1.0 gstreamer-app-1.0
+		gstreamer-video-1.0 gstreamer-webrtc-1.0>=1.22 gstreamer-sdp-1.0)
+	target_sources(Rendepth PRIVATE Source/BrowserStream.cpp)
 	target_link_libraries(Rendepth PUBLIC PkgConfig::GIO PkgConfig::GIO_UNIX PkgConfig::GSTREAMER)
 	add_executable(ScreenCaptureTest EXCLUDE_FROM_ALL Source/ScreenCaptureTest.cpp)
 	target_include_directories(ScreenCaptureTest PRIVATE ThirdParty/SDL/include)
 	target_link_libraries(ScreenCaptureTest PRIVATE
 		SDL3::SDL3 PkgConfig::GIO PkgConfig::GIO_UNIX PkgConfig::GSTREAMER)
+	add_executable(BrowserCaptureTest EXCLUDE_FROM_ALL
+		Source/BrowserCaptureTest.cpp Source/ScreenCapture.cpp Source/BrowserStream.cpp)
+	target_link_libraries(BrowserCaptureTest PRIVATE SDL3::SDL3
+		PkgConfig::GIO PkgConfig::GIO_UNIX PkgConfig::GSTREAMER)
+	add_executable(BrowserBridgeTest EXCLUDE_FROM_ALL Source/BrowserBridgeTest.cpp Source/BrowserBridge.cpp)
+	target_include_directories(BrowserBridgeTest PRIVATE ThirdParty/rapidjson/include)
 endif()

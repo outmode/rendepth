@@ -110,7 +110,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant DepthRefineData& _65
     main0_out out = {};
     float3 guide = colorTexture.sample(colorTextureSmplr, in.fragUV).xyz;
     float2 depthPixel = (in.fragUV * _65.depthSize) - float2(0.5);
-    int2 center = int2(floor(depthPixel));
+    int2 center = int2(floor(depthPixel + float2(0.5)));
     float spatialDenominator = (2.0 * _65.spatialSigma) * _65.spatialSigma;
     float colorDenominator = (2.0 * _65.colorSigma) * _65.colorSigma;
     float depthDenominator = 0.007199999876320362091064453125;
@@ -141,17 +141,17 @@ fragment main0_out main0(main0_in in [[stage_in]], constant DepthRefineData& _65
         int j = i - 1;
         for (;;)
         {
-            bool _341 = j >= 0;
-            bool _349;
-            if (_341)
+            bool _342 = j >= 0;
+            bool _350;
+            if (_342)
             {
-                _349 = candidates[j] > candidate_1;
+                _350 = candidates[j] > candidate_1;
             }
             else
             {
-                _349 = _341;
+                _350 = _342;
             }
-            if (_349)
+            if (_350)
             {
                 candidates[j + 1] = candidates[j];
                 weights[j + 1] = weights[j];
@@ -174,34 +174,32 @@ fragment main0_out main0(main0_in in [[stage_in]], constant DepthRefineData& _65
     float accumulatedWeight = 0.0;
     float median = candidates[24];
     float localMinimum = candidates[0];
-    float localMaximum = candidates[0];
-    float _434;
-    float _451;
+    float localMaximum = candidates[24];
+    float _425;
+    float _442;
     for (int i_2 = 0; i_2 < 25; i_2++)
     {
-        localMinimum = fast::min(localMinimum, candidates[i_2]);
-        localMaximum = fast::max(localMaximum, candidates[i_2]);
         float nextAccumulated = accumulatedWeight + weights[i_2];
         if (nextAccumulated >= (totalWeight * 0.5))
         {
             if (i_2 > 0)
             {
-                _434 = candidates[i_2 - 1];
+                _425 = candidates[i_2 - 1];
             }
             else
             {
-                _434 = candidates[i_2];
+                _425 = candidates[i_2];
             }
-            float previous = _434;
+            float previous = _425;
             if (weights[i_2] > 0.0)
             {
-                _451 = ((totalWeight * 0.5) - accumulatedWeight) / weights[i_2];
+                _442 = ((totalWeight * 0.5) - accumulatedWeight) / weights[i_2];
             }
             else
             {
-                _451 = 0.0;
+                _442 = 0.0;
             }
-            float fraction = _451;
+            float fraction = _442;
             median = mix(previous, candidates[i_2], fast::clamp(fraction, 0.0, 1.0));
             break;
         }
@@ -219,8 +217,8 @@ fragment main0_out main0(main0_in in [[stage_in]], constant DepthRefineData& _65
     }
     accumulatedWeight = 0.0;
     median = candidates[24];
-    float _543;
-    float _560;
+    float _534;
+    float _551;
     for (int i_5 = 0; i_5 < 25; i_5++)
     {
         float nextAccumulated_1 = accumulatedWeight + weights[i_5];
@@ -228,22 +226,22 @@ fragment main0_out main0(main0_in in [[stage_in]], constant DepthRefineData& _65
         {
             if (i_5 > 0)
             {
-                _543 = candidates[i_5 - 1];
+                _534 = candidates[i_5 - 1];
             }
             else
             {
-                _543 = candidates[i_5];
+                _534 = candidates[i_5];
             }
-            float previous_1 = _543;
+            float previous_1 = _534;
             if (weights[i_5] > 0.0)
             {
-                _560 = ((totalWeight * 0.5) - accumulatedWeight) / weights[i_5];
+                _551 = ((totalWeight * 0.5) - accumulatedWeight) / weights[i_5];
             }
             else
             {
-                _560 = 0.0;
+                _551 = 0.0;
             }
-            float fraction_1 = _560;
+            float fraction_1 = _551;
             median = mix(previous_1, candidates[i_5], fast::clamp(fraction_1, 0.0, 1.0));
             break;
         }

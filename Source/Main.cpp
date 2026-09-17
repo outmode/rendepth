@@ -40,6 +40,7 @@
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"
 #include "AIEngineSettings.h"
+#include "LiveVideoBuffer.h"
 #include <filesystem>
 #include <fstream>
 #include <format>
@@ -81,13 +82,16 @@
 #include "VideoPlayer.h"
 #include "VideoDepthProcessor.h"
 #include "ScreenCapture.h"
+#include "BrowserBridge.h"
 
 Context context{};
 Image imageView{};
 static VideoPlayer videoPlayer;
 static ScreenCapture screenCapture;
+static BrowserBridge browserBridge;
 static VideoDepthProcessor videoDepthProcessor;
 static std::shared_ptr<VideoFrame> lastVideoFrame;
+static LiveVideoBuffer<VideoFrame> liveVideoBuffer;
 struct BufferedVideoFrame {
 	std::shared_ptr<VideoFrame> frame;
 	bool preview = false;
@@ -135,6 +139,8 @@ struct VideoDepthBlendState {
 static VideoDepthBlendState videoDepthBlend;
 static bool activeVideo = false;
 static bool activeScreenCapture = false;
+static bool browserCapture = false;
+static StereoFormat captureSourceType = Color_Only;
 static bool videoFrameLoaded = false;
 static bool videoDepthFrameLoaded = false;
 static SDL_Surface* audioAlbumArt = nullptr;
@@ -206,6 +212,7 @@ static MediaType getMediaType(const std::string& path) {
 
 static void serviceVideo();
 static void serviceScreenCapture();
+static void stopCapture();
 static void serviceVideoDepth();
 static void resetVideoPlaybackBuffer(bool holdAudio = true, bool clearDepth = true);
 static bool startVideoDepth(bool preserveTexture = false);
@@ -435,21 +442,21 @@ static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool pre
 			videoDepthGeneration = 0;
 		}
 		const bool isConverted3D = (completingVideoFileTransition && transitionNeedsDepth && videoDepthFrameLoaded) ||
-			(activeVideo && display3D && videoDepthProcessor.running() && videoDepthFrameLoaded);
+			((activeVideo || activeScreenCapture) && display3D && videoDepthProcessor.running() && videoDepthFrameLoaded);
 		context.imageType = isConverted3D ? Color_Plus_Depth :
-			(activeScreenCapture ? Color_Only : fileList[fileIndex].type);
+			(activeScreenCapture ? captureSourceType : fileList[fileIndex].type);
 		if (context.imageType == Light_Field_LKG)
 			context.gridSize = Core::getGridInfo(fileList[fileIndex].base);
-		context.fileName = activeScreenCapture ? "Screen Capture" : fileList[fileIndex].base;
+		context.fileName = activeScreenCapture ? (browserCapture ? "Firefox Video" : "Screen Capture") : fileList[fileIndex].base;
 		context.loading = false;
 		Image::displayHelp = false;
-		std::string windowTitle = activeScreenCapture ? "Rendepth - Screen Capture" : fileList[fileIndex].name;
+		std::string windowTitle = activeScreenCapture ? (browserCapture ? "Rendepth - Firefox Video" : "Rendepth - Screen Capture") : fileList[fileIndex].name;
 		SDL_SetWindowTitle(context.window, windowTitle.c_str());
 		context.fileLink = activeScreenCapture ? "screen-capture" : fileList[fileIndex].link;
 		Image::updateVideoFrame(&context, displayFrame, true,
 			activeScreenCapture ? displayFrame.width : videoPlayer.width(),
 			activeScreenCapture ? displayFrame.height : videoPlayer.height(), true);
-		if (fileList[fileIndex].type != Color_Only) {
+		if (context.imageType != Color_Only && !isConverted3D) {
 			if (!display3D) setDisplay3D(true);
 			refreshDisplay3D(context.imageType);
 		} else if (isConverted3D) {
@@ -457,7 +464,7 @@ static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool pre
 			videoFileTransitionActive = false;
 			videoFileTransitionNeedsDepth = false;
 		}
-		std::string infoText = activeScreenCapture ? "Live screen capture" : Core::getFileText(fileList[fileIndex], context.imageSize);
+		std::string infoText = activeScreenCapture ? (browserCapture ? "Live Firefox video" : "Live screen capture") : Core::getFileText(fileList[fileIndex], context.imageSize);
 		context.infoText = infoText;
 		videoFrameLoaded = true;
 		if (activeScreenCapture) {
@@ -473,17 +480,32 @@ static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool pre
 		}
 	} else {
 		Image::updateVideoFrame(&context, displayFrame, false,
-			videoPlayer.width(), videoPlayer.height(), !preview);
+			activeScreenCapture ? displayFrame.width : videoPlayer.width(),
+			activeScreenCapture ? displayFrame.height : videoPlayer.height(), !preview);
 	}
 }
 
 static void serviceScreenCapture() {
 	if (!activeScreenCapture) return;
+	if (browserCapture && !screenCapture.running()) {
+		stopCapture();
+		return;
+	}
+	const double now = getTimeNow();
 	if (auto frame = screenCapture.takeFrame()) {
-		if (videoFrameLoaded && (frame->width != context.imageSize.x || frame->height != context.imageSize.y))
+		if (videoDepthProcessor.running()) {
+			videoDepthProcessor.submit(frame);
+			liveVideoBuffer.push(std::move(frame), now);
+		} else {
+			liveVideoBuffer.clear();
+			liveVideoBuffer.push(std::move(frame), now);
+		}
+	}
+	if (auto frame = liveVideoBuffer.take(now)) {
+		if (videoFrameLoaded && lastVideoFrame &&
+			(frame->width != lastVideoFrame->width || frame->height != lastVideoFrame->height))
 			videoFrameLoaded = false;
 		presentVideoFrame(frame, false);
-		if (videoDepthProcessor.running()) videoDepthProcessor.submit(frame);
 	}
 }
 
@@ -1052,6 +1074,13 @@ static glm::vec4 areaTopBar { 0.0, style.getInfo(Style::getCurrentScale()), 1.0,
 static glm::vec4 areaLeftSide { positionEdge * 4.0, -style.getInfo(Style::getCurrentScale()), 0.0, 1.0 };
 static glm::vec4 areaRightSide { -positionEdge * 4.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0 };
 
+// Keep the whole two-column, three-row control grid inside one hover rectangle.
+static glm::vec4 topRightControlsBottomRight() {
+	const auto scale = Style::getCurrentScale();
+	return { 0.0, positionEdge * 3.0 + style.getIconRadius(scale) * 2.0 +
+		style.getIconSpacer(scale) + style.getInfo(scale), 1.0, 0.0 };
+}
+
 static void updateButtonCanvasSizes() {
 	sizeStandard = { style.getIconRadius(Style::getCurrentScale()), style.getIconRadius(Style::getCurrentScale()) };
 	positionEdge = style.getIconRadius(Style::getCurrentScale()) + style.getIconGutter(Style::getCurrentScale());
@@ -1182,8 +1211,7 @@ Icon IconMinimize = {
 	style.getIconRadius(Style::getCurrentScale()) + style.getIconSpacer(Style::getCurrentScale()) + style.getInfo(Style::getCurrentScale()) },
 			alignRightTop,
 			{-positionEdge * 3.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0},
-			{0.0, positionEdge * 3.0 + style.getInfo(Style::getCurrentScale()),
-				1.0, 0.0}};
+			topRightControlsBottomRight()};
 	},
 	[]() {
 		SDL_MinimizeWindow(context.window);
@@ -1206,13 +1234,12 @@ Icon IconFullscreen = {
 			sizeStandard,
 	{ -(positionEdge + style.getIconRadius(Style::getCurrentScale()) + style.getIconGutter(Style::getCurrentScale()) +
 		style.getIconSpacer(Style::getCurrentScale()) * 2.0),
-		style.getIconRadius(Style::getCurrentScale()) * 3.0 +
-		style.getIconSpacer(Style::getCurrentScale()) * 2.0 +
+		style.getIconRadius(Style::getCurrentScale()) * 5.0 +
+		style.getIconSpacer(Style::getCurrentScale()) * 3.0 +
 		style.getInfo(Style::getCurrentScale()) },
 			alignRightTop,
 			{-positionEdge * 3.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0},
-			{0.0, positionEdge * 3.0 + style.getInfo(Style::getCurrentScale()),
-				1.0, 0.0}};
+			topRightControlsBottomRight()};
 	},
 	[]() {
 		if (isConverting) return;
@@ -1239,12 +1266,40 @@ Icon IconScreenCapture = {
 				style.getInfo(Style::getCurrentScale()) },
 			alignRightTop,
 			{-positionEdge * 3.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0},
-			{0.0, positionEdge * 3.0 + style.getInfo(Style::getCurrentScale()),
-				1.0, 0.0}};
+			topRightControlsBottomRight()};
 	},
 	[]() {
 		if (isConverting) return;
 		toggleScreenCapture();
+	},
+	1.0,
+	false,
+	false
+};
+
+Icon IconBluRay = {
+	IconType::BluRay,
+	IconType::Loading,
+	IconGroup::None,
+	IconMode::Button,
+	IconState::Idle,
+	"Open Disc",
+	style.getColor(Style::Color::White, Style::Alpha::Solid),
+	[]()->Canvas {
+		return {
+			sizeStandard,
+			{ -(positionEdge + style.getIconRadius(Style::getCurrentScale()) +
+				style.getIconGutter(Style::getCurrentScale()) +
+				style.getIconSpacer(Style::getCurrentScale()) * 2.0),
+				style.getIconRadius(Style::getCurrentScale()) * 3.0 +
+				style.getIconSpacer(Style::getCurrentScale()) * 2.0 +
+				style.getInfo(Style::getCurrentScale()) },
+			alignRightTop,
+			{-positionEdge * 3.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0},
+			topRightControlsBottomRight()};
+	},
+	[]() {
+		// Blu-ray disc opening will be connected here.
 	},
 	1.0,
 	false,
@@ -1266,8 +1321,7 @@ Icon IconClose = {
 			style.getIconRadius(Style::getCurrentScale()) + style.getIconSpacer(Style::getCurrentScale()) + style.getInfo(Style::getCurrentScale()) },
 			alignRightTop,
 			{-positionEdge * 3.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0},
-			{0.0, positionEdge * 3.0 + style.getInfo(Style::getCurrentScale()),
-				1.0, 0.0}};
+			topRightControlsBottomRight()};
 	},
 	[]() {
 		quitAppNextFrame = true;
@@ -1288,13 +1342,12 @@ Icon IconHelp = {
 	[]()->Canvas {
 		return {
 			sizeStandard,
-	{ -positionEdge, style.getIconRadius(Style::getCurrentScale()) * 3.0 +
-		style.getIconSpacer(Style::getCurrentScale()) * 2.0 +
+	{ -positionEdge, style.getIconRadius(Style::getCurrentScale()) * 5.0 +
+		style.getIconSpacer(Style::getCurrentScale()) * 3.0 +
 		style.getInfo(Style::getCurrentScale()) },
 			alignRightTop,
 			{-positionEdge * 3.0, style.getInfo(Style::getCurrentScale()), 1.0, 0.0},
-			{0.0, positionEdge * 3.0 + style.getInfo(Style::getCurrentScale()),
-				1.0, 0.0}};
+			topRightControlsBottomRight()};
 	},
 	[]() {
 		displayInfoEnabled = !displayInfoEnabled;
@@ -1801,6 +1854,7 @@ static void setVideoDepthFallbackMode() {
 }
 
 static void stopVideoDepth(bool disable3D, bool clearTexture) {
+	liveVideoBuffer.clear();
 	videoPlayer.setInferenceSize(0);
 	videoDepthProcessor.stop();
 	bufferedVideoDepthFrames.clear();
@@ -1817,7 +1871,7 @@ static void stopVideoDepth(bool disable3D, bool clearTexture) {
 	videoDepthRestartPending = false;
 	if (clearTexture) {
 		if (activeScreenCapture)
-			context.imageType = Color_Only;
+			context.imageType = captureSourceType;
 		else if (activeVideo && !fileList.empty())
 			context.imageType = fileList[fileIndex].type;
 	}
@@ -1831,7 +1885,8 @@ static bool startVideoDepth(bool preserveTexture) {
 	if ((!activeVideo && !activeScreenCapture) ||
 		(activeVideo && (!videoPlayer.ready() || fileList.empty()))) return false;
 	if (activeVideo && videoPlayer.audioOnly()) return false;
-	if (activeVideo && fileList[fileIndex].type != Color_Only) {
+	if ((activeScreenCapture && captureSourceType != Color_Only) ||
+		(activeVideo && fileList[fileIndex].type != Color_Only)) {
 		// Only untagged mono video can use inferred depth. Tagged native-stereo
 		// and already-converted RGB-D video must never start this model, even if
 		// a stale toggle or model-restart request reaches this function.
@@ -1859,7 +1914,7 @@ static bool startVideoDepth(bool preserveTexture) {
 	}
 	activeVideoDepthModelOption = modelOption;
 	if (!preserveTexture || !videoDepthFrameLoaded) {
-		context.imageType = activeScreenCapture ? Color_Only : fileList[fileIndex].type;
+		context.imageType = activeScreenCapture ? captureSourceType : fileList[fileIndex].type;
 		setDisplay3D(true);
 		setVideoDepthFallbackMode();
 	} else {
@@ -1969,6 +2024,7 @@ static void serviceVideoDepth() {
 	auto completed = videoDepthProcessor.takeFrame();
 	if (completed != nullptr && completed->valid() &&
 		(activeScreenCapture || completed->generation == videoPlayer.generation())) {
+		if (activeScreenCapture) liveVideoBuffer.observeDepth(completed->presentationTime);
 		bufferedVideoDepthFrames.push_back(std::move(completed));
 		while (bufferedVideoDepthFrames.size() > 24)
 			bufferedVideoDepthFrames.pop_front();
@@ -1990,8 +2046,8 @@ static void serviceVideoDepth() {
 		}
 	}
 	if (depthReference != nullptr) {
-		// Only use depth at or immediately before the displayed color frame. A
-		// future depth map can make moving silhouettes visibly misregister.
+		// File playback uses depth at or immediately before the color frame.
+		// Buffered live capture can also use the nearest completed future map.
 		const double selectionTime = depthReference->presentationTime + 0.001;
 		const bool transitionDepth = videoDepthTransitionGeneration != 0 &&
 			depthReference->generation == videoDepthTransitionGeneration;
@@ -2004,6 +2060,17 @@ static void serviceVideoDepth() {
 			selected = std::move(bufferedVideoDepthFrames.front());
 			bufferedVideoDepthFrames.pop_front();
 		}
+		if (activeScreenCapture && !bufferedVideoDepthFrames.empty()) {
+			const auto& next = bufferedVideoDepthFrames.front();
+			const double previousTime = selected ? selected->presentationTime :
+				videoDepthBlend.presentationTime;
+			if (next->generation == depthReference->generation &&
+				std::abs(next->presentationTime - depthReference->presentationTime) <
+				std::abs(previousTime - depthReference->presentationTime)) {
+				selected = std::move(bufferedVideoDepthFrames.front());
+				bufferedVideoDepthFrames.pop_front();
+			}
+		}
 	}
 
 	constexpr double uploadInterval = 1.0 / 60.0;
@@ -2015,7 +2082,7 @@ static void serviceVideoDepth() {
 			videoDepthBlend.width == selected->width &&
 			videoDepthBlend.height == selected->height &&
 			videoDepthBlend.displayed.size() == selected->values.size();
-		if (!compatible) {
+		if (!compatible || activeScreenCapture) {
 			videoDepthBlend.clear();
 			videoDepthBlend.displayed = std::move(selected->values);
 			videoDepthBlend.width = selected->width;
@@ -2626,12 +2693,10 @@ static void jumpPreviousChapter() {
 	showInfoTip("Chapter " + std::to_string(target + 1) + " of " + std::to_string(count));
 }
 
-// Screen capture remains implemented but is temporarily unavailable from the
-// UI until after the 3.0.0 launch.
 static std::vector appIcons = { IconLoading, IconMinimize, IconFullscreen, IconOpen, IconBatch, IconSave,
 	IconOptions, IconSettings, IconBack, IconForward, IconStereo3D,
 	IconStrength, IconDepth, IconOffset, IconPlay, IconVideoSeek, IconVideoVolume,
-	IconVideoAudio, IconVideoCaption, IconHelp, IconClose };
+	IconVideoAudio, IconVideoCaption, IconHelp, IconScreenCapture, IconBluRay, IconClose };
 
 static void finishSliderDrag() {
 	const bool volumeSliderChanged = currentSlider != nullptr &&
@@ -3289,7 +3354,7 @@ static void setPreferredStereo(ViewMode mode, bool saveMode) {
 	updateStereoIcon();
 	if (activeScreenCapture) {
 		refreshDisplay3D(videoDepthFrameLoaded || videoDepthProcessor.running()
-			? Color_Plus_Depth : Color_Only);
+			? Color_Plus_Depth : captureSourceType);
 		Image::updateSize(&context);
 		Image::updateRatio(&context, windowSize);
 	} else if (!fileList.empty()) {
@@ -3427,60 +3492,97 @@ static void toggleFullscreen() {
 	setFullscreen((SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) == 0);
 }
 
+static void stopCapture() {
+	browserBridge.endSession();
+	browserCapture = false;
+	if (isPlayingSlideshow) cancelSlideshow();
+	finishSliderDrag();
+	videoPlayer.close();
+	clearAudioAlbumArt();
+	context.chapterMarkers.clear();
+	deferredMediaFiles.clear();
+	resetRapidBrowseState();
+	stopVideoDepth();
+	screenCapture.stop();
+	activeScreenCapture = false;
+	activeVideo = false;
+	videoFrameLoaded = false;
+	lastVideoFrame.reset();
+	resetVideoPlaybackBuffer(false);
+	setVideoControlsVisible(false);
+	setDisplay3D(false);
+	setStereoMode(Native);
+	setShowStereoSettings(false);
+	context.displayMenu = false;
+	context.gotoPrev = false;
+	context.gotoNext = false;
+	context.gotoRand = false;
+	doneLoadingImage = false;
+	switchedImage = false;
+	isConverting = false;
+	justConverted = false;
+	currentVisibility = 0.0;
+	targetVisibility = 0.0;
+	context.visibility = 0.0f;
+	Image::displayTip = false;
+	Image::infoTargetVisibility = 0.0f;
+	Image::infoCurrentVisibility = 0.0f;
+	currentInfoLabel.clear();
+	currentSlider = nullptr;
+	mouseIsDown = false;
+	isDragging = false;
+	if (doingPreload) endPreload(false);
+	for (auto& file : fileList) {
+		SDL_DestroySurface(file.preload);
+		file.preload = nullptr;
+	}
+	fileList.clear();
+	fileIndex = -1;
+	// Return to the same empty state used at startup instead of leaving the
+	// last captured frame as the current image.
+	FileInfo emptyFile{};
+	Image::load(&context, emptyFile, nullptr);
+	context.loading = false;
+	context.fileLink.clear();
+	context.fileName.clear();
+	context.infoText.clear();
+	Image::displayInfo = false;
+	SDL_SetWindowTitle(context.window, "Rendepth");
+	// Do not recalculate hover state here: the mouse is often still over a
+	// photo control when capture is stopped, which would immediately reveal
+	// the normal image UI over the blank state.
+	mouseLastActive = 0.0;
+	hideUI();
+}
+
+static std::string beginBrowserCapture(const BrowserBridge::Request& request) {
+	if (isConverting || doingFileOp || context.loading)
+		return "Rendepth is loading or converting media. Try again when it is ready.";
+	stopCapture();
+	std::string error;
+	if (!screenCapture.startBrowser(request.directory, error, request.mono)) return error;
+	browserCapture = activeScreenCapture = true;
+	captureSourceType = request.mono ? Color_Only :
+		(request.half ? Side_By_Side_Half : Side_By_Side_Full);
+	swapLeftRight = request.swap;
+	if (request.mono && !startVideoDepth()) {
+		stopCapture();
+		return "Could not start video depth conversion.";
+	}
+	context.loading = true;
+	currentVisibility = 0.0;
+	targetVisibility = 1.0;
+	setDisplay3D(true);
+	if (SDL_GetWindowFlags(context.window) & SDL_WINDOW_MINIMIZED)
+		SDL_RestoreWindow(context.window);
+	SDL_RaiseWindow(context.window);
+	return {};
+}
+
 static void toggleScreenCapture() {
 #if defined(__linux__)
-		if (activeScreenCapture) {
-			stopVideoDepth();
-			screenCapture.stop();
-			activeScreenCapture = false;
-			activeVideo = false;
-			videoFrameLoaded = false;
-			lastVideoFrame.reset();
-			resetVideoPlaybackBuffer(false);
-			setVideoControlsVisible(false);
-			setDisplay3D(false);
-			setStereoMode(Native);
-			setShowStereoSettings(false);
-			context.displayMenu = false;
-			context.gotoPrev = false;
-			context.gotoNext = false;
-			context.gotoRand = false;
-			doneLoadingImage = false;
-			switchedImage = false;
-			isConverting = false;
-			justConverted = false;
-			currentVisibility = 0.0;
-			targetVisibility = 0.0;
-			context.visibility = 0.0f;
-		Image::displayTip = false;
-		Image::infoTargetVisibility = 0.0f;
-		Image::infoCurrentVisibility = 0.0f;
-		currentInfoLabel.clear();
-		currentSlider = nullptr;
-			mouseIsDown = false;
-			isDragging = false;
-			if (doingPreload) endPreload(false);
-			for (auto& file : fileList) {
-				SDL_DestroySurface(file.preload);
-				file.preload = nullptr;
-			}
-			fileList.clear();
-			fileIndex = -1;
-		// Return to the same empty state used at startup instead of leaving the
-		// last captured frame as the current image.
-		FileInfo emptyFile{};
-		Image::load(&context, emptyFile, nullptr);
-		context.loading = false;
-		context.fileLink.clear();
-		context.fileName.clear();
-		context.infoText.clear();
-		Image::displayInfo = false;
-		SDL_SetWindowTitle(context.window, "Rendepth");
-		// Do not recalculate hover state here: the mouse is often still over a
-		// photo control when capture is stopped, which would immediately reveal
-		// the normal image UI over the blank state.
-		mouseLastActive = 0.0;
-		hideUI();
+	if (activeScreenCapture) {
+		stopCapture();
 		return;
 	}
 	if (activeVideo || isConverting || context.loading) return;
@@ -3490,6 +3592,7 @@ static void toggleScreenCapture() {
 		return;
 	}
 	activeScreenCapture = true;
+	captureSourceType = Color_Only;
 	videoFrameLoaded = false;
 	lastVideoFrame.reset();
 	resetVideoPlaybackBuffer(false);
@@ -3509,6 +3612,11 @@ void toggleStereo() {
 	if (preferredStereoMode == Mono) return;
 	if (isConverting) return;
 	if (activeScreenCapture) {
+		if (captureSourceType != Color_Only) {
+			setDisplay3D(!display3D);
+			refreshDisplay3D(captureSourceType);
+			return;
+		}
 		if (display3D) stopVideoDepth();
 		else startVideoDepth();
 		return;
@@ -4004,6 +4112,12 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 		setStereoMode(Native);
 	}
 
+#if defined(__linux__)
+	std::string bridgeError;
+	if (!browserBridge.start(BrowserBridge::runtimeDirectory(), bridgeError))
+		SDL_Log("Could not enable Firefox window reuse: %s", bridgeError.c_str());
+#endif
+
 	hideUI();
 
 	return SDL_APP_CONTINUE;
@@ -4199,6 +4313,7 @@ static void serviceDeferredMediaLoad() {
 		return;
 	if (isPlayingSlideshow) cancelSlideshow();
 	auto files = std::move(deferredMediaFiles);
+	if (activeScreenCapture) stopCapture();
 	parseFileList(files);
 	updateStereoIcon();
 	loadImage(nullptr);
@@ -4206,6 +4321,7 @@ static void serviceDeferredMediaLoad() {
 }
 
 SDL_AppResult SDL_AppIterate(void* appstate) {
+	browserBridge.poll(beginBrowserCapture);
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	// Refresh only while settings is visible, and avoid filesystem polling per frame.
 	static double nextInferenceRefresh = 0.0;
@@ -4227,6 +4343,28 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	// serviceVideo()'s activeVideo path where depth completion is normally
 	// serviced.
 	if (activeScreenCapture) serviceVideoDepth();
+	if (activeScreenCapture && videoDepthFrameLoaded && lastVideoFrame &&
+		SDL_getenv("RENDEPTH_BROWSER_STATS")) {
+		static double lastSample = -1, started = 0, total = 0, maximum = 0;
+		static unsigned samples = 0;
+		if (lastVideoFrame->presentationTime != lastSample) {
+			lastSample = lastVideoFrame->presentationTime;
+			const double offset = std::abs(lastSample - videoDepthBlend.presentationTime);
+			total += offset;
+			maximum = std::max(maximum, offset);
+			++samples;
+			const double now = getTimeNow();
+			if (now - started >= 2.0) {
+				SDL_Log("Capture depth alignment: mean=%.1f ms, max=%.1f ms, buffer=%.1f ms, map=%dx%d, vectors=%zu",
+					1000.0 * total / samples, 1000.0 * maximum,
+					1000.0 * liveVideoBuffer.delaySeconds(), videoDepthBlend.width,
+					videoDepthBlend.height, lastVideoFrame->motionVectors.size());
+				started = now;
+				total = maximum = 0;
+				samples = 0;
+			}
+		}
+	}
 	auto timeNow = getTimeNow();
 	context.deltaTime = timeNow - lastTime;
 	lastTime = timeNow;
@@ -4642,12 +4780,12 @@ void checkMouseState() {
 				icon.type == IconType::Save));
 		auto displayOpen = !((icon.type != IconType::File && icon.type != IconType::Close &&
 			icon.type != IconType::Minimize &&
-			icon.type != IconType::Crop)
+			icon.type != IconType::Crop && icon.type != IconType::BluRay)
 			&& fileList.empty() && !activeScreenCapture);
 		auto displayMenu = !(context.displayMenu && (icon.type == IconType::Forward || icon.type == IconType::Back ||
 			icon.type == IconType::File || icon.type == IconType::Folder || icon.type == IconType::Save || icon.type == IconType::Window ||
 			icon.type == IconType::Fullscreen || icon.type == IconType::Play || icon.type == IconType::Pause ||
-			icon.type == IconType::Crop ||
+			icon.type == IconType::Crop || icon.type == IconType::BluRay ||
 			icon.type == IconType::VideoSeek || icon.type == IconType::VideoVolume ||
 			icon.type == IconType::VideoAudio || icon.type == IconType::VideoCaption ||
 			icon.type == IconType::Settings || icon.type == IconType::Info));
@@ -5994,6 +6132,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 }
 
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
+	browserBridge.stop();
 	stopVideoDepth();
 	screenCapture.stop();
 	videoPlayer.close();

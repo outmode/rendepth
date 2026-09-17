@@ -79,6 +79,10 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 		if (config.intraOpThreads > 0) {
 			nextState->sessionOptions.SetIntraOpNumThreads(static_cast<int>(config.intraOpThreads));
 		}
+		if (!config.allowThreadSpinning) {
+			nextState->sessionOptions.AddConfigEntry("session.intra_op.allow_spinning", "0");
+			nextState->sessionOptions.AddConfigEntry("session.inter_op.allow_spinning", "0");
+		}
 		nextState->sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
 		if (provider == Provider::CUDA) {

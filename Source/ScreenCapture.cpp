@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -19,6 +21,7 @@ bool setCaptureError(std::string& destination, const char* message) {
 }
 
 #if defined(__linux__)
+#include "BrowserStream.h"
 #include <gio/gio.h>
 #include <gio/gunixfdlist.h>
 #include <gst/app/gstappsink.h>
@@ -35,6 +38,7 @@ struct ScreenCapture::Impl {
 	std::string error;
 
 	#if defined(__linux__)
+	std::unique_ptr<BrowserStream> browser;
 	GstElement* pipeline = nullptr;
 	GstElement* sink = nullptr;
 	int pipewireFd = -1;
@@ -321,9 +325,20 @@ bool ScreenCapture::start(SDL_Window* parentWindow, std::string& error) {
 #endif
 }
 
+bool ScreenCapture::startBrowser(const std::string& directory, std::string& error, bool prepareDepth) {
+#if defined(__linux__)
+	stop();
+	impl->browser = std::make_unique<BrowserStream>();
+	return impl->browser->start(directory, error, prepareDepth);
+#else
+	return setCaptureError(error, "Firefox capture is currently implemented for Linux only.");
+#endif
+}
+
 void ScreenCapture::stop() {
 	if (impl == nullptr) return;
 #if defined(__linux__)
+	impl->browser.reset();
 	{
 		std::lock_guard lock(impl->mutex);
 		impl->stopRequested = true;
@@ -345,11 +360,17 @@ void ScreenCapture::stop() {
 }
 
 bool ScreenCapture::running() const {
+#if defined(__linux__)
+	if (impl->browser) return impl->browser->running();
+#endif
 	std::lock_guard lock(impl->mutex);
 	return impl->active;
 }
 
 std::shared_ptr<VideoFrame> ScreenCapture::takeFrame() {
+#if defined(__linux__)
+	if (impl->browser) return impl->browser->takeFrame();
+#endif
 	std::lock_guard lock(impl->mutex);
 	return std::exchange(impl->newestFrame, nullptr);
 }
