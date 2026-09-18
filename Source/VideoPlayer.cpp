@@ -749,20 +749,26 @@ struct VideoPlayer::Impl {
 			};
 			for (size_t index = 0; index < vectorCount; ++index) {
 				const auto& vector = vectors[index];
-				if (vector.w == 0 || vector.h == 0 || vector.motion_scale == 0) continue;
+				// A held depth map cannot supply a future reference for B-frames.
+				if (vector.source >= 0 || vector.w == 0 || vector.h == 0 ||
+					vector.motion_scale == 0) continue;
 				const float rawDestinationX = static_cast<float>(vector.dst_x) / rawWidth;
 				const float rawDestinationY = static_cast<float>(vector.dst_y) / rawHeight;
-				const float rawSourceX = static_cast<float>(vector.src_x) / rawWidth;
-				const float rawSourceY = static_cast<float>(vector.src_y) / rawHeight;
+				// src_x/src_y are integer-rounded; retain the codec's subpixel displacement.
+				const float rawSourceX = (vector.dst_x +
+					static_cast<float>(vector.motion_x) / vector.motion_scale) / rawWidth;
+				const float rawSourceY = (vector.dst_y +
+					static_cast<float>(vector.motion_y) / vector.motion_scale) / rawHeight;
 				const auto [destinationX, destinationY] = orientPoint(rawDestinationX, rawDestinationY);
 				const auto [sourceX, sourceY] = orientPoint(rawSourceX, rawSourceY);
 				const float vectorWidth = rot == 90 || rot == 270
 					? static_cast<float>(vector.h) / rawHeight : static_cast<float>(vector.w) / rawWidth;
 				const float vectorHeight = rot == 90 || rot == 270
 					? static_cast<float>(vector.w) / rawWidth : static_cast<float>(vector.h) / rawHeight;
-				if (destinationX + vectorWidth < 0.0f ||
-					destinationY + vectorHeight < 0.0f ||
-					destinationX > 1.0f || destinationY > 1.0f) continue;
+				if (destinationX + vectorWidth * 0.5f <= 0.0f ||
+					destinationY + vectorHeight * 0.5f <= 0.0f ||
+					destinationX - vectorWidth * 0.5f >= 1.0f ||
+					destinationY - vectorHeight * 0.5f >= 1.0f) continue;
 				converted->motionVectors.push_back({destinationX, destinationY, sourceX, sourceY,
 					vectorWidth, vectorHeight});
 			}

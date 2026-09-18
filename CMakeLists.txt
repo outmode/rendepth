@@ -831,6 +831,8 @@ target_include_directories(AIEngineSettingsTest PRIVATE ThirdParty/rapidjson/inc
 add_executable(CubeViCalibrationTest EXCLUDE_FROM_ALL
         Source/CubeViCalibrationTest.cpp Source/CubeViCalibration.cpp)
 add_executable(LiveVideoBufferTest EXCLUDE_FROM_ALL Source/LiveVideoBufferTest.cpp)
+add_executable(VideoDepthMotionTest EXCLUDE_FROM_ALL Source/VideoDepthMotionTest.cpp)
+target_link_libraries(VideoDepthMotionTest PRIVATE SDL3::SDL3)
 target_include_directories(CubeViCalibrationTest PRIVATE ThirdParty/rapidjson/include)
 target_link_libraries(CubeViCalibrationTest PRIVATE SDL3::SDL3)
 if(WIN32)

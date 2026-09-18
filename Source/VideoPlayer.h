@@ -14,6 +14,7 @@
 
 struct VideoFrame {
 	struct MotionVector {
+		// Normalized block centers and dimensions, in display orientation.
 		float destinationX = 0.0f;
 		float destinationY = 0.0f;
 		float sourceX = 0.0f;

@@ -41,6 +41,7 @@
 #include "rapidjson/stringbuffer.h"
 #include "AIEngineSettings.h"
 #include "LiveVideoBuffer.h"
+#include "VideoDepthMotion.h"
 #include <filesystem>
 #include <fstream>
 #include <format>
@@ -1961,45 +1962,7 @@ static bool propagateVideoDepthMotion(VideoDepthBlendState& state,
 		frame.motionVectors.empty() || frame.generation != videoDepthGeneration ||
 		frame.presentationTime <= state.presentationTime + 0.0001) return false;
 
-	const size_t pixelCount = state.displayed.size();
-	std::vector<float> sourceX(pixelCount);
-	std::vector<float> sourceY(pixelCount);
-	for (int y = 0; y < state.height; ++y) {
-		for (int x = 0; x < state.width; ++x) {
-			const size_t index = static_cast<size_t>(y) * state.width + x;
-			sourceX[index] = static_cast<float>(x) / std::max(1, state.width - 1);
-			sourceY[index] = static_cast<float>(y) / std::max(1, state.height - 1);
-		}
-	}
-	for (const auto& motion : frame.motionVectors) {
-		const int left = std::max(0, static_cast<int>(std::floor(
-			motion.destinationX * state.width)));
-		const int top = std::max(0, static_cast<int>(std::floor(
-			motion.destinationY * state.height)));
-		const int right = std::min(state.width, static_cast<int>(std::ceil(
-			(motion.destinationX + motion.width) * state.width)));
-		const int bottom = std::min(state.height, static_cast<int>(std::ceil(
-			(motion.destinationY + motion.height) * state.height)));
-		for (int y = top; y < bottom; ++y) {
-			for (int x = left; x < right; ++x) {
-				const size_t index = static_cast<size_t>(y) * state.width + x;
-				sourceX[index] = motion.sourceX;
-				sourceY[index] = motion.sourceY;
-			}
-		}
-	}
-	const std::vector<std::uint16_t> previous = state.displayed;
-	constexpr float motionFraction = 0.67f;
-	for (size_t index = 0; index < pixelCount; ++index) {
-		const int x = std::clamp(static_cast<int>(std::lround(
-			sourceX[index] * (state.width - 1))), 0, state.width - 1);
-		const int y = std::clamp(static_cast<int>(std::lround(
-			sourceY[index] * (state.height - 1))), 0, state.height - 1);
-		const auto extrapolated = previous[static_cast<size_t>(y) * state.width + x];
-		state.displayed[index] = static_cast<std::uint16_t>(std::lround(
-			static_cast<float>(previous[index]) +
-			(static_cast<float>(extrapolated) - previous[index]) * motionFraction));
-	}
+	reprojectVideoDepth(state.displayed, state.width, state.height, frame.motionVectors);
 	state.presentationTime = frame.presentationTime;
 	state.active = false;
 	return true;
