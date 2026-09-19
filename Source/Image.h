@@ -193,6 +193,9 @@ public:
 	inline static glm::vec4 clearColorSolid = clearColorDark;
 	inline static glm::vec4 clearColorCurrent = clearColorDark;
 	inline static bool useBackgroundBlur = true;
+	inline static bool displayAudioPlaceholder = false;
+	inline static bool displayAudioWaveform = false;
+	inline static AudioWaveform::Bars audioWaveform{};
 	inline static bool useBackgroundSolid = false;
 	inline static glm::vec2 helpTextSize;
 	inline static glm::vec2 infoTextSize;

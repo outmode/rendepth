@@ -5,6 +5,7 @@
 #define RENDEPTH_VIDEO_PLAYER_H
 
 #include "SDL3/SDL.h"
+#include "AudioWaveform.h"
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -72,6 +73,7 @@ public:
 	SDL_Surface* takeAlbumArt();
 	bool hasAudio() const;
 	bool audioOnly() const;
+	AudioWaveform::Bars audioWaveform() const;
 	bool discSource() const;
 	bool audioCd() const;
 	bool audioReady() const;

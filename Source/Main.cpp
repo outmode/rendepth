@@ -168,6 +168,9 @@ static void refreshDisplay3D(StereoFormat type);
 static void clearAudioAlbumArt() {
 	SDL_DestroySurface(audioAlbumArt);
 	audioAlbumArt = nullptr;
+	Image::displayAudioPlaceholder = false;
+	Image::displayAudioWaveform = false;
+	Image::audioWaveform = {};
 }
 
 static bool isSupportedVideo(const std::string& path) {
@@ -524,6 +527,7 @@ static void serviceVideo() {
 	if (!activeVideo) return;
 	if (videoPlayer.audioOnly()) {
 		videoPlayer.update();
+		Image::audioWaveform = videoPlayer.audioWaveform();
 		if (const std::string error = videoPlayer.takeError(); !error.empty()) {
 			failVideoLoad(error);
 			return;
@@ -1345,7 +1349,7 @@ Icon IconPlay = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Toggle Slideshow",
+	"Start Slideshow",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -4210,13 +4214,16 @@ static int loadImage(void* ptr) {
 		activeVideo = true;
 		fileList[fileIndex].type = Color_Only;
 		SDL_Surface* artwork = videoPlayer.takeAlbumArt();
-		if (artwork == nullptr) artwork = createAudioPlaceholder();
 		clearAudioAlbumArt();
+		Image::displayAudioPlaceholder = artwork == nullptr;
+		Image::displayAudioWaveform = true;
+		if (artwork == nullptr) artwork = createAudioPlaceholder();
 		if (artwork != nullptr) audioAlbumArt = SDL_DuplicateSurface(artwork);
 		FileInfo artworkInfo = fileList[fileIndex];
 		const int result = Image::load(&context, artworkInfo, artwork, Color_Only);
 		if (result != 0) {
 			SDL_DestroySurface(artwork);
+			clearAudioAlbumArt();
 			videoPlayer.close();
 			activeVideo = false;
 			setVideoControlsVisible(false);
@@ -4812,6 +4819,15 @@ void checkMouseState() {
 			(activeVideo && videoDepthFrameLoaded)));
 	for (auto& icon : appIcons) {
 		auto displayLoading = !(icon.type == IconType::Loading && (!isConverting || isPlayingSlideshow));
+		if (icon.type == IconType::Play) {
+			const char* label = activeVideo
+				? (videoPlayer.playing() ? "Pause Media" : "Play Media")
+				: (isPlayingSlideshow ? "Stop Slideshow" : "Start Slideshow");
+			if (icon.label != label) {
+				icon.label = label;
+				icon.shown = false;
+			}
+		}
 		auto displaySettings = !(icon.type == IconType::Settings &&
 			(!display3D || currentStereoMode == Depth_Zoom || preferredStereoMode == RGB_Depth ||
 				!currentSourceHasDepth));
@@ -4833,7 +4849,8 @@ void checkMouseState() {
 			icon.type == IconType::VideoSeek || icon.type == IconType::VideoVolume ||
 			icon.type == IconType::VideoAudio || icon.type == IconType::VideoCaption ||
 			icon.type == IconType::Settings || icon.type == IconType::Info));
-		auto displayXD = !((context.displayMenu || preferredStereoMode == Mono) && icon.type == IconType::Stereo_3D);
+		auto displayXD = !((context.displayMenu || preferredStereoMode == Mono ||
+			Image::displayAudioPlaceholder) && icon.type == IconType::Stereo_3D);
 		auto displaySave = true;
 		if (!fileList.empty()) {
 			const bool videoDepthReady = activeVideo && videoDepthFrameLoaded;

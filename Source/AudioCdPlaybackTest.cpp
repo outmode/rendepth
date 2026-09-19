@@ -7,6 +7,7 @@
 #include <linux/cdrom.h>
 #include <fcntl.h>
 #include <cstdarg>
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <cstdio>
@@ -53,7 +54,13 @@ extern "C" int __wrap_ioctl(int fd, unsigned long op, ...) {
         assert(r->nframes > 0 && r->nframes <= 16);
         assert((r->addr.lba < 750 && r->addr.lba + r->nframes <= 750) ||
             (r->addr.lba >= 1500 && r->addr.lba + r->nframes <= 2250));
-        std::memset(r->buf, 0, r->nframes * 2352); return 0;
+        // Silent first track, audible second track (including opposite stereo phases).
+        for (int i = 0; i < r->nframes * 2352; i += 2) {
+            const int16_t sample = r->addr.lba < 750 ? 0 : ((i / 2) % 2 ? -8192 : 8192);
+            r->buf[i] = static_cast<uint8_t>(sample);
+            r->buf[i + 1] = static_cast<uint8_t>(static_cast<uint16_t>(sample) >> 8);
+        }
+        return 0;
     }
     errno = EINVAL; return -1;
 }
@@ -78,6 +85,31 @@ int main() {
     assert(player.duration() == 20 && player.chapterCount() == 2 && player.chapterTime(1) == 10);
     assert(player.chapterAtTime(9.8) == 0 && player.chapterAtTime(10.0) == 1);
     assert(waitAudio(player));
+    assert(player.audioWaveform() == AudioWaveform::Bars{});
+    // A real timeline drag leaves playback paused while the user moves the thumb.
+    SDL_Delay(100);
+    player.setPlaying(false);
+    SDL_Delay(100);
+    player.seek(10.0);
+    player.setPlaying(true);
+    assert(waitAudio(player, 10.0));
+    const auto waveformDeadline = SDL_GetTicks() + 1000;
+    bool audibleWaveform = false;
+    do {
+        player.update();
+        const auto bars = player.audioWaveform();
+        audibleWaveform = std::any_of(bars.begin(), bars.end(), [](float value) { return value > 0.1f; });
+        if (audibleWaveform) break;
+        SDL_Delay(5);
+    } while (SDL_GetTicks() < waveformDeadline);
+    assert(audibleWaveform);
+    // Pause/resume without a seek must also keep the decoder alive beyond
+    // the three seconds of samples already queued before pausing.
+    player.setPlaying(false);
+    assert(player.audioWaveform() == AudioWaveform::Bars{});
+    SDL_Delay(100);
+    player.setPlaying(true);
+    assert(waitAudio(player, 13.5));
     for (double target : {10.0, 2.0, 18.0, 0.0}) {
         player.setPlaying(false);
         auto generation = player.generation();
@@ -87,13 +119,22 @@ int main() {
         assert(!player.playing());
         player.setPlaying(true); assert(waitAudio(player, target));
     }
-    player.seekChapter(1); assert(waitAudio(player, 10.0));
+    for (int i = 0; i < 20; ++i) {
+        const int chapter = i % 2;
+        player.seekChapter(chapter);
+        assert(waitAudio(player, chapter * 10.0));
+        if (chapter == 0) assert(player.audioWaveform() == AudioWaveform::Bars{});
+    }
+    // Closing must wake a decoder parked in a paused, full audio queue.
+    player.setPlaying(false);
+    SDL_Delay(100);
     player.close();
+    assert(player.audioWaveform() == AudioWaveform::Bars{});
     assert(!player.audioCd() && !player.discSource() && player.chapterCount() == 0);
     assert(devices.empty());
     simulateRemoval = true;
     assert(!player.open("cdda://sr999/", error) && !error.empty());
     assert(devices.empty());
     SDL_Quit();
-    std::puts("Audio CD player: detection, decode, chapters, 2000 drag previews, release seeks and removal passed");
+    std::puts("Audio CD player: detection, decode, pause/resume, 20 track skips, 2000 drag previews, release seeks, paused close and removal passed");
 }

@@ -869,7 +869,7 @@ set(CPACK_RPM_PACKAGE_LICENSE "MIT")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
 # Increment the RPM release for rebuilds of the same application version so
 # package managers do not treat a freshly built artifact as the old package.
-set(CPACK_RPM_PACKAGE_RELEASE 14)
+set(CPACK_RPM_PACKAGE_RELEASE 15)
 set(RENDEPTH_RPM_REQUIRES gstreamer1-plugins-good gstreamer1-plugins-bad-free libnice-gstreamer1)
 if(RENDEPTH_ENABLE_FFMPEG AND DAV1D_FOUND)
     list(APPEND RENDEPTH_RPM_REQUIRES "libdav1d >= 0.5.0")
@@ -897,6 +897,12 @@ endif()
 # Development-only test executable; keep it out of the default and packaging
 # builds. It can still be built explicitly when requested.
 add_executable(QuiltTest EXCLUDE_FROM_ALL Source/QuiltTest.cpp)
+add_executable(AudioWaveformTest EXCLUDE_FROM_ALL Source/AudioWaveformTest.cpp)
+if(MSVC)
+    target_compile_options(AudioWaveformTest PRIVATE /UNDEBUG)
+else()
+    target_compile_options(AudioWaveformTest PRIVATE -UNDEBUG)
+endif()
 add_executable(NativeDisplaySelectionTest EXCLUDE_FROM_ALL Source/NativeDisplaySelectionTest.cpp)
 add_executable(AIEngineSettingsTest EXCLUDE_FROM_ALL Source/AIEngineSettingsTest.cpp)
 target_include_directories(AIEngineSettingsTest PRIVATE ThirdParty/rapidjson/include)

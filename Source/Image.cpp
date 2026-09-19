@@ -63,6 +63,8 @@ namespace {
 	glm::ivec2 videoYUVChromaSize{};
 	VideoFrame::Format videoYUVFormat = VideoFrame::Format::RGBA;
 	double uploadedVideoTime = -1.0;
+	AudioWaveform::Bars smoothedAudioWaveform{};
+	BlurClock::time_point waveformDrawTime{};
 
 	// Opt-in diagnostics count distinct video frames after a real window draw,
 	// not decoder output or repeated redraws. This is GPU completion, not a
@@ -3076,6 +3078,18 @@ void Image::setSpriteUniforms(glm::vec3 position, glm::vec3 size, glm::vec4 colo
 
 int Image::draw(Context* context) {
 	imageDataFrag.packedOutput = 0;
+	const auto waveformNow = BlurClock::now();
+	const float waveformDelta = std::clamp(
+		std::chrono::duration<float>(waveformNow - waveformDrawTime).count(), 0.0f, 0.1f);
+	waveformDrawTime = waveformNow;
+	for (size_t i = 0; i < smoothedAudioWaveform.size(); ++i) {
+		if (!displayAudioWaveform) smoothedAudioWaveform[i] = 0.0f;
+		else {
+			const float speed = audioWaveform[i] > smoothedAudioWaveform[i] ? 30.0f : 12.0f;
+			smoothedAudioWaveform[i] += (audioWaveform[i] - smoothedAudioWaveform[i]) *
+				(1.0f - std::exp(-speed * waveformDelta));
+		}
+	}
 	updateVideoBackgroundAnimation();
 	if (nativeOutputEnabled) {
 		nativeOutputSourceReady = imageTexture != nullptr;
@@ -3216,7 +3230,7 @@ int Image::draw(Context* context) {
 		} else {
 			for (auto viewY = 0; viewY < viewsY; viewY++) {
 				for (auto viewX = 0; viewX < viewsX; viewX++) {
-					if (displayHelp) continue;
+					if (displayHelp || displayAudioPlaceholder) continue;
 					auto viewSize = windowSize;
 					auto drawViewport = getViewport(viewX, viewsX * viewsY, viewSize);
 					if (viewsY > 1) {
@@ -3302,6 +3316,11 @@ int Image::draw(Context* context) {
 						}
 						imageDataVert.transform = glm::translate(imageDataVert.transform, glm::vec3(viewOffset * glm::vec2(1.0, -1.0), 0.0f));
 						imageDataVert.transform = glm::scale(imageDataVert.transform, glm::vec3(context->currentZoom, context->currentZoom, 1.0f));
+						if (displayAudioWaveform && !context->display3D) {
+							// Leave room below audio artwork for the waveform and controls.
+							const float artworkScale = std::max(0.1f, (windowSize.y - 240.0f) / windowSize.y);
+							imageDataVert.transform = glm::scale(imageDataVert.transform, glm::vec3(artworkScale, artworkScale, 1.0f));
+						}
 						imageDataVert.transform = glm::scale(imageDataVert.transform, glm::vec3(windowSize.x, windowSize.y, 1.0));
 						imageDataFrag.visibility = context->visibility;
 						if (displayTip) imageDataFrag.visibility *= 0.5;
@@ -3347,6 +3366,50 @@ int Image::draw(Context* context) {
 			bindPipeline(renderPass, spritePipeline);
 			SDL_GPUTextureSamplerBinding sliderSampleBindings[1] = {{ .texture = sliderTexture, .sampler = imageSampler } };
 			SDL_BindGPUFragmentSamplers(renderPass, 0, &sliderSampleBindings[0], 1);
+
+			if (displayAudioPlaceholder && !displayHelp) {
+				// Use native texture pixels, independent of artwork zoom and UI scale.
+				const glm::vec2 pixelScale = context->windowSize /
+					glm::vec2(drawViewport.w, drawViewport.h);
+				const float diameter = std::min(256.0f, std::min(drawViewport.w, drawViewport.h));
+				setSpriteUniforms(glm::vec3(context->windowSize * 0.5f, 1.0f),
+					glm::vec3(pixelScale * diameter, 1.0f), glm::vec4(1.0f, 1.0f, 1.0f, 0.12f),
+					1.0f, 1, { 0, 0 }, { 1, 1 }, { 0.5f, 0.5f }, glm::vec3(1.0f));
+				drawSprite(commandBuffer, renderPass);
+
+				bindPipeline(renderPass, iconPipeline);
+				SDL_GPUTextureSamplerBinding logoBinding{ .texture = iconTexture, .sampler = imageSampler };
+				SDL_BindGPUFragmentSamplers(renderPass, 0, &logoBinding, 1);
+				iconDataVert.transform = getTransform(glm::vec3(context->windowSize * 0.5f, 1.0f),
+					glm::vec3(pixelScale * diameter * 0.5f, 1.0f), glm::vec3(1.0f));
+				iconDataVert.gridOffset = getIconCoordinates(IconType::Logo_White);
+				iconDataFrag.color = glm::vec4(1.0f, 1.0f, 1.0f, 0.33f);
+				iconDataFrag.visibility = 1.0f;
+				iconDataFrag.rotation = 0.0f;
+				iconDataFrag.animated = 0;
+				iconDataFrag.force = 0;
+				drawIcon(commandBuffer, renderPass);
+				bindPipeline(renderPass, spritePipeline);
+				SDL_BindGPUFragmentSamplers(renderPass, 0, &sliderSampleBindings[0], 1);
+			}
+
+			if (displayAudioWaveform && !displayHelp) {
+				const glm::vec2 pixelScale = context->windowSize / glm::vec2(drawViewport.w, drawViewport.h);
+				const float width = std::min(256.0f, drawViewport.w * 0.7f);
+				const float spacing = width / static_cast<float>(smoothedAudioWaveform.size());
+				const float baseline = std::min(drawViewport.h * 0.5f,
+					displayAudioPlaceholder ? std::max(88.0f, drawViewport.h * 0.5f - 176.0f) : 88.0f);
+				for (size_t i = 0; i < smoothedAudioWaveform.size(); ++i) {
+					const float height = 2.0f + 34.0f * smoothedAudioWaveform[i];
+					const glm::vec2 position(drawViewport.w * 0.5f - width * 0.5f +
+						(static_cast<float>(i) + 0.5f) * spacing, baseline);
+					setSpriteUniforms(glm::vec3(position * pixelScale, 1.0f),
+						glm::vec3(glm::vec2(std::min(2.0f, spacing * 0.5f), height) * pixelScale, 1.0f),
+						glm::vec4(1.0f, 1.0f, 1.0f, 0.55f), 1.0f, 0,
+						{ 0, 0 }, { 1, 1 }, { 0.5f, 0.5f }, glm::vec3(1.0f));
+					drawSprite(commandBuffer, renderPass);
+				}
+			}
 
 			for (const auto& icon : *context->appIcons) {
 				if (!icon.active) continue;

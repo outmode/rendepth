@@ -136,6 +136,8 @@ struct VideoPlayer::Impl {
 	std::atomic<double> audioVolume{1.0};
 	std::atomic<bool> audioSeekPending{false};
 	bool audioOnly = false;
+	mutable std::mutex waveformMutex;
+	AudioWaveform waveform;
 	SDL_Surface* albumArt = nullptr;
 	std::atomic<int> selectedAudioTrack{0};
 	std::atomic<int> requestedAudioTrack{-1};
@@ -552,7 +554,7 @@ struct VideoPlayer::Impl {
 
 	bool queueAudio(const float* samples, int sampleFrames) {
 		const auto state = audioState;
-		if (sampleFrames <= 0 || !isPlaying) return true;
+		if (sampleFrames <= 0) return true;
 		if (audioSeekPending) return false;
 		const int sampleBytes = sampleFrames * audioBytesPerFrame;
 		// Video playback can keep decoding while its audio queue is full because
@@ -562,10 +564,20 @@ struct VideoPlayer::Impl {
 		const bool waitForAudioSpace = audioOnly;
 		const auto waitStart = std::chrono::steady_clock::now();
 		for (;;) {
+			// Pausing is not a decode failure. Retain this frame until playback
+			// resumes, or discard it only when a seek/stop supersedes it.
+			{
+				std::unique_lock lock(stateMutex);
+				stateChanged.wait(lock, [&] {
+					return stopRequested || requestedSeek.has_value() || audioSeekPending || isPlaying;
+				});
+				if (stopRequested || requestedSeek.has_value() || audioSeekPending) return false;
+			}
 			bool waitForSpace = false;
 			{
 				std::lock_guard lock(state->mutex);
-				if (state->closing || !isPlaying || audioSeekPending) return false;
+				if (state->closing || audioSeekPending) return false;
+				if (!isPlaying) continue;
 				if (state->output == nullptr) {
 					if (state->pendingBytes + sampleBytes <= maxQueuedAudioBytes) {
 						state->pending.emplace_back(samples, samples +
@@ -590,7 +602,7 @@ struct VideoPlayer::Impl {
 			if (!waitForAudioSpace && std::chrono::steady_clock::now() - waitStart >
 				std::chrono::milliseconds(100))
 				return true;
-			if (stopRequested || !isPlaying || interrupted()) return false;
+			if (stopRequested || interrupted()) return false;
 			std::unique_lock lock(stateMutex);
 			stateChanged.wait_for(lock, std::chrono::milliseconds(10), [&] {
 				return stopRequested || !isPlaying || requestedSeek.has_value();
@@ -1077,6 +1089,11 @@ struct VideoPlayer::Impl {
 						av_frame_unref(audioFrame);
 						return false;
 					}
+					if (audioOnly && queuedFrames > 0) {
+						std::lock_guard lock(waveformMutex);
+						waveform.append(samples.data() + static_cast<size_t>(firstFrame) * audioChannels,
+							queuedFrames, audioChannels, audioSampleRate, audioQueuePosition.load());
+					}
 					audioQueuePosition.fetch_add(
 						queuedFrames / static_cast<double>(audioSampleRate));
 				}
@@ -1088,6 +1105,10 @@ struct VideoPlayer::Impl {
 	bool applySeek(const SeekRequest& request, std::optional<double>& seekFloor,
 				std::optional<double>& audioSeekFloor) {
 		if (audioOnly || !audioStreamIndices.empty()) audioSeekPending = true;
+		{
+			std::lock_guard lock(waveformMutex);
+			waveform.clear();
+		}
 		const int64_t target = static_cast<int64_t>(
 			(request.seconds + streamStart) / av_q2d(stream->time_base));
 		int result = 0;
@@ -1642,6 +1663,10 @@ void VideoPlayer::close() {
 	impl->stateChanged.notify_all();
 	if (impl->decodeThread.joinable()) impl->decodeThread.join();
 	{
+		std::lock_guard lock(impl->waveformMutex);
+		impl->waveform.clear();
+	}
+	{
 		std::lock_guard lock(impl->stateMutex);
 		impl->pendingFrames.clear();
 		impl->requestedSeek.reset();
@@ -1756,6 +1781,14 @@ bool VideoPlayer::hasAudio() const {
 }
 
 bool VideoPlayer::audioOnly() const { return impl->audioOnly; }
+
+AudioWaveform::Bars VideoPlayer::audioWaveform() const {
+	if (!impl->audioOnly || !impl->isPlaying || impl->audioSeekPending) return {};
+	const double position = audioPlaybackPosition();
+	std::lock_guard lock(impl->waveformMutex);
+	if (impl->audioSeekPending) return {};
+	return impl->waveform.at(position, static_cast<float>(impl->audioVolume.load()));
+}
 
 bool VideoPlayer::audioCd() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
