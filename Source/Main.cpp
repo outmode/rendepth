@@ -40,6 +40,7 @@
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"
 #include "AIEngineSettings.h"
+#include "SettingsFile.h"
 #include "BlurayReader.h"
 #include "DiscTitleMenu.h"
 #include "DiscSource.h"
@@ -268,6 +269,7 @@ auto showDisplayInfoOnce = false;
 auto currentStereoMode = Native;
 auto preferredStereoMode = Mono;
 auto defaultStereoMode = Mono;
+static ViewMode lastUsedStereoMode = Anaglyph_Accurate;
 glm::vec2 pixelMotion = {0.0, 0.0 };
 bool isDragging = false;
 bool isIconCaptured = false;
@@ -2995,6 +2997,13 @@ std::filesystem::path optionsAbsPath = homePath / optionsPath;
 static std::string optionsFilePath = optionsAbsPath.string();
 
 void saveOptions() {
+	std::string saveError;
+	SettingsFile transaction(optionsFilePath, saveError);
+	if (!transaction.locked()) {
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not lock settings at %s: %s",
+			optionsFilePath.c_str(), saveError.c_str());
+		return;
+	}
     char dataBuffer[65536];
     rapidjson::MemoryPoolAllocator<> allocator (dataBuffer, sizeof dataBuffer);
     rapidjson::Document document(&allocator, 256);
@@ -3004,7 +3013,7 @@ void saveOptions() {
 	// Another instance may have saved a newer engine choice. Unrelated saves
 	// and shutdown must not replace it with this process's startup preference.
 	rapidjson::Document existing;
-	std::ifstream previous(optionsAbsPath, std::ios::binary);
+	std::ifstream previous(optionsFilePath, std::ios::binary);
 	if (previous) {
 		char json[65536]{};
 		previous.read(json, sizeof(json) - 1);
@@ -3055,25 +3064,18 @@ void saveOptions() {
 	document.AddMember(rapidjson::StringRef("modelDirectory"), modelDirValue, allocator);
 	document.AddMember(rapidjson::StringRef("videoVolume"), currentVideoVolume, allocator);
 	document.AddMember(rapidjson::StringRef("losslessDepthmaps"), losslessDepthmaps, allocator);
+	const auto lastStereo = std::find(stereoModes.begin(), stereoModes.end(), lastUsedStereoMode);
+	document.AddMember(rapidjson::StringRef("Last 3D Mode"),
+		static_cast<int>(lastStereo - stereoModes.begin()), allocator);
 
     rapidjson::StringBuffer output;
     rapidjson::PrettyWriter writer(output);
     document.Accept(writer);
 
-	auto optionsFolderPath = std::filesystem::path(optionsFilePath).parent_path();
-	if (!exists(optionsFolderPath)) create_directories(optionsFolderPath);
-
-	SDL_IOStream* optionsFile = SDL_IOFromFile(optionsFilePath.c_str(), "w" );
-	if (!optionsFile) {
+	if (!transaction.write({output.GetString(), output.GetSize()}, saveError)) {
 		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not save settings to %s: %s",
-			optionsFilePath.c_str(), SDL_GetError());
-		return;
+			optionsFilePath.c_str(), saveError.c_str());
 	}
-	const bool written = SDL_WriteIO(optionsFile, output.GetString(), output.GetSize()) == output.GetSize();
-	const bool closed = SDL_CloseIO(optionsFile);
-	if (!written || !closed)
-		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not finish saving settings to %s: %s",
-			optionsFilePath.c_str(), SDL_GetError());
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	else {
 		SDL_Log("Saved AI Engine=%d to %s (explicit change=%d)", engineToSave,
@@ -3096,6 +3098,11 @@ void loadOptions() {
 	dataBuffer[dataSize] = '\0';
 	if (document.Parse(dataBuffer).HasParseError()) return;
 	if (!document.IsObject()) return;
+	if (document.HasMember("Last 3D Mode") && document["Last 3D Mode"].IsInt()) {
+		const int option = document["Last 3D Mode"].GetInt();
+		if (option >= 0 && option < static_cast<int>(stereoModes.size()) && stereoModes[option] != Mono)
+			lastUsedStereoMode = stereoModes[option];
+	}
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	// Read the stable key, with compatibility for both historical UI labels.
 	if (const int engine = AIEngineSettings::read(document); engine >= 0) {
@@ -3300,6 +3307,8 @@ static void setStereoMode(ViewMode mode) {
 }
 
 static void setPreferredStereo(ViewMode mode, bool saveMode) {
+	if (mode != Mono && std::find(stereoModes.begin(), stereoModes.end(), mode) != stereoModes.end())
+		lastUsedStereoMode = mode;
 	if (saveMode) defaultStereoMode = mode;
 	preferredStereoMode = mode;
 	showCustomCursor(shouldShowCustomCursor());
@@ -3649,6 +3658,41 @@ void toggleStereo() {
 	}
 	setDisplay3D(!display3D);
 	refreshDisplay3D(fileList[fileIndex].type);
+}
+
+// Select a presentation state without changing the user's display format.
+static void selectStereoPresentation(int state) {
+	if (doingFileOp || context.loading) return;
+	resetRapidBrowseState();
+	if (isPlayingSlideshow) cancelSlideshow();
+	const auto disabled = std::find(stereoModes.begin(), stereoModes.end(), Mono);
+	const int disabledOption = static_cast<int>(disabled - stereoModes.begin());
+	if (state == 1) {
+		if (preferredStereoMode != Mono || display3D || isConverting)
+			changeStereo(disabledOption);
+		menuSelection[ChoiceStereo.label] = disabledOption;
+	} else {
+		const auto mode = preferredStereoMode == Mono || preferredStereoMode == Depth_Zoom
+			? lastUsedStereoMode : preferredStereoMode;
+		// Cancel a pending still-image conversion before selecting 2D, otherwise
+		// its completion would turn 3D back on. Keep completed/cached depth.
+		if (state == 2 && isConverting) changeStereo(disabledOption);
+		if (state == 2) {
+			if (activeScreenCapture && videoDepthProcessor.running()) stopVideoDepth();
+			setDisplay3D(false);
+		}
+		setPreferredStereo(mode, true);
+		const auto selected = std::find(stereoModes.begin(), stereoModes.end(), mode);
+		menuSelection[ChoiceStereo.label] = static_cast<int>(selected - stereoModes.begin());
+		if (state == 3 && !display3D) {
+			if (fileList.empty() && !activeScreenCapture) setDisplay3D(true);
+			else toggleStereo();
+		}
+	}
+	Image::saveMenuLayout(&context);
+	setShowStereoSettings(false);
+	checkMouseState();
+	saveOptions();
 }
 
 static void setSlideshow(bool slide) {
@@ -4048,6 +4092,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 		Image::nativeOutputAvailable();
 	if ((onLenticularDisplay && preferredStereoMode != Mono) || forceNative) {
 		preferredStereoMode = Lenticular;
+		lastUsedStereoMode = Lenticular;
 		currentStereoMode = Lenticular;
 		context.mode = Lenticular;
 		if (forceNative && !fileList.empty() && fileIndex >= 0 &&
@@ -5829,36 +5874,10 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 				if (compileShadersForReload()) Image::reloadShader(&context);
 			}
 
-			if (event->key.key == SDLK_1) {
-			changeStereo(0);
-			menuSelection[ChoiceStereo.label] = 0;
-		} else if (event->key.key == SDLK_2) {
-			changeStereo(1);
-			menuSelection[ChoiceStereo.label] = 1;
-		} else if (event->key.key == SDLK_3) {
-			changeStereo(2);
-			menuSelection[ChoiceStereo.label] = 2;
-		} else if (event->key.key == SDLK_4) {
-			changeStereo(3);
-			menuSelection[ChoiceStereo.label] = 3;
-		} else if (event->key.key == SDLK_5) {
-			changeStereo(4);
-			menuSelection[ChoiceStereo.label] = 4;
-		} else if (event->key.key == SDLK_6) {
-			changeStereo(5);
-			menuSelection[ChoiceStereo.label] = 5;
-		} else if (event->key.key == SDLK_7) {
-			changeStereo(6);
-			menuSelection[ChoiceStereo.label] = 6;
-			} else if (event->key.key == SDLK_8) {
-				changeStereo(7);
-				menuSelection[ChoiceStereo.label] = 7;
-			} else if (event->key.key == SDLK_9) {
-				changeStereo(8);
-				menuSelection[ChoiceStereo.label] = 8;
-			} else if (event->key.key == SDLK_0) {
-				changeStereo(10);
-				menuSelection[ChoiceStereo.label] = 10;
+		if (!event->key.repeat && !(event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
+			if (event->key.key == SDLK_1) selectStereoPresentation(1);
+			else if (event->key.key == SDLK_2) selectStereoPresentation(2);
+			else if (event->key.key == SDLK_3) selectStereoPresentation(3);
 		}
 
 		if (event->key.key == SDLK_MINUS || event->key.key == SDLK_KP_MINUS) {

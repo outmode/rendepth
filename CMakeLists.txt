@@ -297,7 +297,7 @@ target_compile_definitions(Rendepth PUBLIC
         SDL_MAIN_USE_CALLBACKS
         RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS=$<BOOL:${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS}>)
 
-target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp Source/MediaOpenDialog.cpp Source/BlurayReader.cpp Source/DvdReader.cpp Source/DiscTitleMenu.cpp
+target_sources(Rendepth PUBLIC Source/Main.cpp Source/SettingsFile.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp Source/MediaOpenDialog.cpp Source/BlurayReader.cpp Source/DvdReader.cpp Source/DiscTitleMenu.cpp
 		Source/VideoDepthProcessor.cpp
 		Source/ScreenCapture.cpp Source/BrowserBridge.cpp
         Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
@@ -977,4 +977,11 @@ if(UNIX AND NOT APPLE)
     target_compile_definitions(MediaOpenDialogTest PRIVATE RENDEPTH_GTK_MEDIA_DIALOG)
     target_compile_options(MediaOpenDialogTest PRIVATE -UNDEBUG)
     target_link_libraries(MediaOpenDialogTest PRIVATE SDL3::SDL3 PkgConfig::GTK3)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(SettingsFileTest EXCLUDE_FROM_ALL Source/SettingsFileTest.cpp Source/SettingsFile.cpp)
+    target_include_directories(SettingsFileTest PRIVATE ThirdParty/rapidjson/include)
+    target_compile_options(SettingsFileTest PRIVATE -UNDEBUG)
+    target_link_options(SettingsFileTest PRIVATE -Wl,--wrap=fsync)
 endif()

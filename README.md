@@ -65,3 +65,13 @@ Build Instructions
 - `RENDEPTH_MAC_BUNDLE` set `ON` to create macOS bundle after building.
 
 ### Made by Outmode.
+
+Keyboard presentation controls
+------
+- **1:** Disable 3D (the same as choosing Disabled in 3D Mode settings).
+- **2:** Show the 2D view of the selected 3D display mode.
+- **3:** Show the 3D view of the selected 3D display mode.
+
+After disabling 3D, **2** and **3** restore the last used display mode, including
+across restarts. Choose the display format in settings; **4–0** no longer select
+formats. If no display mode has been used yet, **2/3** use Natural Color.
