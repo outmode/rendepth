@@ -351,14 +351,33 @@ glm::vec2 Core::getTextSize(TTF_Font* font, const std::string& text) {
 	return {width, width };
 }
 
-std::string Core::getFileText(const FileInfo& imageInfo, glm::vec2 imageSize) {
-	auto nameMaxLen = 28;
-	auto displayName = imageInfo.name;
-	if (displayName.length() > nameMaxLen) {
-		displayName = displayName.substr(0, nameMaxLen - 3) + "...";
-	}
-	return displayName + " [" + std::to_string((int)imageSize.x) + "x" +
+std::string Core::getFileText(const FileInfo& imageInfo, glm::vec2 imageSize,
+		TTF_Font* font, float maxWidth) {
+	const auto details = " [" + std::to_string((int)imageSize.x) + "x" +
 		std::to_string((int)imageSize.y) + "] " + imageInfo.size;
+	const auto fullText = imageInfo.name + details;
+	if (font == nullptr || getTextSize(font, fullText).x <= maxWidth) return fullText;
+	if (getTextSize(font, "...").x > maxWidth) return {};
+
+	// Reserve room for dimensions/file size and the ellipsis. On very narrow
+	// windows, fit the whole label instead if even those details will not fit.
+	const bool keepDetails = getTextSize(font, "..." + details).x <= maxWidth;
+	const auto& text = keepDetails ? imageInfo.name : fullText;
+	const auto ending = std::string("...") + (keepDetails ? details : "");
+	std::vector<size_t> boundaries{0};
+	for (size_t i = 1; i <= text.size(); ++i) {
+		// Never cut inside a UTF-8 character.
+		if (i == text.size() || (static_cast<unsigned char>(text[i]) & 0xc0) != 0x80)
+			boundaries.push_back(i);
+	}
+	size_t low = 0, high = boundaries.size() - 1;
+	while (low < high) {
+		const auto mid = low + (high - low + 1) / 2;
+		if (getTextSize(font, text.substr(0, boundaries[mid]) + ending).x <= maxWidth)
+			low = mid;
+		else high = mid - 1;
+	}
+	return text.substr(0, boundaries[low]) + ending;
 }
 
 StereoFormat Core::getImageType(const std::string& file) {

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 #include "VideoPlayer.h"
+#include "AudioCdReader.h"
+#include "DiscSource.h"
+#include "BlurayReader.h"
+#include "DvdReader.h"
 #include "Core.h"
 
 #include <SDL3_image/SDL_image.h>
@@ -194,6 +198,10 @@ struct VideoPlayer::Impl {
 	};
 
 	AVFormatContext* format = nullptr;
+	std::unique_ptr<BlurayReader> blurayReader;
+	std::unique_ptr<DvdReader> dvdReader;
+	std::unique_ptr<AudioCdReader> audioCdReader;
+	std::vector<double> discChapterTimes;
 	AVCodecContext* codec = nullptr;
 	const AVCodec* videoDecoder = nullptr;
 	AVStream* stream = nullptr;
@@ -1082,13 +1090,25 @@ struct VideoPlayer::Impl {
 		if (audioOnly || !audioStreamIndices.empty()) audioSeekPending = true;
 		const int64_t target = static_cast<int64_t>(
 			(request.seconds + streamStart) / av_q2d(stream->time_base));
-		int result = av_seek_frame(format, streamIndex, target, AVSEEK_FLAG_BACKWARD);
-		if (result < 0) {
-			const int64_t defaultTarget = static_cast<int64_t>((request.seconds + streamStart) * AV_TIME_BASE);
-			result = av_seek_frame(format, -1, defaultTarget, AVSEEK_FLAG_BACKWARD);
-		}
-		if (result < 0) {
-			result = avformat_seek_file(format, streamIndex, INT64_MIN, target, INT64_MAX, 0);
+		int result = 0;
+		if (blurayReader || dvdReader) {
+			// Disc readers seek to access units. FFmpeg's arbitrary byte search
+			// can repeatedly land on the same packet and never make progress.
+			const bool sought = blurayReader ? blurayReader->seekTime(request.seconds) : dvdReader->seekTime(request.seconds);
+			if (sought) {
+				avio_flush(avioContext);
+				avioContext->pos = blurayReader ? blurayReader->bytePosition() : dvdReader->bytePosition();
+				avioContext->eof_reached = 0;
+				avioContext->error = 0;
+				result = avformat_flush(format);
+			} else result = AVERROR(EIO);
+		} else {
+			result = av_seek_frame(format, streamIndex, target, AVSEEK_FLAG_BACKWARD);
+			if (result < 0) {
+				const int64_t defaultTarget = static_cast<int64_t>((request.seconds + streamStart) * AV_TIME_BASE);
+				result = av_seek_frame(format, -1, defaultTarget, AVSEEK_FLAG_BACKWARD);
+			}
+			if (result < 0) result = avformat_seek_file(format, streamIndex, INT64_MIN, target, INT64_MAX, 0);
 		}
 		if (result < 0) {
 			setRuntimeError("FFmpeg seek failed: " + ffmpegError(result));
@@ -1350,6 +1370,7 @@ struct VideoPlayer::Impl {
 };
 
 bool VideoPlayer::supported(const std::filesystem::path& path) {
+	if (DiscSource::candidate(path)) return true;
 	const auto extension = lowerExtension(path);
 	return extension == ".mp4" || extension == ".m4v" || extension == ".mov" ||
 		extension == ".mkv" || extension == ".webm" || extension == ".avi" ||
@@ -1363,14 +1384,53 @@ VideoPlayer::VideoPlayer() : impl(std::make_unique<Impl>()) {}
 
 VideoPlayer::~VideoPlayer() { close(); }
 
-bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
+bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, int discTitle) {
 	close();
 #ifndef RENDEPTH_ENABLE_FFMPEG
 	error = "FFmpeg video playback was not enabled in this build.";
 	(void)path;
 	return false;
 #else
-	int result = avformat_open_input(&impl->format, path.string().c_str(), nullptr, nullptr);
+	int result = 0;
+	const auto discType = DiscSource::detect(path);
+	const bool isBluray = discType == DiscSource::Type::Bluray;
+	const bool isDvd = discType == DiscSource::Type::Dvd;
+	const bool isCd = discType == DiscSource::Type::AudioCd;
+	if (isBluray || isDvd || isCd) {
+		const AVInputFormat* inputFormat = av_find_input_format(isCd ? "wav" : (isBluray ? "mpegts" : "mpeg"));
+		if (!inputFormat) {
+			error = "Required FFmpeg disc demuxer is not available in this build.";
+			return false;
+		}
+		if (isCd) {
+			impl->audioCdReader = std::make_unique<AudioCdReader>();
+			if (!impl->audioCdReader->open(path, error)) { close(); return false; }
+			impl->avioContext = impl->audioCdReader->stream().createAVIOContext();
+		} else if (isBluray) {
+			impl->blurayReader = std::make_unique<BlurayReader>();
+			if (!impl->blurayReader->open(path, error)) { close(); return false; }
+			if (discTitle >= 0 && !impl->blurayReader->selectTitle(discTitle, error)) { close(); return false; }
+			impl->avioContext = impl->blurayReader->createAVIOContext();
+		} else {
+			impl->dvdReader = std::make_unique<DvdReader>();
+			if (!impl->dvdReader->open(path, error)) { close(); return false; }
+			if (discTitle >= 0 && !impl->dvdReader->selectTitle(discTitle, error)) { close(); return false; }
+			impl->avioContext = impl->dvdReader->createAVIOContext();
+		}
+		impl->format = avformat_alloc_context();
+		if (!impl->avioContext || !impl->format) {
+			error = "Could not allocate disc input buffers.";
+			close();
+			return false;
+		}
+		impl->format->pb = impl->avioContext;
+		impl->format->flags |= AVFMT_FLAG_CUSTOM_IO;
+		impl->format->skip_estimate_duration_from_pts = 1;
+		// Opening initializes the demuxer's private state and reads its header.
+		result = avformat_open_input(&impl->format, nullptr, inputFormat, nullptr);
+	} else {
+		result = avformat_open_input(&impl->format, path.string().c_str(), nullptr, nullptr);
+	}
 	if (result < 0) {
 		error = "FFmpeg could not open the video: " + ffmpegError(result);
 		close();
@@ -1509,6 +1569,23 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error) {
 		impl->totalDuration = static_cast<double>(impl->format->duration) / AV_TIME_BASE;
 	else if (impl->stream->duration != AV_NOPTS_VALUE && impl->stream->duration > 0)
 		impl->totalDuration = impl->stream->duration * av_q2d(impl->stream->time_base);
+	if (impl->blurayReader != nullptr)
+		impl->totalDuration = std::max(impl->totalDuration.load(), impl->blurayReader->duration());
+	if (impl->dvdReader != nullptr)
+		impl->totalDuration = std::max(impl->totalDuration.load(), impl->dvdReader->duration());
+	// The UI must not acquire a disc I/O mutex merely to display chapter labels.
+	// This metadata stays fixed for the lifetime of the selected title.
+	if (impl->blurayReader) {
+		for (const auto& chapter : impl->blurayReader->chapters())
+			impl->discChapterTimes.push_back(chapter.startTime);
+	} else if (impl->dvdReader) {
+		for (const auto& chapter : impl->dvdReader->chapters())
+			impl->discChapterTimes.push_back(chapter.startTime);
+	}
+	if (impl->audioCdReader) {
+		impl->totalDuration = impl->audioCdReader->stream().duration();
+		impl->discChapterTimes = impl->audioCdReader->stream().chapters();
+	}
 	if (impl->audioOnly) impl->albumArt = impl->decodeAlbumArt();
 
 	if (!impl->audioOnly) {
@@ -1599,6 +1676,12 @@ void VideoPlayer::close() {
 		avio_context_free(&impl->avioContext);
 		impl->avioContext = nullptr;
 	}
+	// Release disc reader sessions after the input format and AVIO context are
+	// closed, so no AVIO callback can fire against a destroyed reader.
+	impl->blurayReader.reset();
+	impl->dvdReader.reset();
+	impl->audioCdReader.reset();
+	impl->discChapterTimes.clear();
 	impl->stream = nullptr;
 	impl->streamIndex = -1;
 	impl->audioOnly = false;
@@ -1673,6 +1756,22 @@ bool VideoPlayer::hasAudio() const {
 }
 
 bool VideoPlayer::audioOnly() const { return impl->audioOnly; }
+
+bool VideoPlayer::audioCd() const {
+#ifdef RENDEPTH_ENABLE_FFMPEG
+    return impl->audioCdReader != nullptr;
+#else
+    return false;
+#endif
+}
+
+bool VideoPlayer::discSource() const {
+#ifdef RENDEPTH_ENABLE_FFMPEG
+	return impl->blurayReader != nullptr || impl->dvdReader != nullptr || impl->audioCdReader != nullptr;
+#else
+	return false;
+#endif
+}
 
 bool VideoPlayer::audioReady() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
@@ -1863,7 +1962,7 @@ std::string VideoPlayer::subtitleLanguage() const {
 }
 
 void VideoPlayer::seek(double seconds, bool fastPreview) {
-	if (!impl->isReady) return;
+	if (!impl->isReady || (fastPreview && discSource())) return;
 	seconds = std::clamp(seconds, 0.0,
 		impl->totalDuration > 0.0 ? impl->totalDuration.load() : seconds);
 	#ifdef RENDEPTH_ENABLE_FFMPEG
@@ -1941,6 +2040,7 @@ bool VideoPlayer::hasChapters() const { return chapterCount() > 0; }
 
 int VideoPlayer::chapterCount() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
+	if (discSource()) return static_cast<int>(impl->discChapterTimes.size());
 	if (impl->format != nullptr) return static_cast<int>(impl->format->nb_chapters);
 #endif
 	return 0;
@@ -1952,12 +2052,20 @@ int VideoPlayer::currentChapter() const {
 
 int VideoPlayer::chapterAtTime(double seconds) const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
+	if (discSource()) {
+		const int count = chapterCount();
+		for (int i = count - 1; i >= 0; --i) {
+			const double start = impl->discChapterTimes[i];
+			if (seconds >= start - (audioCd() ? 1.0 / 44100.0 : 0.5)) return i;
+		}
+		return 0;
+	}
 	if (impl->format != nullptr && impl->format->nb_chapters > 0) {
 		for (int i = static_cast<int>(impl->format->nb_chapters) - 1; i >= 0; --i) {
 			const AVChapter* ch = impl->format->chapters[i];
 			if (ch != nullptr) {
 				const double start = static_cast<double>(ch->start) * av_q2d(ch->time_base);
-				if (seconds >= start - 0.5) return i;
+				if (seconds >= start - (audioCd() ? 1.0 / 44100.0 : 0.5)) return i;
 			}
 		}
 	}
@@ -1967,6 +2075,10 @@ int VideoPlayer::chapterAtTime(double seconds) const {
 
 double VideoPlayer::chapterTime(int chapterIndex) const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
+	if (discSource()) {
+		return chapterIndex >= 0 && chapterIndex < static_cast<int>(impl->discChapterTimes.size())
+			? impl->discChapterTimes[chapterIndex] : 0.0;
+	}
 	if (impl->format != nullptr && chapterIndex >= 0 &&
 		chapterIndex < static_cast<int>(impl->format->nb_chapters)) {
 		const AVChapter* ch = impl->format->chapters[chapterIndex];

@@ -22,6 +22,8 @@ endforeach()
 
 # Windows and Linux ship a CPU base and discover optional GPU runtime packs.
 set(RENDEPTH_ENABLE_ONNX_RUNTIME ON)
+set(RENDEPTH_ENABLE_BLURAY ON)
+set(RENDEPTH_ENABLE_DVD ON)
 set(RENDEPTH_ENABLE_FFMPEG ON)
 set(RENDEPTH_ENABLE_ROCM OFF)
 set(RENDEPTH_ENABLE_CUDA OFF)
@@ -295,7 +297,7 @@ target_compile_definitions(Rendepth PUBLIC
         SDL_MAIN_USE_CALLBACKS
         RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS=$<BOOL:${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS}>)
 
-target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp
+target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp Source/MediaOpenDialog.cpp Source/BlurayReader.cpp Source/DvdReader.cpp Source/DiscTitleMenu.cpp
 		Source/VideoDepthProcessor.cpp
 		Source/ScreenCapture.cpp Source/BrowserBridge.cpp
         Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
@@ -311,6 +313,13 @@ target_link_directories(Rendepth PUBLIC "\${ORIGIN}/../Library")
 target_link_libraries(Rendepth PUBLIC
         SDL3::SDL3 SDL3_ttf::SDL3_ttf SDL3_image::SDL3_image
         glm)
+
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GTK3 REQUIRED IMPORTED_TARGET gtk+-3.0)
+    target_link_libraries(Rendepth PRIVATE PkgConfig::GTK3)
+    target_compile_definitions(Rendepth PRIVATE RENDEPTH_GTK_MEDIA_DIALOG)
+endif()
 
 if(WIN32)
     target_link_libraries(Rendepth PUBLIC winhttp ole32 shell32 uuid bcrypt crypt32)
@@ -391,9 +400,9 @@ if(RENDEPTH_ENABLE_FFMPEG)
             pkg_check_modules(DAV1D QUIET IMPORTED_TARGET "dav1d >= 0.5.0")
         endif()
         set(RENDEPTH_FFMPEG_COMMON_DECODERS
-                cinepak,dnxhd,ffv1,gif,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3,aac,aac_latm,ac3,alac,dca,eac3,flac,mp1,mp2,mp3,opus,pcm_alaw,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_mulaw,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_u8,truehd,vorbis,wavpack,wmalossless,wmapro,wmav1,wmav2,wmavoice,subrip,ass,mov_text,webvtt,pgssub,dvdsub)
+                cinepak,dnxhd,ffv1,gif,h264,hevc,huffyuv,mjpeg,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,prores,rawvideo,theora,vc1,vp8,vp9,wmv1,wmv2,wmv3,aac,aac_latm,ac3,alac,dca,eac3,flac,mp1,mp2,mp3,opus,pcm_alaw,pcm_bluray,pcm_dvd,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_mulaw,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_u8,truehd,vorbis,wavpack,wmalossless,wmapro,wmav1,wmav2,wmavoice,subrip,ass,mov_text,webvtt,pgssub,dvdsub)
         set(RENDEPTH_FFMPEG_COMMON_PARSERS
-                aac,aac_latm,ac3,dca,flac,gif,mpegaudio,opus,vorbis)
+                aac,aac_latm,ac3,dca,flac,gif,h264,hevc,mlp,mpegaudio,mpegvideo,opus,vc1,vorbis)
         if(DAV1D_FOUND)
             set(RENDEPTH_FFMPEG_DAV1D_OPTIONS
                     --enable-libdav1d
@@ -480,6 +489,69 @@ if(RENDEPTH_ENABLE_FFMPEG)
         add_dependencies(Rendepth RendepthFFmpeg)
     endif()
     target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_FFMPEG)
+    if(RENDEPTH_ENABLE_BLURAY OR RENDEPTH_ENABLE_DVD)
+        set(RENDEPTH_DISC_INCLUDE_DIRS "")
+        set(RENDEPTH_DISC_LIBRARIES "")
+
+        find_package(PkgConfig QUIET)
+        if(RENDEPTH_ENABLE_BLURAY AND PKG_CONFIG_FOUND)
+            pkg_check_modules(RENDEPTH_SYSTEM_LIBBLURAY IMPORTED_GLOBAL libbluray)
+        endif()
+        if(RENDEPTH_ENABLE_DVD AND PKG_CONFIG_FOUND)
+            pkg_check_modules(RENDEPTH_SYSTEM_DVDREAD IMPORTED_GLOBAL dvdread)
+        endif()
+
+        if(RENDEPTH_ENABLE_BLURAY)
+            if(RENDEPTH_SYSTEM_LIBBLURAY_FOUND AND RENDEPTH_SYSTEM_LIBBLURAY_LIBRARIES)
+                list(APPEND RENDEPTH_DISC_INCLUDE_DIRS ${RENDEPTH_SYSTEM_LIBBLURAY_INCLUDE_DIRS})
+                list(APPEND RENDEPTH_DISC_LIBRARIES ${RENDEPTH_SYSTEM_LIBBLURAY_LIBRARIES})
+                set(RENDEPTH_HAVE_BLURAY TRUE)
+            else()
+                # Fallback: bundled development headers plus the versioned
+                # shared object (no unversioned .so symlink on this system).
+                find_library(RENDEPTH_LIBBLURAY_LIB
+                    NAMES libbluray libbluray.so.3
+                    PATHS /lib64 /usr/lib64 /usr/lib)
+                if(RENDEPTH_LIBBLURAY_LIB AND
+                   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/bluray-dvdread-headers/libbluray/bluray.h")
+                    list(APPEND RENDEPTH_DISC_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/bluray-dvdread-headers")
+                    list(APPEND RENDEPTH_DISC_LIBRARIES "${RENDEPTH_LIBBLURAY_LIB}")
+                    set(RENDEPTH_HAVE_BLURAY TRUE)
+                endif()
+            endif()
+        endif()
+
+        if(RENDEPTH_ENABLE_DVD)
+            if(RENDEPTH_SYSTEM_DVDREAD_FOUND AND RENDEPTH_SYSTEM_DVDREAD_LIBRARIES)
+                list(APPEND RENDEPTH_DISC_INCLUDE_DIRS ${RENDEPTH_SYSTEM_DVDREAD_INCLUDE_DIRS})
+                list(APPEND RENDEPTH_DISC_LIBRARIES ${RENDEPTH_SYSTEM_DVDREAD_LIBRARIES})
+                set(RENDEPTH_HAVE_DVD TRUE)
+            else()
+                find_library(RENDEPTH_LIBDVDREAD_LIB
+                    NAMES libdvdread libdvdread.so.8
+                    PATHS /lib64 /usr/lib64 /usr/lib)
+                if(RENDEPTH_LIBDVDREAD_LIB AND
+                   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/bluray-dvdread-headers/dvdread/dvd_reader.h")
+                    list(APPEND RENDEPTH_DISC_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/bluray-dvdread-headers")
+                    list(APPEND RENDEPTH_DISC_LIBRARIES "${RENDEPTH_LIBDVDREAD_LIB}")
+                    set(RENDEPTH_HAVE_DVD TRUE)
+                endif()
+            endif()
+        endif()
+
+        if(RENDEPTH_HAVE_BLURAY)
+            target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_BLURAY)
+        endif()
+        if(RENDEPTH_HAVE_DVD)
+            target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_DVD)
+        endif()
+        if(RENDEPTH_HAVE_BLURAY OR RENDEPTH_HAVE_DVD)
+            target_include_directories(Rendepth PUBLIC ${RENDEPTH_DISC_INCLUDE_DIRS})
+            target_link_libraries(Rendepth PUBLIC ${RENDEPTH_DISC_LIBRARIES})
+        else()
+            message(WARNING "Rendepth: Blu-ray/DVD support disabled: libbluray/libdvdread development files not found.")
+        endif()
+    endif()
     target_link_libraries(Rendepth PUBLIC
         RendepthFFmpeg_avformat RendepthFFmpeg_avcodec
         RendepthFFmpeg_swresample
@@ -864,4 +936,45 @@ if(UNIX AND NOT APPLE)
 		PkgConfig::GIO PkgConfig::GIO_UNIX PkgConfig::GSTREAMER)
 	add_executable(BrowserBridgeTest EXCLUDE_FROM_ALL Source/BrowserBridgeTest.cpp Source/BrowserBridge.cpp)
 	target_include_directories(BrowserBridgeTest PRIVATE ThirdParty/rapidjson/include)
+endif()
+
+# Disc integration test (requires a readable Blu-ray with at least two titles).
+if(RENDEPTH_ENABLE_FFMPEG AND RENDEPTH_HAVE_BLURAY)
+    add_executable(DiscTitleMenuTest EXCLUDE_FROM_ALL
+        Source/DiscTitleMenuTest.cpp Source/DiscTitleMenu.cpp Source/BlurayReader.cpp
+        Source/DvdReader.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp Source/VideoPlayer.cpp Source/Style.cpp)
+    target_include_directories(DiscTitleMenuTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(DiscTitleMenuTest PRIVATE $<TARGET_PROPERTY:Rendepth,COMPILE_DEFINITIONS>)
+    target_link_libraries(DiscTitleMenuTest PRIVATE $<TARGET_PROPERTY:Rendepth,LINK_LIBRARIES>)
+endif()
+
+if(RENDEPTH_ENABLE_FFMPEG)
+    add_executable(AudioCdReaderTest EXCLUDE_FROM_ALL
+        Source/AudioCdReaderTest.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp)
+    target_include_directories(AudioCdReaderTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(AudioCdReaderTest PRIVATE $<TARGET_PROPERTY:Rendepth,COMPILE_DEFINITIONS>)
+    target_link_libraries(AudioCdReaderTest PRIVATE $<TARGET_PROPERTY:Rendepth,LINK_LIBRARIES>)
+    if(MSVC)
+        target_compile_options(AudioCdReaderTest PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(AudioCdReaderTest PRIVATE -UNDEBUG)
+    endif()
+endif()
+if(RENDEPTH_ENABLE_FFMPEG AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(AudioCdPlaybackTest EXCLUDE_FROM_ALL
+        Source/AudioCdPlaybackTest.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp
+        Source/VideoPlayer.cpp Source/BlurayReader.cpp Source/DvdReader.cpp)
+    target_include_directories(AudioCdPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(AudioCdPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,COMPILE_DEFINITIONS>)
+    target_link_libraries(AudioCdPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,LINK_LIBRARIES>)
+    target_compile_options(AudioCdPlaybackTest PRIVATE -UNDEBUG)
+    target_link_options(AudioCdPlaybackTest PRIVATE -Wl,--wrap=open,--wrap=close,--wrap=ioctl)
+endif()
+if(UNIX AND NOT APPLE)
+    add_executable(MediaOpenDialogTest EXCLUDE_FROM_ALL
+        Source/MediaOpenDialogTest.cpp Source/MediaOpenDialog.cpp Source/DiscSource.cpp Source/AudioCdReader.cpp)
+    target_include_directories(MediaOpenDialogTest PRIVATE ThirdParty/SDL/include)
+    target_compile_definitions(MediaOpenDialogTest PRIVATE RENDEPTH_GTK_MEDIA_DIALOG)
+    target_compile_options(MediaOpenDialogTest PRIVATE -UNDEBUG)
+    target_link_libraries(MediaOpenDialogTest PRIVATE SDL3::SDL3 PkgConfig::GTK3)
 endif()

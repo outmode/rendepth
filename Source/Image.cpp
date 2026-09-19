@@ -24,6 +24,7 @@
 #include "NativeDisplayIdentity.h"
 #include "NativeDisplaySelection.h"
 #include "LookingGlassCalibration.h"
+#include "CalibrationVolumes.h"
 #include "rapidjson/document.h"
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"
@@ -342,6 +343,7 @@ void updateVideoSolidColor() {
 		// ahead of local paths so a connected device always wins.
 		for (char drive = 'A'; drive <= 'Z'; ++drive) {
 			const auto volumeRoot = std::filesystem::path(std::string(1, drive) + ":\\");
+			if (GetDriveTypeW(volumeRoot.c_str()) == DRIVE_CDROM) continue;
 			const auto candidate = volumeRoot / "LKG_calibration" / "visual.json";
 			if (std::filesystem::is_regular_file(candidate, error)) return candidate;
 		}
@@ -361,18 +363,22 @@ void updateVideoSolidColor() {
 				}
 			}
 		}
-	#endif
+	#else
+		const auto opticalMounts = CalibrationVolumes::opticalMounts();
 		for (const auto& mediaRoot : {std::filesystem::path("/run/media"), std::filesystem::path("/media")}) {
 			if (!std::filesystem::is_directory(mediaRoot, error)) continue;
 			for (const auto& userRoot : std::filesystem::directory_iterator(mediaRoot, error)) {
-				if (error || !userRoot.is_directory(error)) continue;
+				if (error || CalibrationVolumes::contains(opticalMounts, userRoot.path()) ||
+					!userRoot.is_directory(error)) continue;
 				for (const auto& volume : std::filesystem::directory_iterator(userRoot.path(), error)) {
-					if (error || !volume.is_directory(error)) continue;
+					if (error || CalibrationVolumes::contains(opticalMounts, volume.path()) ||
+						!volume.is_directory(error)) continue;
 					auto candidate = volume.path() / "LKG_calibration" / "visual.json";
 					if (std::filesystem::is_regular_file(candidate, error)) return candidate;
 				}
 			}
 		}
+	#endif
 		// Prefer the attached Looking Glass calibration over saved experiments
 		// for other panels. RENDEPTH_NATIVE_CALIBRATION remains an explicit override.
 		for (const auto& localCandidate : {
@@ -3138,6 +3144,12 @@ int Image::draw(Context* context) {
 			viewsY = 2;
 		}
 
+		// Disc selection is a normal 2D screen even when playback uses stereo views.
+		if (discMenuTexture != nullptr) {
+			viewsX = viewsY = 1;
+			aspectScale = glm::vec2(1.0f);
+		}
+
 		const bool isMainInterlaced = (context->mode == Lenticular && context->display3D &&
 			context->fullscreen && (nativeDisplayOnMainWindow || context->nativeOutputWindow == nullptr) && interlacerPipeline != nullptr &&
 			imageTexture != nullptr);
@@ -3677,6 +3689,18 @@ int Image::draw(Context* context) {
 				}
 
 				drawIcon(commandBuffer, renderPass);
+			}
+
+			if (discMenuTexture != nullptr) {
+				bindPipeline(renderPass, spritePipeline);
+				SDL_GPUTextureSamplerBinding discBinding{.texture = discMenuTexture, .sampler = imageSampler};
+				SDL_BindGPUFragmentSamplers(renderPass, 0, &discBinding, 1);
+				setSpriteUniforms(glm::vec3(context->windowSize * 0.5f, 0.0f),
+					glm::vec3(context->windowSize, 1.0f), glm::vec4(1.0f), 1.0f, 1,
+					glm::vec2(0.0f), glm::vec2(1.0f), glm::vec2(0.5f), glm::vec3(1.0f));
+				drawSprite(commandBuffer, renderPass);
+				bindPipeline(renderPass, iconPipeline);
+				SDL_BindGPUFragmentSamplers(renderPass, 0, &iconSampleBindings[0], 1);
 			}
 
 			auto cursorPosition = context->mouse;

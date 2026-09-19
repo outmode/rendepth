@@ -295,7 +295,8 @@ public:
 	static int loadImageThread(void* ptr);
 	static SDL_Thread* loadImageAsync(AsyncData& asyncData);
 	static glm::vec2 getTextSize(TTF_Font* font, const std::string& text);
-	static std::string getFileText(const FileInfo& imageInfo, glm::vec2 imageSize);
+	static std::string getFileText(const FileInfo& imageInfo, glm::vec2 imageSize,
+		TTF_Font* font = nullptr, float maxWidth = 0.0f);
 	static StereoFormat getImageType(const std::string& file);
 	static StereoFormat getImageType(const std::filesystem::path& file) { return getImageType(file.string()); }
 	static glm::vec3 getGridInfo(const std::string& file);

@@ -63,7 +63,7 @@ public:
 	VideoPlayer& operator=(const VideoPlayer&) = delete;
 
 	static bool supported(const std::filesystem::path& path);
-	bool open(const std::filesystem::path& path, std::string& error);
+	bool open(const std::filesystem::path& path, std::string& error, int discTitle = -1);
 	void close();
 	void update();
 	std::shared_ptr<VideoFrame> takeFrame(bool* preview = nullptr);
@@ -72,6 +72,8 @@ public:
 	SDL_Surface* takeAlbumArt();
 	bool hasAudio() const;
 	bool audioOnly() const;
+	bool discSource() const;
+	bool audioCd() const;
 	bool audioReady() const;
 	double bufferedAudioDuration() const;
 	double audioDeviceLatency() const;
@@ -79,6 +81,7 @@ public:
 	void setPresentedPosition(double seconds);
 	void setOutputSize(int maxWidth, int maxHeight);
 	void setInferenceSize(int maxDimension, double framesPerSecond = 10.0);
+	// Disc sources accept committed seeks only; drag previews never read the disc.
 	void seek(double seconds, bool fastPreview = false);
 	void setPlaying(bool playing);
 	void setVolume(double volume);
