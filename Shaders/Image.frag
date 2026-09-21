@@ -261,31 +261,57 @@ vec3 generateStereoImage(vec2 inUV) {
 
 vec2 effectZoom(vec2 uv, vec2 depthUV) {
 	float parallax = (depthEffect * 1.2 - 0.8) * 0.1;
-	float depth = getRawDepth(imageTexture, depthUV);
 	vec2 dir = uv - 0.5;
-	dir.x *= 0.5;
-	int samples = 3;
-	vec2 offset = (dir * parallax) / samples;
-	vec2 result = depthUV;
-	while (samples-- > 0) {
-		depth = min(depth, getRawDepth(imageTexture, result));
-		result -= depth * offset;
+	if (separateDepth != 1) dir.x *= 0.5;
+	vec2 offset = dir * parallax;
+	vec2 depthSize = vec2(separateDepth == 1
+		? textureSize(depthTexture, 0) : textureSize(imageTexture, 0));
+	vec2 halfTexel = 0.5 / depthSize;
+	vec2 depthMin = vec2(separateDepth == 1 ? 0.0 : 0.5, 0.0) + halfTexel;
+	vec2 depthMax = vec2(1.0) - halfTexel;
+
+	// Like stereo parallax, find foreground depth along the displacement
+	// before moving the color lookup. Raw depth is larger in the foreground.
+	// A bounded, pixel-scaled sweep avoids the old three-step depth/motion
+	// accumulation and keeps packed RGB-D samples out of the color half.
+	int samples = int(clamp(ceil(length(offset * depthSize)), 8.0, 32.0));
+	float foregroundDepth = 0.0;
+	for (int i = 0; i <= samples; ++i) {
+		vec2 sampleUV = clamp(depthUV - offset * (float(i) / float(samples)), depthMin, depthMax);
+		float depth = separateDepth == 1
+			? textureLod(depthTexture, sampleUV, 0.0).r
+			: textureLod(imageTexture, sampleUV, 0.0).r;
+		foregroundDepth = max(foregroundDepth, depth);
 	}
+	vec2 result = clamp(depthUV - foregroundDepth * offset, depthMin, depthMax);
 	return separateDepth == 1 ? result : result * vec2(2.0, 1.0) - vec2(1.0, 0.0);
 }
 
 vec2 effectDolly(vec2 uv, vec2 depthUV) {
 	float parallax = (depthEffect * 1.2 - 0.8) * 0.1;
-	float depth = 1.0 - getRawDepth(imageTexture, depthUV);
 	vec2 dir = uv - 0.5;
-	dir.x *= 0.5;
-	int samples = 3;
-	vec2 offset = (dir * parallax) / samples;
-	vec2 result = depthUV;
-	while (samples-- > 0) {
-		depth = min(depth, 1.0 - getRawDepth(imageTexture, result));
-		result += depth * offset;
+	if (separateDepth != 1) dir.x *= 0.5;
+	vec2 offset = dir * parallax;
+	vec2 depthSize = vec2(separateDepth == 1
+		? textureSize(depthTexture, 0) : textureSize(imageTexture, 0));
+	vec2 halfTexel = 0.5 / depthSize;
+	vec2 depthMin = vec2(separateDepth == 1 ? 0.0 : 0.5, 0.0) + halfTexel;
+	vec2 depthMax = vec2(1.0) - halfTexel;
+
+	// Like stereo parallax, find foreground depth along the displacement
+	// before moving the color lookup. Raw depth is larger in the foreground.
+	// A bounded, pixel-scaled sweep avoids the old three-step depth/motion
+	// accumulation and keeps packed RGB-D samples out of the color half.
+	int samples = int(clamp(ceil(length(offset * depthSize)), 8.0, 32.0));
+	float foregroundDepth = 0.0;
+	for (int i = 0; i <= samples; ++i) {
+		vec2 sampleUV = clamp(depthUV + offset * (float(i) / float(samples)), depthMin, depthMax);
+		float depth = separateDepth == 1
+			? textureLod(depthTexture, sampleUV, 0.0).r
+			: textureLod(imageTexture, sampleUV, 0.0).r;
+		foregroundDepth = max(foregroundDepth, depth);
 	}
+	vec2 result = clamp(depthUV + (1.0 - foregroundDepth) * offset, depthMin, depthMax);
 	return separateDepth == 1 ? result : result * vec2(2.0, 1.0) - vec2(1.0, 0.0);
 }
 

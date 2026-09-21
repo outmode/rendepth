@@ -101,6 +101,7 @@ static std::filesystem::path selectedDiscPath;
 static int selectedDiscTitle = -1;
 static bool discTrackSelectionRequested = false;
 static bool discLoadingMessageNeedsFrame = false;
+static bool blurayMediaActive = false;
 static ScreenCapture screenCapture;
 static BrowserBridge browserBridge;
 static VideoDepthProcessor videoDepthProcessor;
@@ -342,6 +343,7 @@ std::vector<FileInfo> fileList{};
 static std::vector<std::string> deferredMediaFiles{};
 auto fileIndex = 0;
 static void failVideoLoad(const std::string& error, const char* fallbackText) {
+	blurayMediaActive = false;
 	if (!error.empty()) {
 		const char* path = fileList.empty() ? "" : fileList[fileIndex].link.c_str();
 		SDL_Log("Could not load video %s: %s", path, error.c_str());
@@ -1697,7 +1699,26 @@ static void setShowStereoSettings(bool show);
 static std::array stereoModes = {
 	Anaglyph_Accurate, Anaglyph_Vivid, SBS_Full, SBS_Half, RGB_Depth,
 	Horizontal, Vertical, Checkerboard, Free_View_Grid, Lenticular, Mono };
+// All interactive Pro entry points use the same locally persisted activation.
+static constexpr const char* proUpgradeMessage = "Upgrade to Pro to Unlock Feature";
+static bool requirePro() {
+	if (Licensing::Service::isLicensed()) return true;
+	context.displayMenu = false;
+	getIcon(IconType::Options).image = IconType::Options;
+	setShowStereoSettings(false);
+	Core::drawText(&context, proUpgradeMessage, Image::helpFont,
+		Image::helpTexture, Image::helpTextSize, "Help Texture");
+	Image::displayTip = true;
+	displayTipTime = getTimeNow();
+	return false;
+}
+
 static void changeStereo(int option) {
+	// Output format selection is free; only generating video depth needs Pro.
+	const bool monoVideo = (activeVideo && !videoPlayer.audioOnly() && !fileList.empty() &&
+		fileList[fileIndex].type == Color_Only) ||
+		(activeScreenCapture && captureSourceType == Color_Only);
+	const bool conversionLocked = monoVideo && !Licensing::Service::isLicensed();
 	if (stereoModes[option] == Mono) {
 		setDisplay3D(false);
 		if (activeVideo || activeScreenCapture) {
@@ -1730,12 +1751,12 @@ static void changeStereo(int option) {
 			}
 		}
 	} else {
-		if (!display3D) setDisplay3D(true);
+		setDisplay3D(!conversionLocked);
 	}
 	setPreferredStereo(stereoModes[option], true);
 	if (!fileList.empty() && stereoModes[option] != Mono) {
 		if (activeVideo) {
-			if (fileList[fileIndex].type == Color_Only && !videoDepthProcessor.running()) {
+			if (!conversionLocked && fileList[fileIndex].type == Color_Only && !videoDepthProcessor.running()) {
 				startVideoDepth();
 			}
 		} else if (!activeScreenCapture && fileList[fileIndex].type == Color_Only && !isConverting) {
@@ -1915,7 +1936,7 @@ static void stopVideoDepth(bool disable3D, bool clearTexture) {
 	}
 	if (disable3D) {
 		setDisplay3D(false);
-		if (activeVideo) setStereoMode(Native);
+		if (activeVideo || activeScreenCapture) refreshDisplay3D(context.imageType);
 	}
 }
 
@@ -1933,6 +1954,10 @@ static bool startVideoDepth(bool preserveTexture) {
 		// and already-converted RGB-D video must never start this model, even if
 		// a stale toggle or model-restart request reaches this function.
 		stopVideoDepth(false);
+		return false;
+	}
+	if (!requirePro()) {
+		stopVideoDepth();
 		return false;
 	}
 	stopVideoDepth(false, !preserveTexture);
@@ -2743,8 +2768,15 @@ static void finishSliderDrag(bool commitSeek) {
 	SDL_CaptureMouse(false);
 }
 
+static void refreshPlayIcon() {
+	// Video/audio playback and photo slideshows share this button.
+	const bool playing = activeVideo ? videoPlayer.playing() : isPlayingSlideshow;
+	getIcon(IconType::Play).image = playing ? IconType::Pause : IconType::Play;
+}
+
 static void setVideoControlsVisible(bool visible) {
 	videoControlsVisible = activeVideo && visible;
+	refreshPlayIcon();
 	auto& timeline = getIcon(IconType::VideoSeek);
 	auto& volume = getIcon(IconType::VideoVolume);
 	timeline.active = videoControlsVisible;
@@ -3345,8 +3377,13 @@ static void refreshDisplay3D(StereoFormat type) {
 		return;
 	}
 	if (type == Color_Only) {
-		setStereoMode(Native);
 		setDisplay3D(false);
+		// Mono video still uses the selected output layout (e.g. duplicate
+		// views for free view). The renderer samples the mono source in each
+		// view without inferred depth. Keep still-image behavior unchanged.
+		const bool videoOutput = activeScreenCapture || (activeVideo && !videoPlayer.audioOnly());
+		setStereoMode(videoOutput && preferredStereoMode != Mono && preferredStereoMode != Depth_Zoom
+			? preferredStereoMode : Native);
 	} else {
 		if (display3D) {
 			if (preferredStereoMode == Lenticular && !Image::nativeOutputAvailable())
@@ -3381,9 +3418,13 @@ static void setPreferredStereo(ViewMode mode, bool saveMode) {
 		Image::updateSize(&context);
 		Image::updateRatio(&context, windowSize);
 	} else if (!fileList.empty()) {
-		const auto sourceType = activeVideo &&
-			(videoDepthFrameLoaded || videoDepthProcessor.running())
-			? Color_Plus_Depth : fileList[fileIndex].type;
+		// A depth-settings change can invalidate file metadata while the old
+		// RGB-D texture remains displayed. Present the loaded texture using its
+		// actual format until its replacement has been uploaded.
+		const auto sourceType = activeVideo
+			? ((videoDepthFrameLoaded || videoDepthProcessor.running())
+				? Color_Plus_Depth : fileList[fileIndex].type)
+			: context.imageType;
 		refreshDisplay3D(sourceType);
 		Image::updateSize(&context);
 		Image::updateRatio(&context, windowSize);
@@ -3516,6 +3557,7 @@ static void toggleFullscreen() {
 }
 
 static void stopCapture() {
+	blurayMediaActive = false;
 	browserBridge.endSession();
 	browserCapture = false;
 	if (isPlayingSlideshow) cancelSlideshow();
@@ -3579,6 +3621,8 @@ static void stopCapture() {
 }
 
 static std::string beginBrowserCapture(const BrowserBridge::Request& request) {
+	if (request.mono && !requirePro())
+		return proUpgradeMessage;
 	if (isConverting || doingFileOp || context.loading)
 		return "Rendepth is loading or converting media. Try again when it is ready.";
 	stopCapture();
@@ -3632,6 +3676,11 @@ static void toggleScreenCapture() {
 
 void toggleStereo() {
 	if (discTitleMenu.visible()) return;
+	if (!display3D &&
+		((activeVideo && !videoPlayer.audioOnly() && !fileList.empty() &&
+			fileList[fileIndex].type == Color_Only) ||
+		 (activeScreenCapture && captureSourceType == Color_Only)) &&
+		!requirePro()) return;
 	resetRapidBrowseState();
 	if (preferredStereoMode == Mono) return;
 	if (isConverting) return;
@@ -3778,12 +3827,13 @@ static void setSlideshow(bool slide) {
 		} else {
 			currentVisibility = 0.0;
 		}
-		if (fileList[fileIndex].type == Color_Only ||
-			(fileList[fileIndex].type == Color_Plus_Depth && !display3D) ||
+		const auto displayedType = context.imageType;
+		if (displayedType == Color_Only ||
+			(displayedType == Color_Plus_Depth && !display3D) ||
 			preferredStereoMode == Mono) {
 			setPreferredStereo(Depth_Zoom, false);
 			setDisplay3D(true);
-			refreshDisplay3D(fileList[fileIndex].type);
+			refreshDisplay3D(displayedType);
 		}
 	} else {
 		if (currentStereoMode == Depth_Zoom) {
@@ -4243,6 +4293,15 @@ static int loadImage(void* ptr) {
 	if (fileList.empty() || fileIndex < 0 || fileIndex >= static_cast<int>(fileList.size())) return 1;
 	const std::filesystem::path mediaPath = fileList[fileIndex].link;
 	const auto discType = DiscSource::detect(mediaPath);
+	if (discType == DiscSource::Type::Bluray && !Licensing::Service::isLicensed()) {
+		blurayMediaActive = false;
+		discTitleMenu.close();
+		Image::discMenuTexture = nullptr;
+		Image::updateDiscBackground(&context, nullptr);
+		failVideoLoad({}, proUpgradeMessage);
+		return 1;
+	}
+	blurayMediaActive = discType == DiscSource::Type::Bluray;
 	if ((discType == DiscSource::Type::Bluray || discType == DiscSource::Type::Dvd) &&
 		(selectedDiscTitle < 0 || selectedDiscPath != mediaPath)) {
 		stopVideoDepth(false);
@@ -4331,12 +4390,13 @@ static int loadImage(void* ptr) {
 		// Video controls and stereo settings occupy the same UI area.
 		// Close the stereo panel before showing controls for the new video.
 		setShowStereoSettings(false);
-		const bool preserveMonoVideo3D = display3D &&
+		const bool preserveMonoVideo3D = Licensing::Service::isLicensed() && display3D &&
 			fileList[fileIndex].type == Color_Only;
 		// Keep the current 3D presentation visible while the replacement video
 		// initializes. This applies to both source-stereo and inferred-depth video.
 		const bool preserveVideo3D = activeVideo && display3D && videoFrameLoaded &&
-			lastVideoFrame != nullptr;
+			lastVideoFrame != nullptr && (Licensing::Service::isLicensed() ||
+			fileList[fileIndex].type != Color_Only);
 		const bool replacementNeedsDepth = preserveVideo3D &&
 			fileList[fileIndex].type == Color_Only;
 		const bool preserveVideoDepth = preserveVideo3D && replacementNeedsDepth &&
@@ -4370,14 +4430,16 @@ static int loadImage(void* ptr) {
 			fileList[fileIndex].type = Side_By_Side_Full;
 		}
 		if (preserveVideo3D) {
-			if (!preserveVideoDepth && fileList[fileIndex].type == Color_Only)
+			if (Licensing::Service::isLicensed() && !preserveVideoDepth && fileList[fileIndex].type == Color_Only)
 				startVideoDepth(preserveDepthTexture);
 		} else if (preserveMonoVideo3D) {
 			startVideoDepth();
 		}
 		if (preserveMonoVideo3D) keep3DForDepthReload = true;
 		resetVideoPlaybackBuffer(false, !preserveDepthTexture);
-		context.imageType = previousImageType;
+		context.imageType = preserveVideo3D ? previousImageType : fileList[fileIndex].type;
+		if (!Licensing::Service::isLicensed() && fileList[fileIndex].type == Color_Only)
+			refreshDisplay3D(Color_Only);
 		videoFrameLoaded = preserveVideo3D;
 		videoFileTransitionActive = preserveVideo3D;
 		videoFileTransitionNeedsDepth = replacementNeedsDepth &&
@@ -4461,6 +4523,20 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	MediaOpenDialog::poll();
 	Licensing::Service::poll();
 	refreshLicenseMenu(true);
+	// Enforce deactivation even for cached depth and an open disc title menu.
+	if (!Licensing::Service::isLicensed()) {
+		if (blurayMediaActive) {
+			discTitleMenu.close();
+			Image::discMenuTexture = nullptr;
+			Image::updateDiscBackground(&context, nullptr);
+			selectedDiscPath.clear();
+			selectedDiscTitle = -1;
+			stopCapture();
+		} else if (videoDepthProcessor.running() || videoDepthFrameLoaded) {
+			if (browserCapture && captureSourceType == Color_Only) stopCapture();
+			else stopVideoDepth();
+		}
+	}
 	browserBridge.poll(beginBrowserCapture);
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	// Refresh only while settings is visible, and avoid filesystem polling per frame.
@@ -4957,6 +5033,7 @@ void checkMouseState() {
 		if (icon.type == IconType::Back) icon.label = discBrowser ? "Previous Page" : "Previous Image";
 		if (icon.type == IconType::Forward) icon.label = discBrowser ? "Next Page" : "Next Image";
 		if (icon.type == IconType::Play) {
+			refreshPlayIcon();
 			const char* label = activeVideo
 				? (videoPlayer.playing() ? "Pause Media" : "Play Media")
 				: (isPlayingSlideshow ? "Stop Slideshow" : "Start Slideshow");

@@ -3349,6 +3349,12 @@ int Image::draw(Context* context) {
 							}
 						} else if (context->imageType == Color_Only) imageDataFrag.mode = Native;
 
+						// Native is a temporary fallback during media/mode transitions.
+						// Never expose the packed depth half on the display. Export has
+						// its own render path, and explicit RGB_Depth preview is unchanged.
+						if (imageDataFrag.mode == Native && context->imageType == Color_Plus_Depth)
+							imageDataFrag.mode = Mono;
+
 						imageDataFrag.visibility = 1.0;
 						imageDataFrag.stereoStrength = (float)context->stereoStrength;
 						imageDataFrag.stereoDepth = (float)context->stereoDepth;
