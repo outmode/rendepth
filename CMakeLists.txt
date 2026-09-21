@@ -297,7 +297,7 @@ target_compile_definitions(Rendepth PUBLIC
         SDL_MAIN_USE_CALLBACKS
         RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS=$<BOOL:${RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS}>)
 
-target_sources(Rendepth PUBLIC Source/Main.cpp Source/SettingsFile.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp Source/MediaOpenDialog.cpp Source/BlurayReader.cpp Source/DvdReader.cpp Source/DiscTitleMenu.cpp
+target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp Source/MediaOpenDialog.cpp Source/BlurayReader.cpp Source/DvdReader.cpp Source/DiscTitleMenu.cpp
 		Source/VideoDepthProcessor.cpp
 		Source/ScreenCapture.cpp Source/BrowserBridge.cpp
         Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
@@ -325,6 +325,68 @@ if(WIN32)
     target_link_libraries(Rendepth PUBLIC winhttp ole32 shell32 uuid bcrypt crypt32)
 else()
     target_link_libraries(Rendepth PUBLIC CURL::libcurl)
+endif()
+
+# Public Lemon Squeezy identifiers only; never put seller API credentials here.
+# Owner-supplied IDs; confirm against a test activation before release.
+set(RENDEPTH_LICENSE_STORE_ID "474981" CACHE STRING "Lemon Squeezy store ID (0 disables activation)")
+set(RENDEPTH_LICENSE_PRODUCT_ID "1373415" CACHE STRING "Rendepth Pro product ID")
+set(RENDEPTH_LICENSE_VARIANT_ID "0" CACHE STRING "Optional Pro variant ID (0 accepts all product variants)")
+# Current checkout is owner-supplied for Test Mode; verify live settings before release.
+set(RENDEPTH_LICENSE_PURCHASE_URL "https://shop.rendepth.com/checkout/buy/dea78604-79fe-4ef0-b9b8-b57d6017a9c3" CACHE STRING "Rendepth Pro HTTPS checkout URL")
+set(RENDEPTH_LICENSE_SUPPORT_URL "mailto:support@outmode.com" CACHE STRING "Rendepth license support HTTPS or mailto URL")
+foreach(field STORE_ID PRODUCT_ID VARIANT_ID)
+    if(NOT "${RENDEPTH_LICENSE_${field}}" MATCHES "^(0|[1-9][0-9]*)$")
+        message(FATAL_ERROR "RENDEPTH_LICENSE_${field} must be a non-negative integer")
+    endif()
+    string(LENGTH "${RENDEPTH_LICENSE_${field}}" id_length)
+    if(id_length GREATER 15)
+        message(FATAL_ERROR "RENDEPTH_LICENSE_${field} is too long")
+    endif()
+endforeach()
+foreach(field PURCHASE_URL SUPPORT_URL)
+    set(license_url_scheme "^https://")
+    if(field STREQUAL "SUPPORT_URL")
+        set(license_url_scheme "^(https://|mailto:)")
+    endif()
+    if(NOT "${RENDEPTH_LICENSE_${field}}" STREQUAL "" AND
+       (NOT "${RENDEPTH_LICENSE_${field}}" MATCHES "${license_url_scheme}" OR
+        "${RENDEPTH_LICENSE_${field}}" MATCHES "[\"\\\\\n\r;]"))
+        message(FATAL_ERROR "RENDEPTH_LICENSE_${field} must be a plain HTTPS URL (mailto is also allowed for support)")
+    endif()
+endforeach()
+configure_file(Source/Licensing/LicenseConfig.h.in generated/LicenseConfig.h @ONLY)
+find_package(Threads REQUIRED)
+add_library(RendepthLicensing STATIC
+    Source/Licensing/LemonSqueezyClient.cpp Source/Licensing/LicenseStorage.cpp
+    Source/Licensing/LicenseManager.cpp Source/SettingsFile.cpp)
+target_include_directories(RendepthLicensing PUBLIC Source PRIVATE ThirdParty/rapidjson/include)
+target_link_libraries(RendepthLicensing PUBLIC Threads::Threads)
+if(WIN32)
+    target_link_libraries(RendepthLicensing PRIVATE winhttp)
+else()
+    target_link_libraries(RendepthLicensing PRIVATE CURL::libcurl)
+endif()
+target_link_libraries(Rendepth PRIVATE RendepthLicensing)
+target_include_directories(Rendepth PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_sources(Rendepth PRIVATE Source/Licensing/LicenseService.cpp)
+if(WIN32)
+    target_sources(Rendepth PRIVATE Source/Licensing/LicenseDialogWin.cpp)
+elseif(APPLE)
+    enable_language(OBJCXX)
+    set_property(TARGET Rendepth PROPERTY OBJCXX_STANDARD 20)
+    target_sources(Rendepth PRIVATE Source/Licensing/LicenseDialogMac.mm)
+    set_source_files_properties(Source/Licensing/LicenseDialogMac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    target_link_libraries(Rendepth PRIVATE "-framework Cocoa")
+else()
+    target_sources(Rendepth PRIVATE Source/Licensing/LicenseDialogGtk.cpp)
+endif()
+add_executable(LicensingTest EXCLUDE_FROM_ALL Source/Licensing/LicensingTest.cpp)
+target_link_libraries(LicensingTest PRIVATE RendepthLicensing)
+if(UNIX AND NOT APPLE)
+    add_executable(LicenseDialogTest EXCLUDE_FROM_ALL
+        Source/Licensing/LicenseDialogTest.cpp Source/Licensing/LicenseDialogGtk.cpp)
+    target_link_libraries(LicenseDialogTest PRIVATE SDL3::SDL3 PkgConfig::GTK3)
 endif()
 
 if(RENDEPTH_ENABLE_FFMPEG)

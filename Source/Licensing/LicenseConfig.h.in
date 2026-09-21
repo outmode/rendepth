@@ -1,0 +1,8 @@
+#pragma once
+#include "Licensing/LicenseTypes.h"
+namespace Licensing {
+inline Config buildConfig() {
+    return {@RENDEPTH_LICENSE_STORE_ID@ULL, @RENDEPTH_LICENSE_PRODUCT_ID@ULL,
+        @RENDEPTH_LICENSE_VARIANT_ID@ULL, "@RENDEPTH_LICENSE_PURCHASE_URL@", "@RENDEPTH_LICENSE_SUPPORT_URL@"};
+}
+}

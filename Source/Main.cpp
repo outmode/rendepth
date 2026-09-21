@@ -46,6 +46,7 @@
 #include <utility>
 #include "DiscSource.h"
 #include "MediaOpenDialog.h"
+#include "Licensing/LicenseDialog.h"
 #include "DvdReader.h"
 #include "LiveVideoBuffer.h"
 #include "VideoDepthMotion.h"
@@ -1623,10 +1624,17 @@ static void runtimeTools(int option);
 #endif
 
 Choice ChoiceVersion {
-	.label = "Rendepth 3.0.0 (Pro License)",
+	.label = "Rendepth 3.0.0",
 	.options = {},
+	.readOnly = true,
 	.inlineText = true,
 	.bold = true,
+};
+
+Choice ChoiceLicense {
+	.label = "Upgrade to Rendepth Pro",
+	.options = {},
+	.inlineText = true,
 };
 
 Choice ChoiceCredit {
@@ -1641,12 +1649,13 @@ static std::vector menuChoices = { ChoiceStereo, ChoiceExport, ChoiceModel, Choi
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	, ChoiceInference, ChoiceRuntimePacks, ChoiceRuntimeTools
 #endif
-	, ChoiceVersion, ChoiceCredit
+	, ChoiceVersion, ChoiceLicense, ChoiceCredit
 };
 
 static std::unordered_map<std::string, int> menuSelection = {
 	{ ChoiceCredit.label, -1 },
 	{ ChoiceVersion.label, -1 },
+	{ ChoiceLicense.label, -1 },
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	{ ChoiceInference.label, 0 },
 	{ ChoiceRuntimePacks.label, 0 },
@@ -1666,6 +1675,7 @@ static std::unordered_map<std::string, int> menuSelection = {
 static std::unordered_map<std::string, int> menuRollover = {
 	{ ChoiceCredit.label, -1 },
 	{ ChoiceVersion.label, -1 },
+	{ ChoiceLicense.label, -1 },
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	{ ChoiceInference.label, -1 },
 	{ ChoiceRuntimePacks.label, -1 },
@@ -2178,10 +2188,9 @@ static void changeSlideshow(int option) {
 
 static bool firstInit = true;
 static std::unordered_map<std::string, std::function<void(int)>> menuCallback = {
-	{ ChoiceVersion.label, [](int) {
-		menuSelection[ChoiceVersion.label] = -1;
-		if (!SDL_OpenURL("https://rendepth.com/"))
-			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Rendepth Website", SDL_GetError(), context.window);
+	{ ChoiceLicense.label, [](int) {
+		menuSelection[ChoiceLicense.label] = -1;
+		if (!firstInit) Licensing::Service::open(context.window);
 	} },
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	{ ChoiceInference.label, [](int option) { changeInference(option); } },
@@ -3079,7 +3088,7 @@ void saveOptions() {
 	std::vector<const char*> nameCache{};
     for (const auto& setting : menuSelection) {
         if (setting.first == ChoiceTags.label || setting.first == ChoiceVersion.label ||
-			setting.first == ChoiceCredit.label) continue;
+			setting.first == ChoiceCredit.label || setting.first == ChoiceLicense.label) continue;
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 		if (transientInferenceSetting(setting.first)) continue;
 #endif
@@ -3164,7 +3173,7 @@ void loadOptions() {
 
 	for (auto& setting : menuSelection) {
 		if (setting.first == ChoiceTags.label || setting.first == ChoiceVersion.label ||
-			setting.first == ChoiceCredit.label) continue;
+			setting.first == ChoiceCredit.label || setting.first == ChoiceLicense.label) continue;
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 		if (transientInferenceSetting(setting.first) || setting.first == ChoiceInference.label) continue;
 #endif
@@ -4040,7 +4049,31 @@ static SDL_HitTestResult windowHitCallback(SDL_Window* window,
 
 	return SDL_HITTEST_NORMAL;
 }
+static bool displayedProLicense = false;
+static void refreshLicenseMenu(bool rebuild) {
+    const bool licensed = Licensing::Service::isLicensed();
+    if (licensed == displayedProLicense) return;
+    displayedProLicense = licensed;
+    const auto rename = [](Choice& original, const std::string& label) {
+        for (auto& choice : menuChoices) if (choice.label == original.label) choice.label = label;
+        auto action = menuCallback.extract(original.label);
+        if (!action.empty()) { action.key() = label; menuCallback.insert(std::move(action)); }
+        menuSelection.erase(original.label); menuRollover.erase(original.label);
+        menuSelection[label] = -1; menuRollover[label] = -1;
+        original.label = label;
+    };
+    rename(ChoiceVersion, licensed ? "Rendepth 3.0.0 (Pro License)" : "Rendepth 3.0.0");
+    rename(ChoiceLicense, licensed ? "Manage Rendepth Pro License" : "Upgrade to Rendepth Pro");
+    if (rebuild) {
+        Image::initMenuTexture();
+        Image::createMenuAssets(&context);
+        Image::saveMenuLayout(&context);
+    }
+}
+
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
+	Licensing::Service::initialize();
+	refreshLicenseMenu(false);
 	std::string fileToLoad{};
 	if (argc >= 2) fileToLoad = std::string(argv[1]);
 
@@ -4229,7 +4262,7 @@ static int loadImage(void* ptr) {
 		setStereoMode(Native);
 		context.displayMenu = false;
 		getIcon(IconType::Options).image = IconType::Options;
-		Core::drawText(&context, "Loading Disc", Image::helpFont,
+		Core::drawText(&context, "Reading Disc...", Image::helpFont,
 			Image::helpTexture, Image::helpTextSize, "Help Texture");
 		Image::displayHelp = true;
 		Image::displayTip = false;
@@ -4426,6 +4459,8 @@ static void serviceDeferredMediaLoad() {
 
 SDL_AppResult SDL_AppIterate(void* appstate) {
 	MediaOpenDialog::poll();
+	Licensing::Service::poll();
+	refreshLicenseMenu(true);
 	browserBridge.poll(beginBrowserCapture);
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	// Refresh only while settings is visible, and avoid filesystem polling per frame.
@@ -6313,6 +6348,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 }
 
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
+	Licensing::Service::close();
 	MediaOpenDialog::close();
 	discTitleMenu.shutdown(&context);
 	Image::discMenuTexture = nullptr;

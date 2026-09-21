@@ -35,6 +35,7 @@ Build Instructions
 - Clone this repository: `git clone https://github.com/outmode/rendepth.git`
 - Go to the root folder: `cd rendepth`
 - Initialize submodules: `git submodule update --init --recursive`
+- After pulling Rendepth updates, run the same command to synchronize the pinned dependencies, including nested submodules. Do not add `--remote`: that follows upstream branches instead of Rendepth's recorded commits.
 - Check `ThirdParty` folder and install dependencies for each library.
 - Build and Install `SDL_shadercross` needed for compiling shaders.
 - Navigate to the root folder of the repo: `rendepth`
@@ -43,6 +44,16 @@ Build Instructions
 - Build for Release: `cmake -S .. -B . -DCMAKE_BUILD_TYPE=Release`
 - Compile project: `cmake --build .`
 - App will be built in `Binary` folder.
+
+Dependency versions are pinned by Git submodule commits. The SDL and SyLC pins are:
+
+| Dependency | Version / commit |
+| --- | --- |
+| SDL | `release-3.4.16` |
+| SDL_image | `release-3.4.6` |
+| SDL_ttf | `release-3.2.2` |
+| SDL_shadercross | `1ff05bec573988a98ef9e0260b4da44f512b8367` (no upstream release tags) |
+| SyLC | `v5.3.1` |
 - Folders `Assets` `Binary` `Library` `Shaders` must remain together.
 
 - Linux/macOS can use g++/clang. Windows builds use MSVC.
