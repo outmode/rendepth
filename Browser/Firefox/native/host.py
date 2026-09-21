@@ -151,7 +151,15 @@ def run(executable):
     answer_deadline = None
     with tempfile.TemporaryDirectory(prefix="rendepth-firefox-") as temporary:
         directory = Path(temporary)
+        # A killed native host cannot run TemporaryDirectory cleanup. Let the
+        # viewer distinguish that from a healthy but paused browser video.
+        heartbeat = directory / "heartbeat"
+        heartbeat.touch()
+        next_heartbeat = time.monotonic() + 1
         while True:
+            if time.monotonic() >= next_heartbeat:
+                heartbeat.touch()
+                next_heartbeat = time.monotonic() + 1
             if receiver is not None:
                 if process is not None:
                     process.poll()

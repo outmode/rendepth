@@ -5,9 +5,12 @@ running Rendepth window, launching the app if none is available. It uses a direc
 **WebRTC/VP8 video stream**, with a **60 fps ceiling**, instead of JPEG snapshots.
 Choose **2D Video** (the first/default option) to run ordinary video through
 Rendepth’s standard live video depth model and 3D renderer automatically. The
-existing Rendepth model-quality and 3D display controls apply. Half/full SBS and
-swapped eyes are also selectable; those modes preserve source stereo and skip
-depth inference. Playback and audio stay in Firefox.
+existing Rendepth model-quality and 3D display controls apply. The format menu
+offers **2D Video**, **SBS Half**, and **SBS Full**. Stereo modes preserve source
+stereo and skip depth inference, with the left eye first. Eye swapping is controlled in Rendepth. Playback and audio stay in Firefox.
+Without Pro, **2D Video** streams as flat video and shows the upgrade message;
+depth conversion requires Pro. Deactivating Pro stops depth conversion while
+keeping the browser video connected.
 
 ## Try it
 
@@ -36,14 +39,22 @@ depth inference. Playback and audio stay in Firefox.
    select `Browser/Firefox/extension/manifest.json`. For an already loaded add-on,
    use **Reload**, then reload the video page. The old JPEG extension and receiver
    are not compatible with the new signalling protocol.
-5. Play an SBS video. Click the extension toolbar button, select **SBS Half** or
-   **SBS Full**, optionally select **Swap eyes**, then **Open Playing Video**.
+5. Play a video. Click the extension toolbar button, select **2D Video**,
+   **SBS Half**, or **SBS Full**, then **Open Playing Video**.
    The toolbar selects the largest playing video in the main document. To choose
    a specific video, use its right-click **Open in Rendepth** submenu. On sites
    with custom video menus, Shift + right-click can expose Firefox's menu.
 6. Select your usual stereo output in Rendepth. Stop from the extension popup or
    the capture button in Rendepth. Stopping clears capture and leaves the window
    open; closing the window also ends the browser connection.
+
+Stopping or losing the browser connection releases the last displayed frame and
+returns Rendepth to its empty background.
+Closing capture also closes secondary light-field output windows; the main
+Rendepth window stays open. A native-host crash is detected after
+about five seconds without its heartbeat; a disconnected WebRTC transport gets
+a five-second recovery window. Pausing, buffering and waiting for the next video
+on the same page keep the connection and last picture.
 
 The existing native-host registration remains valid. No extension permission
 changes are needed. Temporary add-ons disappear when Firefox restarts; this has
@@ -83,8 +94,7 @@ To remove registration, delete only `com.outmode.rendepth.json` and
 - Firefox enforces protected/cross-origin media restrictions. The extension does
   not extract media URLs or bypass those restrictions. One public YouTube video has been tested, including quality changes. This is
   not a guarantee for all YouTube videos, ads, protected content or other sites.
-- Images, TAB input, automatic stereo detection and 2D depth conversion are not
-  exposed by this extension yet.
+- Images, TAB input and automatic stereo detection are not exposed by this extension yet.
 
 ## Architecture
 
@@ -213,7 +223,8 @@ throughput fixture uses timestamped encoded video files instead.
 For a manual visual test, serve this directory with
 `python3 -m http.server 8765 --bind 127.0.0.1`, open
 `http://127.0.0.1:8765/test-video.html`, and click **Play test video**. Choose
-**SBS Full**. The eyes should read LEFT and RIGHT; Swap eyes should reverse them.
+**SBS Full**. The eyes should read LEFT and RIGHT; swap eyes in Rendepth to
+reverse them.
 This canvas fixture is for visual checks, not frame-rate benchmarking.
 
 References:

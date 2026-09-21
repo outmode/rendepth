@@ -109,6 +109,16 @@ class ProtocolTest(unittest.TestCase):
                             self.assertEqual(request["swap"], swap)
                             self.assertEqual((capture / "offer.sdp").read_bytes(), offer.encode())
                             self.assertFalse((capture / "frame.jpg").exists())
+                            heartbeat = capture / "heartbeat"
+                            self.assertTrue(heartbeat.is_file())
+                            if format_name == "2d":
+                                # Even a paused video sends no further messages;
+                                # the host must still advertise that it is alive.
+                                initial = heartbeat.stat().st_mtime_ns
+                                deadline = time.monotonic() + 3
+                                while heartbeat.stat().st_mtime_ns == initial and time.monotonic() < deadline:
+                                    time.sleep(0.05)
+                                self.assertNotEqual(heartbeat.stat().st_mtime_ns, initial)
                             process.stdin.close()
                             process.wait(timeout=5)
                             self.assertEqual(process.returncode, 0)

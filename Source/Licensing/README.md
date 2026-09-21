@@ -3,12 +3,14 @@
 The options menu opens a native license window under the app version line:
 GTK 3 on Linux, Win32 controls on Windows, and Cocoa on macOS. Activation is
 optional. Free users can convert still images/photos and display native stereo
-photos and videos (including native stereo browser streams). Video depth
+photos and videos (including native stereo browser streams). Mono browser streams
+also play without activation, with an upgrade message and no inferred depth. Video depth
 conversion, mono browser video conversion, and Blu-ray playback require Pro.
 DVD and audio playback remain available without activation. Locked actions show
 "Upgrade to Pro to Unlock Feature" using the centered in-app message. The license
 window remains available from the options menu. Deactivation stops active conversion
-and Blu-ray playback, including an open Blu-ray title menu. There is no first-run
+and Blu-ray playback, including an open Blu-ray title menu. Browser video keeps
+playing flat when its depth conversion stops. There is no first-run
 activation requirement. The version line only displays
 "Pro License" when a complete local activation record exists.
 

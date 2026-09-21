@@ -1201,6 +1201,22 @@ void Image::clearVideoDepth(Context* context) {
 	videoDepthTextureSize = {};
 }
 
+void Image::clearVideoFrame(Context* context) {
+	// Hiding the image alone leaves its last frame available to native output.
+	for (auto* texture : {&imageTexture, &videoYTexture, &videoUTexture,
+		&videoVTexture, &blurTexture, &blurTextureNext}) {
+		if (*texture != nullptr) SDL_ReleaseGPUTexture(context->device, *texture);
+		*texture = nullptr;
+	}
+	clearVideoDepth(context);
+	videoTextureSize = videoYUVLumaSize = videoYUVChromaSize = {};
+	videoBlurActive = videoSolidTransitionActive = videoSolidColorValid = false;
+	imageDataFrag.blurMix = 0.0f;
+	clearColorSolid = clearColorDark;
+	clearColorCurrent = context->backgroundStyle == Light ? clearColorLight : clearColorDark;
+	nativeOutputSourceReady = false;
+}
+
 void Image::updateVideoSubtitle(Context* context,
 	const std::shared_ptr<const VideoSubtitle>& subtitle) {
 	if (context == nullptr) return;

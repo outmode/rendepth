@@ -226,6 +226,7 @@ public:
 	static int updateVideoDepth(Context* context, const std::vector<std::uint16_t>& values,
 		int width, int height);
 	static void clearVideoDepth(Context* context);
+	static void clearVideoFrame(Context* context);
 	static void updateVideoSubtitle(Context* context,
 		const std::shared_ptr<const VideoSubtitle>& subtitle);
 	static int draw(Context* context);

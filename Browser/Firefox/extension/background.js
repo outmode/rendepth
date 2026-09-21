@@ -4,8 +4,9 @@ let status = "Choose a playing video.";
 
 function setStatus(text, error = false) {
   status = text;
-  browser.browserAction.setBadgeText({text: error ? "!" : session ? "ON" : ""});
-  browser.browserAction.setBadgeBackgroundColor({color: error ? "#b3261e" : "#a02376"});
+  browser.browserAction.setBadgeText({text: error ? "!" : session ? "⏻" : ""});
+  browser.browserAction.setBadgeBackgroundColor({color: error ? "#b3261e" : "#fe1c68"});
+  browser.browserAction.setBadgeTextColor({color: "#ffffff"});
 }
 
 function stop(text = "Stopped.") {
@@ -18,12 +19,12 @@ function stop(text = "Stopped.") {
   setStatus(text);
 }
 
-async function start(tabId, frameId, targetElementId, format, swap, scaleHalf = true) {
+async function start(tabId, frameId, targetElementId, format, scaleHalf = true) {
   stop();
   try {
     await browser.tabs.executeScript(tabId, {file: "capture.js", frameId});
     const reply = await browser.tabs.sendMessage(tabId,
-      {action: "start", targetElementId, format, swap, scaleHalf}, {frameId});
+      {action: "start", targetElementId, format, swap: false, scaleHalf}, {frameId});
     if (!reply?.ok) throw new Error(reply?.error || "Could not select the video.");
   } catch (error) {
     stop(error.message);
@@ -72,15 +73,14 @@ browser.runtime.onConnect.addListener(content => {
 });
 
 browser.menus.create({id: "open", title: "Open in Rendepth", contexts: ["video"]});
-for (const [id, title] of [["2d", "2D Video"], ["half", "SBS Half"], ["full", "SBS Full"],
-  ["half-swap", "SBS Half — Swap Eyes"], ["full-swap", "SBS Full — Swap Eyes"]]) {
+for (const [id, title] of [["2d", "2D Video"], ["sbs-half", "SBS Half"],
+  ["sbs-full", "SBS Full"]]) {
   browser.menus.create({id, parentId: "open", title, contexts: ["video"]});
 }
 browser.menus.onClicked.addListener((info, tab) => {
   if (info.parentMenuItemId === "open") {
     start(tab.id, info.frameId, info.targetElementId,
-      info.menuItemId === "2d" ? "2d" : (info.menuItemId.startsWith("half") ? "sbs-half" : "sbs-full"),
-      info.menuItemId.endsWith("swap"));
+      info.menuItemId);
   }
 });
 browser.runtime.onMessage.addListener(async message => {
@@ -88,7 +88,7 @@ browser.runtime.onMessage.addListener(async message => {
   if (message.action === "stop") stop();
   if (message.action === "open") {
     const [tab] = await browser.tabs.query({active: true, currentWindow: true});
-    await start(tab.id, 0, null, message.format, message.swap, message.scaleHalf);
+    await start(tab.id, 0, null, message.format, message.scaleHalf);
   }
   return {status, active: Boolean(session)};
 });

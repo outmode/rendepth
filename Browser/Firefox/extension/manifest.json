@@ -3,8 +3,9 @@
   "name": "Rendepth",
   "version": "0.2.5",
   "description": "Open a playing 2D or SBS video in Rendepth for 3D viewing.",
+  "icons": {"512": "icons/rendepth.png"},
   "browser_specific_settings": {"gecko": {"id": "firefox@rendepth.outmode", "strict_min_version": "138.0"}},
   "permissions": ["activeTab", "menus", "nativeMessaging"],
   "background": {"scripts": ["background.js"]},
-  "browser_action": {"default_title": "Open in Rendepth", "default_popup": "popup.html"}
+  "browser_action": {"default_title": "Open in Rendepth", "default_popup": "popup.html", "default_icon": "icons/rendepth.png"}
 }

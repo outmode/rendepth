@@ -1626,9 +1626,8 @@ static void runtimeTools(int option);
 #endif
 
 Choice ChoiceVersion {
-	.label = "Rendepth 3.0.0",
+	.label = "Rendepth 3.0.0 (Free Version)",
 	.options = {},
-	.readOnly = true,
 	.inlineText = true,
 	.bold = true,
 };
@@ -2213,6 +2212,11 @@ static void changeSlideshow(int option) {
 
 static bool firstInit = true;
 static std::unordered_map<std::string, std::function<void(int)>> menuCallback = {
+	{ ChoiceVersion.label, [](int) {
+		menuSelection[ChoiceVersion.label] = -1;
+		if (!firstInit && !SDL_OpenURL("https://rendepth.com/"))
+			SDL_Log("Could not open Rendepth website: %s", SDL_GetError());
+	} },
 	{ ChoiceLicense.label, [](int) {
 		menuSelection[ChoiceLicense.label] = -1;
 		if (!firstInit) Licensing::Service::open(context.window);
@@ -3605,6 +3609,10 @@ static void stopCapture() {
 	fileIndex = -1;
 	// Return to the same empty state used at startup instead of leaving the
 	// last captured frame as the current image.
+	// Secondary light-field windows have their own swapchains; close them so
+	// they cannot retain the last presented frame after the feed ends.
+	Image::setNativeOutputActive(&context, false);
+	Image::clearVideoFrame(&context);
 	FileInfo emptyFile{};
 	Image::load(&context, emptyFile, nullptr);
 	context.loading = false;
@@ -3621,8 +3629,6 @@ static void stopCapture() {
 }
 
 static std::string beginBrowserCapture(const BrowserBridge::Request& request) {
-	if (request.mono && !requirePro())
-		return proUpgradeMessage;
 	if (isConverting || doingFileOp || context.loading)
 		return "Rendepth is loading or converting media. Try again when it is ready.";
 	stopCapture();
@@ -3632,14 +3638,18 @@ static std::string beginBrowserCapture(const BrowserBridge::Request& request) {
 	captureSourceType = request.mono ? Color_Only :
 		(request.half ? Side_By_Side_Half : Side_By_Side_Full);
 	swapLeftRight = request.swap;
-	if (request.mono && !startVideoDepth()) {
+	// Accept mono playback on Free; only depth inference requires Pro.
+	// Check after stopCapture(), which clears the previous on-screen tip.
+	const bool convertMono = request.mono && requirePro();
+	if (convertMono && !startVideoDepth()) {
 		stopCapture();
 		return "Could not start video depth conversion.";
 	}
 	context.loading = true;
 	currentVisibility = 0.0;
 	targetVisibility = 1.0;
-	setDisplay3D(true);
+	setDisplay3D(!request.mono || convertMono);
+	if (request.mono && !convertMono) refreshDisplay3D(Color_Only);
 	if (SDL_GetWindowFlags(context.window) & SDL_WINDOW_MINIMIZED)
 		SDL_RestoreWindow(context.window);
 	SDL_RaiseWindow(context.window);
@@ -4112,7 +4122,7 @@ static void refreshLicenseMenu(bool rebuild) {
         menuSelection[label] = -1; menuRollover[label] = -1;
         original.label = label;
     };
-    rename(ChoiceVersion, licensed ? "Rendepth 3.0.0 (Pro License)" : "Rendepth 3.0.0");
+    rename(ChoiceVersion, licensed ? "Rendepth 3.0.0 (Pro License)" : "Rendepth 3.0.0 (Free Version)");
     rename(ChoiceLicense, licensed ? "Manage Rendepth Pro License" : "Upgrade to Rendepth Pro");
     if (rebuild) {
         Image::initMenuTexture();
@@ -4533,8 +4543,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 			selectedDiscTitle = -1;
 			stopCapture();
 		} else if (videoDepthProcessor.running() || videoDepthFrameLoaded) {
-			if (browserCapture && captureSourceType == Color_Only) stopCapture();
-			else stopVideoDepth();
+			stopVideoDepth();
 		}
 	}
 	browserBridge.poll(beginBrowserCapture);

@@ -228,9 +228,23 @@ struct BrowserStream::Impl {
 			bool answered = false;
 			auto oversizedSince = Clock::time_point{};
 			const auto deadline = Clock::now() + std::chrono::seconds(10);
+			std::error_code heartbeatError;
+			auto heartbeatStamp = std::filesystem::last_write_time(directory / "heartbeat", heartbeatError);
+			const bool monitorHost = !heartbeatError; // Older hosts and standalone receiver tests omit it.
+			auto hostSeen = Clock::now();
+			auto nextHostCheck = hostSeen;
+			auto disconnectedSince = Clock::time_point{};
 			while (!cancelled) {
 				std::error_code ec;
 				if (!std::filesystem::is_directory(directory, ec)) break;
+				if (monitorHost && Clock::now() >= nextHostCheck) {
+					const auto stamp = std::filesystem::last_write_time(directory / "heartbeat", ec);
+					if (ec) break;
+					if (stamp != heartbeatStamp) { heartbeatStamp = stamp; hostSeen = Clock::now(); }
+					if (Clock::now() - hostSeen >= std::chrono::seconds(5))
+						throw std::runtime_error("The browser connection closed.");
+					nextHostCheck = Clock::now() + std::chrono::seconds(1);
+				}
 				if (auto* message = gst_bus_pop_filtered(bus, static_cast<GstMessageType>(GST_MESSAGE_ERROR | GST_MESSAGE_EOS))) {
 					GError* error = nullptr;
 					if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) gst_message_parse_error(message, &error, nullptr);
@@ -258,6 +272,12 @@ struct BrowserStream::Impl {
 				g_object_get(peer, "connection-state", &connection, nullptr);
 				if (connection == GST_WEBRTC_PEER_CONNECTION_STATE_FAILED)
 					throw std::runtime_error("The local WebRTC connection failed.");
+				if (connection == GST_WEBRTC_PEER_CONNECTION_STATE_CLOSED) break;
+				if (connection == GST_WEBRTC_PEER_CONNECTION_STATE_DISCONNECTED) {
+					if (disconnectedSince == Clock::time_point{}) disconnectedSince = Clock::now();
+					if (Clock::now() - disconnectedSince >= std::chrono::seconds(5))
+						throw std::runtime_error("The local WebRTC connection was lost.");
+				} else disconnectedSince = {};
 				auto* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(sink), 20 * GST_MSECOND);
 				if (!sample) continue;
 				GstVideoInfo info;

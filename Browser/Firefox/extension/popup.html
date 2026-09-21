@@ -1,12 +1,15 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Rendepth</title>
-<style>body{font:14px system-ui;width:280px;padding:14px;background:#222;color:#eee}label,button,select{display:block;margin:12px 0}button,select{padding:8px;width:100%}p{line-height:1.4}label input{vertical-align:middle}</style></head>
-<body><strong>Open in Rendepth</strong>
-<label for="format">Video format</label>
-<select id="format"><option value="2d">2D Video</option><option value="sbs-half">Side-by-side — Half</option><option value="sbs-full">Side-by-side — Full</option></select>
+<link rel="stylesheet" href="popup.css"></head>
+<body><h1><img class="title-logo" src="icons/rendepth.png" width="28" height="28" alt="">Open in Rendepth</h1>
+<div id="format-label">Video format</div>
+<div id="format-picker">
+<select id="format" hidden><option value="2d">2D Video</option><option value="sbs-half">SBS Half</option><option value="sbs-full">SBS Full</option></select>
+<button id="format-toggle" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="format-options" aria-labelledby="format-label format-value"><span id="format-value">2D Video</span><span class="chevron" aria-hidden="true"></span></button>
+<ul id="format-options" role="listbox" aria-labelledby="format-label" hidden></ul>
+</div>
 <p id="mono-help">Converts ordinary video to 3D using Rendepth’s video depth model.</p>
 <div id="half-options" hidden><label><input id="scale-half" type="checkbox" checked> Expand SBS Half up to 3840×1080</label>
 <p>Preserves more horizontal detail from 4K SBS Half. May reduce frame rate. Uncheck for faster capture.</p></div>
-<label><input id="swap" type="checkbox"> Swap eyes</label>
-<button id="open">Open Playing Video</button><button id="stop">Stop</button>
+<div class="actions"><button id="open">Open Playing Video</button><button id="stop" disabled>Stop</button></div>
 <p id="status" role="status"></p><script src="popup.js"></script></body></html>
