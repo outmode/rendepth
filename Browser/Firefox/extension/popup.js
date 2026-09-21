@@ -1,10 +1,39 @@
+let siteOrigin;
+browser.tabs.query({active: true, currentWindow: true}).then(async ([tab]) => {
+  if (tab?.url && /^https?:/.test(tab.url)) {
+    const url = new URL(tab.url);
+    siteOrigin = url.origin;
+    const reply = await browser.runtime.sendMessage({action: "site-status", origin: siteOrigin});
+    document.getElementById("auto-reconnect").checked = reply.autoReconnect;
+    document.getElementById("auto-reconnect").disabled = false;
+  }
+  document.getElementById("open").disabled = false;
+});
+document.getElementById("auto-reconnect").onchange = async event => {
+  const control = event.target;
+  const enabled = control.checked;
+  control.disabled = true;
+  try {
+    // Do not await before this call: permissions.request needs the checkbox gesture.
+    // The background page finishes saving even if the permission UI closes us.
+    const reply = await browser.extension.getBackgroundPage().setAutoReconnect(siteOrigin, enabled);
+    control.checked = reply.autoReconnect;
+    document.getElementById("navigation-notice").textContent = enabled && !reply.autoReconnect
+      ? "Automatic reconnect is off. You can still use Refresh Video after navigation." : "";
+  } catch (_) {
+    control.checked = false;
+    document.getElementById("navigation-notice").textContent = "Could not enable automatic reconnect. Use Refresh Video after navigation.";
+  } finally { control.disabled = false; }
+};
 async function refresh() {
   const reply = await browser.runtime.sendMessage({action: "status"});
   document.getElementById("status").textContent = reply.status;
+  document.getElementById("quality-notice").textContent = reply.qualityNotice;
   document.getElementById("open").textContent = reply.active ? "Refresh Video" : "Open Playing Video";
   document.getElementById("stop").disabled = !reply.active;
 }
 document.getElementById("open").onclick = async () => {
+  await savingPreference;
   await browser.runtime.sendMessage({action: "open",
     format: document.getElementById("format").value,
     scaleHalf: document.getElementById("scale-half").checked});
@@ -96,5 +125,19 @@ document.getElementById("stop").onclick = async () => {
   await refresh();
 };
 document.getElementById("format").onchange();
+browser.runtime.sendMessage({action: "status"}).then(reply => {
+  if (reply.options) {
+    formatSelect.value = reply.options.format;
+    document.getElementById("scale-half").checked = reply.options.scaleHalf;
+    formatSelect.onchange();
+  }
+  document.getElementById("limit-source").checked = reply.limitSource;
+  document.getElementById("limit-source").disabled = false;
+});
+let savingPreference = Promise.resolve();
+document.getElementById("limit-source").onchange = event => {
+  const limitSource = event.target.checked;
+  savingPreference = savingPreference.then(() => browser.runtime.sendMessage({action: "preferences", limitSource}));
+};
 refresh();
 setInterval(refresh, 500);

@@ -66,8 +66,48 @@ static int receive(const char* directory, double seconds, bool prepareDepth = fa
 	throw std::runtime_error(text.empty() ? "Timed out receiving Firefox video" : text);
 }
 
+// The integration fixture replaces the whole browser document, waits with the
+// next video paused, resumes, then explicitly stops or closes the capture tab.
+static int navigation(const std::filesystem::path& directory) {
+	ScreenCapture capture;
+	std::string error;
+	require(capture.startBrowser(directory.string(), error), error.c_str());
+	using Clock = std::chrono::steady_clock;
+	const auto deadline = Clock::now() + std::chrono::seconds(60);
+	auto waitingSince = Clock::time_point{};
+	bool first = false, resumed = false;
+	while (Clock::now() < deadline) {
+		if (!capture.running()) {
+			require(resumed && !std::filesystem::exists(directory), "Receiver ended before explicit stop after resume");
+			capture.stop();
+			std::cout << "Navigation: retained session while paused, replaced peer, and stopped cleanly.\n";
+			return 0;
+		}
+		std::ifstream stateFile(directory / "state");
+		std::string state;
+		stateFile >> state;
+		if (state == "waiting" && waitingSince == Clock::time_point{}) waitingSince = Clock::now();
+		if (auto frame = capture.takeFrame()) {
+			if (!first) {
+				require(frame->generation == 1, "Missing initial peer frames");
+				first = true;
+				std::ofstream(directory / "test-first-frame").close();
+			}
+			if (frame->generation > 1 && !resumed) {
+				require(waitingSince != Clock::time_point{} && Clock::now() - waitingSince > std::chrono::seconds(5),
+					"Navigation fixture did not exercise the disconnect timeout");
+				resumed = true;
+				std::ofstream(directory / "test-resumed-frame").close();
+			}
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	throw std::runtime_error("Navigation test timed out");
+}
+
 int main(int argc, char** argv) {
 	try {
+		if (argc == 3 && std::string(argv[2]) == "navigation") return navigation(argv[1]);
 		if (argc == 3 || argc == 4) return receive(argv[1], std::stod(argv[2]), argc == 4 && std::string(argv[3]) == "2d");
 		char pattern[] = "/tmp/rendepth-browser-test-XXXXXX";
 		const char* temporary = mkdtemp(pattern);

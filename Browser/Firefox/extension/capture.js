@@ -3,13 +3,48 @@
   if (globalThis.rendepthCaptureInstalled) return;
   globalThis.rendepthCaptureInstalled = true;
   let stopCurrent = () => {};
+  let currentSessionId, currentRun = 0;
 
   browser.runtime.onMessage.addListener(async message => {
-    if (message.action !== "start") return;
+    if (message.action === "cancel") {
+      if (currentSessionId === message.sessionId) { ++currentRun; stopCurrent(); }
+      return {ok: true};
+    }
+    if (message.action !== "start" && message.action !== "resume") return;
     stopCurrent();
+    currentSessionId = message.sessionId;
+    const run = ++currentRun;
+    if (message.action === "resume") {
+      // The next page may have no video yet, or may require a Play click. Hold
+      // the native session in the background without starting playback ourselves.
+      const ready = await new Promise(resolve => {
+        let timer;
+        const finish = value => {
+          clearInterval(timer);
+          window.removeEventListener("pagehide", cancel);
+          resolve(value);
+        };
+        const cancel = () => finish(false);
+        stopCurrent = cancel;
+        window.addEventListener("pagehide", cancel, {once: true});
+        const check = () => {
+          const ready = [...document.querySelectorAll("video")].some(video => {
+            const rect = video.getBoundingClientRect();
+            return video.isConnected && !video.paused && !video.ended && video.videoWidth &&
+              video.readyState >= 2 && rect.right > 0 && rect.bottom > 0 &&
+              rect.left < window.innerWidth && rect.top < window.innerHeight;
+          });
+          if (ready) finish(true);
+        };
+        timer = setInterval(check, 250);
+        check();
+      });
+      if (!ready || run !== currentRun) return {ok: false, cancelled: true};
+    }
     let source, stream, peer, port, watchdog, canvas, frameCallback;
     const scaleHalf = message.format === "sbs-half" && message.scaleHalf !== false;
     let stopped = false, detached = false;
+    let checkQuality = () => {};
     let track, sender, capture, refresh, sourceReset, nextFrame;
     let resetVersion = 0, attachedVersion = 0, refreshPending = false;
     let refreshQueue = Promise.resolve();
@@ -22,10 +57,14 @@
       stream?.getTracks().forEach(track => track.stop());
       if (canvas) { canvas.width = 0; canvas.height = 0; }
       port?.disconnect();
-      window.removeEventListener("pagehide", stop);
+      window.removeEventListener("pagehide", navigate);
       source?.removeEventListener("emptied", sourceReset);
       for (const event of ["loadeddata", "playing", "resize"]) source?.removeEventListener(event, refresh);
       source?.removeEventListener("ended", refresh);
+    };
+    const navigate = () => {
+      if (stopped) return;
+      try { port?.postMessage({action: "navigate"}); } finally { stop(); }
     };
     stopCurrent = stop;
     const fail = error => {
@@ -51,6 +90,21 @@
           (!best || visibleArea(best) < visibleArea(source) * (source.paused ? 0.5 : 1.5))) return source;
       return best;
     };
+    const videoForTarget = target => {
+      if (target instanceof HTMLVideoElement) return target;
+      // Firefox can report a video context while getTargetElement returns a
+      // player's overlay (for example Vimeo's vp-target). Prefer its nearest
+      // container's visible video over an unrelated larger player on the page.
+      for (let container = target; container && container !== document.body &&
+           container !== document.documentElement; container = container.parentElement) {
+        const videos = [...container.querySelectorAll("video")]
+          .filter(video => video.isConnected && video.videoWidth && visibleArea(video) > 0)
+          .sort((a, b) => visibleArea(b) - visibleArea(a));
+        if (videos.length) return videos.find(video => !video.paused && !video.ended) || videos[0];
+      }
+      // A site may replace the context-menu target before the command arrives.
+      return playingVideo();
+    };
     const attachListeners = () => {
       source.addEventListener("emptied", sourceReset);
       for (const event of ["loadeddata", "playing", "resize", "ended"]) source.addEventListener(event, refresh);
@@ -72,7 +126,7 @@
     };
     try {
       source = message.targetElementId != null
-        ? browser.menus.getTargetElement(message.targetElementId)
+        ? videoForTarget(browser.menus.getTargetElement(message.targetElementId))
         : playingVideo();
       if (!(source instanceof HTMLVideoElement)) throw new Error("Select a playing video, then try again.");
       if (source.mediaKeys) throw new Error("This protected video cannot be captured.");
@@ -117,7 +171,7 @@
       track = stream.getVideoTracks()[0];
       if (!track) throw new Error("Firefox did not expose a video track for this source.");
       track.contentHint = "detail";
-      window.addEventListener("pagehide", stop, {once: true});
+      window.addEventListener("pagehide", navigate, {once: true});
 
       // No external signalling, STUN or TURN service. Native messaging carries
       // only SDP; encrypted video travels directly to the local Rendepth peer.
@@ -191,6 +245,7 @@
       if (stopped) return {ok: false, error: "Capture was cancelled."};
       port = browser.runtime.connect({name: "rendepth-video"});
       port.onDisconnect.addListener(stop);
+      port.postMessage({action: "hello", sessionId: message.sessionId, generation: message.generation});
       port.onMessage.addListener(async reply => {
         if (stopped) return;
         try {
@@ -219,10 +274,14 @@
       if (stopped) return {ok: false, error: "Capture was cancelled."};
       port.postMessage({action: "start", format: scaleHalf ? "sbs-full" : message.format, swap: Boolean(message.swap),
         transport: "webrtc-vp8", sdp: peer.localDescription.sdp});
+      checkQuality = globalThis.rendepthCreateQualityLimiter(message.limitSource === true,
+        text => port.postMessage({action: "quality", text}));
+      checkQuality(source);
       const connectDeadline = performance.now() + 45000;
       let connected = false, mutedSince = null, waiting = false;
       watchdog = setInterval(() => {
         if (stopped) return;
+        checkQuality(source);
         const candidate = playingVideo();
         const nextWaiting = !candidate && (!source.isConnected || source.ended || !source.videoWidth);
         if (waiting !== nextWaiting) {

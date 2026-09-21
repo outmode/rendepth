@@ -101,7 +101,10 @@ struct BrowserStream::Impl {
 	std::shared_ptr<VideoFrame> newest;
 	std::thread worker;
 
-	void receive(const std::filesystem::path& directory, bool prepareDepth) {
+	bool receivePeer(const std::filesystem::path& directory, bool prepareDepth, uint64_t& generation) {
+		bool restart = false;
+		const auto offerPath = directory / (generation == 0 ? "offer.sdp" : "offer-" + std::to_string(generation) + ".sdp");
+		const auto answerPath = directory / (generation == 0 ? "answer.sdp" : "answer-" + std::to_string(generation) + ".sdp");
 		InferenceConverter inference;
 		auto nextInference = Clock::time_point{};
 		GstElement* pipeline = nullptr;
@@ -109,7 +112,7 @@ struct BrowserStream::Impl {
 		GstElement* sink = nullptr;
 		GstBus* bus = nullptr;
 		try {
-			std::ifstream input(directory / "offer.sdp", std::ios::binary);
+			std::ifstream input(offerPath, std::ios::binary);
 			std::string offer(maxSDP + 1, '\0');
 			input.read(offer.data(), offer.size());
 			offer.resize(input.gcount());
@@ -234,6 +237,7 @@ struct BrowserStream::Impl {
 			auto hostSeen = Clock::now();
 			auto nextHostCheck = hostSeen;
 			auto disconnectedSince = Clock::time_point{};
+			std::string transportError;
 			while (!cancelled) {
 				std::error_code ec;
 				if (!std::filesystem::is_directory(directory, ec)) break;
@@ -245,13 +249,29 @@ struct BrowserStream::Impl {
 						throw std::runtime_error("The browser connection closed.");
 					nextHostCheck = Clock::now() + std::chrono::seconds(1);
 				}
+				// Navigation suspends transport checks, not host-liveness checks. Keep
+				// active true and retain the viewer's last frame while the next page waits.
+				std::ifstream stateFile(directory / "state");
+				std::string state;
+				stateFile >> state;
+				if (state == "waiting") {
+					disconnectedSince = {};
+					transportError.clear();
+					std::this_thread::sleep_for(std::chrono::milliseconds(20));
+					continue;
+				}
+				if (!state.empty() && std::stoull(state) != generation) {
+					generation = std::stoull(state);
+					restart = true;
+					break;
+				}
 				if (auto* message = gst_bus_pop_filtered(bus, static_cast<GstMessageType>(GST_MESSAGE_ERROR | GST_MESSAGE_EOS))) {
 					GError* error = nullptr;
 					if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) gst_message_parse_error(message, &error, nullptr);
 					const std::string text = error ? error->message : "Browser video stream ended.";
 					g_clear_error(&error);
 					gst_message_unref(message);
-					throw std::runtime_error(text);
+					transportError = text;
 				}
 				if (!answered) {
 					GstWebRTCICEGatheringState state;
@@ -264,19 +284,20 @@ struct BrowserStream::Impl {
 						const std::string answer(text);
 						g_free(text);
 						gst_webrtc_session_description_free(local);
-						publish(directory / "answer.sdp", answer);
+						publish(answerPath, answer);
 						answered = true;
 					} else if (Clock::now() >= deadline) throw std::runtime_error("WebRTC candidate gathering timed out.");
 				}
 				GstWebRTCPeerConnectionState connection;
 				g_object_get(peer, "connection-state", &connection, nullptr);
-				if (connection == GST_WEBRTC_PEER_CONNECTION_STATE_FAILED)
-					throw std::runtime_error("The local WebRTC connection failed.");
-				if (connection == GST_WEBRTC_PEER_CONNECTION_STATE_CLOSED) break;
-				if (connection == GST_WEBRTC_PEER_CONNECTION_STATE_DISCONNECTED) {
+				// Page teardown may beat the navigation message through native IPC.
+				// Give terminal transport states the same recovery window as disconnects.
+				if (!transportError.empty() || connection == GST_WEBRTC_PEER_CONNECTION_STATE_FAILED ||
+					connection == GST_WEBRTC_PEER_CONNECTION_STATE_CLOSED ||
+					connection == GST_WEBRTC_PEER_CONNECTION_STATE_DISCONNECTED) {
 					if (disconnectedSince == Clock::time_point{}) disconnectedSince = Clock::now();
 					if (Clock::now() - disconnectedSince >= std::chrono::seconds(5))
-						throw std::runtime_error("The local WebRTC connection was lost.");
+						throw std::runtime_error(transportError.empty() ? "The local WebRTC connection was lost." : transportError);
 				} else disconnectedSince = {};
 				auto* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(sink), 20 * GST_MSECOND);
 				if (!sample) continue;
@@ -306,7 +327,7 @@ struct BrowserStream::Impl {
 						? VideoFrame::ColorSpace::BT709 : VideoFrame::ColorSpace::BT601;
 					frame->width = frame->outputWidth = info.width;
 					frame->height = frame->outputHeight = info.height;
-					frame->generation = 1;
+					frame->generation = generation + 1;
 					frame->presentationTime = std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
 					for (int plane = 0; plane < 3; ++plane) {
 						const int width = GST_VIDEO_FRAME_COMP_WIDTH(&mapped, plane);
@@ -340,6 +361,17 @@ struct BrowserStream::Impl {
 		if (sink) gst_object_unref(sink);
 		if (peer) gst_object_unref(peer);
 		if (pipeline) gst_object_unref(pipeline);
+		if (restart) {
+			std::error_code ec;
+			std::filesystem::remove(offerPath, ec);
+			std::filesystem::remove(answerPath, ec);
+		}
+		return restart && !cancelled;
+	}
+
+	void receive(const std::filesystem::path& directory, bool prepareDepth) {
+		uint64_t generation = 0;
+		while (receivePeer(directory, prepareDepth, generation)) {}
 		active = false;
 	}
 };

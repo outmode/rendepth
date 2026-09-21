@@ -3,6 +3,7 @@ import io
 import json
 import os
 import socket
+import select
 import threading
 import time
 from unittest.mock import patch
@@ -119,6 +120,29 @@ class ProtocolTest(unittest.TestCase):
                                 while heartbeat.stat().st_mtime_ns == initial and time.monotonic() < deadline:
                                     time.sleep(0.05)
                                 self.assertNotEqual(heartbeat.stat().st_mtime_ns, initial)
+                                # Navigation preserves the directory and process. A
+                                # replacement offer has its own answer, so an old
+                                # answer cannot reconnect the new document by mistake.
+                                process.stdin.write(packet({"action": "navigate"}))
+                                process.stdin.flush()
+                                deadline = time.monotonic() + 3
+                                while (capture / "state").read_text() != "waiting" and time.monotonic() < deadline:
+                                    time.sleep(0.01)
+                                self.assertEqual((capture / "state").read_text(), "waiting")
+                                replacement = offer + "a=x-test:new-page\r\n"
+                                process.stdin.write(packet({"action": "start", "format": format_name,
+                                    "swap": swap, "transport": "webrtc-vp8", "sdp": replacement}))
+                                process.stdin.flush()
+                                deadline = time.monotonic() + 3
+                                while not (capture / "offer-1.sdp").exists() and time.monotonic() < deadline:
+                                    time.sleep(0.01)
+                                self.assertEqual((capture / "offer-1.sdp").read_bytes(), replacement.encode())
+                                self.assertFalse(select.select([process.stdout], [], [], 0.2)[0],
+                                                 "Reused the old document's answer")
+                                (capture / "answer-1.sdp").write_text("replacement answer")
+                                self.assertEqual(host.read_message(process.stdout),
+                                                 {"action": "answer", "sdp": "replacement answer"})
+                                self.assertEqual(len(requests), 1, "Navigation reattached the viewer")
                             process.stdin.close()
                             process.wait(timeout=5)
                             self.assertEqual(process.returncode, 0)

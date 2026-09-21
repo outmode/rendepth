@@ -143,12 +143,24 @@ def process_alive(pid):
         return False
 
 
+def publish(path, text):
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(text)
+    temporary.replace(path)
+
+
 def run(executable):
+    # select() watches the FD, so do not hide later control messages in a buffered read.
+    input_stream = getattr(sys.stdin.buffer, "raw", sys.stdin.buffer)
     process = None
     receiver = None
     started = False
     answered = False
     answer_deadline = None
+    settings = None
+    generation = 0
+    navigating = False
+    request_id = None
     with tempfile.TemporaryDirectory(prefix="rendepth-firefox-") as temporary:
         directory = Path(temporary)
         # A killed native host cannot run TemporaryDirectory cleanup. Let the
@@ -169,28 +181,50 @@ def run(executable):
                 if (directory / "closed").exists() or not process_alive(receiver):
                     return
                 if not answered:
-                    answer_path = directory / "answer.sdp"
+                    answer_path = directory / ("answer.sdp" if generation == 0 else f"answer-{generation}.sdp")
                     if answer_path.exists():
                         if answer_path.stat().st_size > MAX_SDP:
                             raise ValueError("Rendepth returned an oversized session description")
-                        send({"action": "answer", "sdp": answer_path.read_text()})
+                        reply = {"action": "answer", "sdp": answer_path.read_text()}
+                        if request_id is not None:
+                            reply["requestId"] = request_id
+                        send(reply)
                         answered = True
                     elif time.monotonic() > answer_deadline:
                         raise ValueError("Timed out preparing Rendepth WebRTC. Check its GStreamer plugins.")
-            if not select.select([sys.stdin.buffer], [], [], 0.05)[0]:
+            if not select.select([input_stream], [], [], 0.05)[0]:
                 continue
-            message = read_message(sys.stdin.buffer)
+            message = read_message(input_stream)
             if message is None:
                 return
-            if message.get("action") == "start" and not started:
+            if message.get("action") == "navigate" and started:
+                publish(directory / "state", "waiting")
+                navigating = True
+                answered = True  # Cancel any pending answer/deadline from the old page.
+                continue
+            if message.get("action") == "start":
                 format_name = message.get("format")
                 swap = message.get("swap")
                 if format_name not in ("2d", "sbs-half", "sbs-full") or type(swap) is not bool:
                     raise ValueError("Choose SBS Half or SBS Full and an eye order")
                 sdp = validate_offer(message)
-                (directory / "offer.sdp").write_text(sdp)
-                started = True
-                receiver, process = attach(executable, directory, format_name, swap)
+                request_id = message.get("requestId")
+                if request_id is not None and (not isinstance(request_id, str) or not 0 < len(request_id) <= 64):
+                    raise ValueError("Invalid capture request ID")
+                if started:
+                    if settings != (format_name, swap) or not navigating:
+                        raise ValueError("Unexpected capture replacement")
+                    generation += 1
+                    publish(directory / f"offer-{generation}.sdp", sdp)
+                    publish(directory / "state", str(generation))
+                    navigating = False
+                else:
+                    (directory / "offer.sdp").write_text(sdp)
+                    publish(directory / "state", "0")
+                    settings = (format_name, swap)
+                    started = True
+                    receiver, process = attach(executable, directory, format_name, swap)
+                answered = False
                 answer_deadline = time.monotonic() + 15
             else:
                 raise ValueError("Unexpected capture message")

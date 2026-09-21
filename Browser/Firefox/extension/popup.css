@@ -129,3 +129,11 @@ input[type="checkbox"] { margin: 0 5px 0 0; vertical-align: middle; accent-color
 .actions { display: flex; gap: 8px; margin-top: 18px; }
 #status { margin-top: 14px; font-size: 12px; overflow-wrap: anywhere; }
 #status:empty { display: none; }
+
+#quality-options { margin-top: 14px; font-size: 12px; }
+#quality-notice { font-size: 12px; }
+#quality-notice:empty { display: none; }
+
+#navigation-options { margin-top: 14px; font-size: 12px; }
+#navigation-notice { font-size: 12px; }
+#navigation-notice:empty { display: none; }

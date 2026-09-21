@@ -41,9 +41,15 @@ keeping the browser video connected.
    are not compatible with the new signalling protocol.
 5. Play a video. Click the extension toolbar button, select **2D Video**,
    **SBS Half**, or **SBS Full**, then **Open Playing Video**.
+   Normal capture needs no site-access prompt. Optionally enable **Automatically
+   reconnect on this site** in the popup to request access for automatic capture
+   after navigating to another page on that site.
    The toolbar selects the largest playing video in the main document. To choose
    a specific video, use its right-click **Open in Rendepth** submenu. On sites
    with custom video menus, Shift + right-click can expose Firefox's menu.
+   Player overlays, such as Vimeo's, resolve to the visible video in the nearest
+   player container. If the target was removed, capture falls back to the visible
+   playing video in the same document.
 6. Select your usual stereo output in Rendepth. Stop from the extension popup or
    the capture button in Rendepth. Stopping clears capture and leaves the window
    open; closing the window also ends the browser connection.
@@ -56,8 +62,8 @@ about five seconds without its heartbeat; a disconnected WebRTC transport gets
 a five-second recovery window. Pausing, buffering and waiting for the next video
 on the same page keep the connection and last picture.
 
-The existing native-host registration remains valid. No extension permission
-changes are needed. Temporary add-ons disappear when Firefox restarts; this has
+The existing native-host registration remains valid. Version 0.2.6 adds the
+`storage` permission to remember the optional source-quality limit locally. Temporary add-ons disappear when Firefox restarts; this has
 not been signed or published. The installer targets conventional Linux Firefox;
 Flatpak/sandboxed native-host discovery needs separate testing.
 
@@ -87,7 +93,8 @@ To remove registration, delete only `com.outmode.rendepth.json` and
   A busy/unresponsive app reports an error instead of launching a duplicate.
 - Pausing retains the last picture. Ending or removing a video waits for the next
   visible playing video in the same page, retaining the peer and viewer. Leaving
-  the document, stopping capture or closing the viewer ends the connection.
+  the document now waits for the next page; stopping capture, closing its tab or
+  closing the viewer ends the connection.
   Resets/quality changes of the active video element retain the
   connection and replace its captured track when playback resumes. Start a new
   connection to change input format or select another video.
@@ -103,13 +110,14 @@ local encrypted RTP → GStreamer webrtcbin → VP8 decoder → newest YUV frame
 
 There is no per-frame JavaScript timer, canvas, base64 conversion, native message,
 JPEG file or disk polling for video. Native messaging carries a bounded SDP offer
-and answer only. These small connection descriptions are exchanged through a
+and answer plus small navigation control messages. Connection descriptions are exchanged through a
 private temporary directory; media travels directly between the two local peers.
 No external signalling, STUN or TURN service is configured. WebRTC uses temporary
 UDP sockets and local host candidates; there is no HTTP/TCP video server.
 
-The extension uses `activeTab`, `menus`, and `nativeMessaging`, and injects capture
-code only after an explicit action. The executable path comes from local host
+The extension uses `activeTab`, `menus`, `nativeMessaging`, and `storage`, and injects capture
+code after an explicit action, then on same-origin navigation during that session
+when automatic reconnection is explicitly enabled and optional site access is granted. The executable path comes from local host
 registration, never page content. Each viewer advertises a Unix-domain control
 socket in `$XDG_RUNTIME_DIR/rendepth-browser` (or `/tmp/rendepth-browser-<uid>`).
 The app acknowledges session acceptance on its main thread, then negotiates and
@@ -132,6 +140,9 @@ node --check Browser/Firefox/extension/background.js
 node --check Browser/Firefox/extension/capture.js
 node --check Browser/Firefox/extension/popup.js
 node Browser/Firefox/test_capture.mjs
+node Browser/Firefox/test_quality.mjs
+node Browser/Firefox/test_background.mjs
+node Browser/Firefox/test_popup.mjs
 python3 Browser/Firefox/test_stream.py
 ```
 
@@ -275,11 +286,12 @@ are ignored; the current visible player is preferred over small hover previews.
 If a player ends or disappears before its replacement loads, direct capture
 unhooks its track while the viewer retains the last picture. Scaled SBS keeps its
 canvas track and retargets drawing. The popup reports that it is waiting for the
-next video. Explicit Stop and closing/leaving the document still release capture.
+next video. Explicit Stop still releases capture; full document navigation now
+uses the waiting state added in v0.2.7.
 
 This follows **in-page navigation**, as used by YouTube's watch links and Shorts.
-A full browser reload or navigation that replaces the entire document still
-requires opening capture again; no additional site permissions were added.
+Version 0.2.7 also supports a full browser reload or navigation that replaces
+the entire document; see the navigation lifecycle notes below.
 
 Validation: Node tests cover disconnected players, loading gaps, offscreen Shorts,
 source reset, old-listener removal, canvas retargeting and shutdown. Actual YouTube
@@ -318,3 +330,159 @@ hardware concurrency, minimum one), with idle spinning disabled. The worker
 honors the selected model's depth-update rate and keeps only the newest pending
 input. This leaves CPU time for browser playback without lowering the configured
 stream resolution or bitrate. The startup log reports the depth CPU budget.
+
+### Diagnosing browser playback stalls
+
+Receiver throughput alone does not establish smooth playback in Firefox. Use a
+visible, foreground test window to compare playback alone, direct capture with
+no encoder/receiver, streaming, and playback after stopping:
+
+```sh
+python3 Browser/Firefox/test_stream.py --mono --width 3840 --height 2160 --fps 30 --windowed --diagnose --min-browser-fps 20
+```
+
+The isolated profile leaves the user's Firefox profile unchanged. Reports include
+browser video-frame callback rate, dropped frames, maximum callback gap, document
+visibility, source dimensions, WebRTC encoding time and native receiver rate.
+Callback rate is a presentation proxy, not measured monitor scanout. Keep the
+window visible and avoid other performance tests while measuring. The receiver's
+normal 90% throughput and exact output-dimension checks still apply; the optional
+browser threshold adds a separate failure condition. `--motion` tests a motion
+content hint plus `maintain-framerate` without changing extension defaults.
+`--capture-script PATH` tests an alternate sender implementation. Width 2560 and
+height 1440 are also supported for resolution comparisons.
+
+A local windowed 4K30 H.264 fixture reproduced browser-only stuttering in 2D mode:
+
+| Capture path | Browser callback fps | Receiver fps | Mean encode time |
+| --- | ---: | ---: | ---: |
+| Direct, existing settings | 2.6 | 25.7 | 4.8 ms |
+| Direct, motion experiment | 2.6 | 25.3 | 4.0 ms |
+| Temporary canvas variant, scaled before capture | 19.2 | 19.6 | 6.5 ms |
+
+Playback without streaming and with capture alone measured about 24–25 callback
+fps. The failing direct-stream run dropped 189 browser frames and had a 1.42 s
+callback gap. The motion experiment also reduced output to 1280×720. The canvas
+experiment preserved 1920×1080 but reduced receiver throughput, so neither is a
+shipping fix. All three failed the normal 30 fps throughput/dimension criteria.
+The canvas variant was a temporary extension of the existing canvas path to 2D,
+with aspect-preserving scaling instead of half-SBS expansion.
+
+A 2560×1440/30 source using the existing sender measured 23.6 browser callback fps
+(24.6 baseline), zero dropped browser frames during streaming and 30.1 receiver
+fps at 1920×1080; its normal receiver checks passed. These synthetic measurements
+do not establish performance on every site or hardware configuration.
+At 1440p60 the problem returned: browser callbacks fell from 24.9 to 5.7 fps,
+with 417 dropped frames, while the receiver sustained 56.8 fps and encoding
+averaged 3.8 ms. The new browser threshold correctly failed this run even though
+the receiver passed its 90% throughput target.
+At 1080p60 browser callbacks stayed near baseline (24.2 versus 24.9 fps), with
+one dropped frame during streaming, and the receiver sustained 58.8 fps. Both
+the receiver checks and the explicit 20 fps browser threshold passed. Selecting
+1080p in the source player is therefore a tested workaround on this setup.
+
+The reproduction uses `BrowserCaptureTest`, which prepares small depth inputs but
+does not run depth inference or the Rendepth renderer. The evidence isolates a
+problem associated with feeding high-resolution captured video into WebRTC; it
+does not yet identify the responsible Firefox thread or prove GPU readback is
+the cause. Mean encode time excludes other capture/conversion costs. Profiling
+Firefox during the visible-window reproduction is the next step before changing
+codecs or shipping a different capture path. Lowering the site's source quality
+is a workaround to try; lowering only the WebRTC output resolution did not cure
+the 4K-source stall in the motion experiment.
+
+### Optional source-quality limit (v0.2.6)
+
+Reload the temporary extension and the video page. In the popup, enable
+**Limit source to 1080p**, then choose **Open Playing Video** (or **Refresh Video**).
+The choice is off by default and saved locally; right-click capture uses the same
+choice. Changing it applies to the next capture, not an already running session.
+It can reduce source detail in high-resolution SBS, including full-width SBS.
+
+On YouTube, the extension tries the selected player's quality controls to choose
+1080p, or the highest available lower quality. It checks decoded source dimensions
+before reporting success, including portrait 1080×1920 videos. Already smaller
+sources are left alone. Quality changes and in-page navigation are monitored
+while capture is active; rejected or ignored requests receive bounded retries.
+Other sites, missing controls and requests that do not lower the source produce
+an instruction in the popup to select 1080p or lower in the site's quality menu.
+The notice remains separate from connection status, so connecting cannot hide it.
+
+These are website source-quality changes, not additional WebRTC downscaling.
+YouTube's player controls are undocumented and can change. The public iframe
+API's `setPlaybackQuality` is a no-op, so it is not used. Only the selected video's
+containing player on a YouTube hostname is accessed, using Firefox's
+`wrappedJSObject`; only primitive quality strings are passed to it. The quality limiter itself requires no extra site permissions, remote scripts
+or URL extraction. Navigation in v0.2.7 separately requests optional site access.
+
+Stopping capture stops monitoring. It does not restore the site's previous
+quality setting; use the site's quality menu to return to Auto or a higher
+quality. Unchecking the option also leaves the current site selection intact.
+
+Validation: a temporary Firefox extension with the production quality helper
+changed the public Blender YouTube fixture from 3840×2160 to 1920×1080 and
+reported success only after the dimensions changed. Node checks cover opt-in,
+unsupported/spoofed hosts, ignored/throwing controls, bounded retries, navigation,
+portrait sources, lower-quality fallback, saved preferences, context-menu capture,
+notice routing and capture shutdown. This establishes one live YouTube path,
+not compatibility with every YouTube layout or site.
+
+References:
+- [YouTube quality API changes](https://developers.google.com/youtube/iframe_api_revision_history)
+- [Firefox page-script object access](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Sharing_objects_with_page_scripts)
+
+### Keeping the viewer open while browsing (v0.2.7)
+
+Restart the rebuilt Rendepth app, reload the temporary extension, and reload the
+video page. From v0.2.8, normal capture never requests site access. After full-page
+navigation, the viewer stays open; click **Refresh Video** to reconnect. Refresh
+retains the current capture format and can wait for the next video's Play click.
+
+For hands-free resumption on later pages, enable **Automatically reconnect on this
+site** in the popup. Its explanation appears before the opt-in, and only enabling
+this setting requests Firefox's optional site permission. The choice is saved per
+origin and defaults to off, even if site permission was granted by an older build.
+From v0.2.9, the persistent background page handles both the permission request
+and saving the choice, so closing the popup during the permission prompt cannot
+lose the setting.
+Declining permission leaves manual capture available. Disabling the option stops
+a pending automatic resume and removes that site's optional access; an already
+playing capture continues. Navigating to a different origin always waits for an
+explicit action instead of automatically capturing that site.
+
+A page unload now reports navigation and releases only the page's WebRTC peer.
+The extension background retains the native port and its heartbeat, and the native
+receiver stays active with the last displayed picture. Once the new document is
+ready and automatic reconnection is enabled, its capture script waits for a visible playing video. It does not force a
+paused video to play. Playback starts a new peer within the existing native
+session, preserving input format, quality-limit choice and the Rendepth viewer,
+including its secondary light-field windows. Automatic page-load resumption looks
+for video in the main document; embedded players can be selected again with their
+context menu when needed.
+
+**Stop**, closing the capture tab/browser, or closing capture in Rendepth ends the
+session and retains the existing cleanup behavior. An unrelated tab closing has
+no effect. Navigation may wait indefinitely while the native host remains alive;
+a dead host still fails its five-second heartbeat check. The five-second transport
+failure grace period also covers the brief race between document teardown and the
+navigation message arriving. Separate offer/answer generations and request IDs
+prevent late old-page signaling from being applied to a new peer.
+
+The receiver remains active across replacement, so `Main.cpp` does not enter its
+capture-stop path or recreate the viewer. The bridge is attached only once. The
+native-host registration continues to use the same host script path; reinstallation
+is unnecessary when the checkout/executable paths have not changed.
+
+Validation includes real Firefox navigating between local video pages, a paused
+next video held for seven seconds (longer than the previous disconnect timeout),
+manual Refresh without auto-injection, opt-in automatic resumption, new-peer
+frame decoding, a single native bridge attachment, explicit Stop, and
+closing the capture tab while another tab stays open. This tests the production
+extension, host and receiver; a localhost signaling adapter in the temporary test
+extension avoids modifying native-host registration. It does not run the renderer
+or verify physical light-field output. Run it with:
+
+```sh
+cmake --build cmake-build-debug --target BrowserCaptureTest --parallel 14
+python3 Browser/Firefox/test_navigation.py
+```

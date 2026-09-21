@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 
-const script = await readFile(new URL('./extension/capture.js', import.meta.url), 'utf8');
+const qualityScript = await readFile(new URL('./extension/quality.js', import.meta.url), 'utf8');
+const script = qualityScript + await readFile(new URL('./extension/capture.js', import.meta.url), 'utf8');
 const flush = async () => { for (let n = 0; n < 8; ++n) await new Promise(setImmediate); };
 
-async function fixture(format = 'sbs-full', width = 1920, height = 1080, scaleHalf = true) {
+async function fixture(format = 'sbs-full', width = 1920, height = 1080, scaleHalf = true, limitSource = false, contextTarget = null, resume = false) {
   let start, now = 0, interval, disconnect, replacementGate;
   const messages = [], streams = [], configurations = [];
   const makeTrack = () => ({readyState: 'live', muted: false, stop() {this.readyState = 'ended';}});
@@ -17,6 +18,7 @@ async function fixture(format = 'sbs-full', width = 1920, height = 1080, scaleHa
     getBoundingClientRect() {return this.rect;}
     captureStream() {
       const video = makeTrack(), audio = makeTrack();
+      video.owner = this;
       let tracks = [video, audio];
       const stream = {getTracks: () => tracks, getVideoTracks: () => [video],
         getAudioTracks: () => tracks.includes(audio) ? [audio] : [],
@@ -27,7 +29,16 @@ async function fixture(format = 'sbs-full', width = 1920, height = 1080, scaleHa
   }
   const source = new Video();
   const videos = [source];
+  let target = source;
+  if (contextTarget === 'overlay') {
+    const other = new Video();
+    other.rect = {left: 0, top: 0, right: 1920, bottom: 1080, width: 1920};
+    videos.push(other);
+    target = {querySelectorAll: () => [], parentElement: {
+      querySelectorAll: () => [source], parentElement: null}};
+  } else if (contextTarget === 'missing') target = null;
   const testWindow = new EventTarget();
+  testWindow.location = {hostname: "example.org", href: "https://example.org/video"};
   testWindow.innerWidth = 1920;testWindow.innerHeight = 1080;
   source.videoWidth = width;source.videoHeight = height;
   const callbacks = new Map(), draws = [];
@@ -62,8 +73,16 @@ async function fixture(format = 'sbs-full', width = 1920, height = 1080, scaleHa
     document: {querySelectorAll: () => videos, createElement: () => canvas}, window: testWindow,
     performance: {now: () => now}, setTimeout, clearTimeout,
     setInterval(fn) {interval = fn;return 1;}, clearInterval() {interval = null;},
-    browser: {runtime: {onMessage: {addListener(fn) {start = fn;}}, connect: () => port}}});
-  const result = await start({action: 'start', format, swap: true, scaleHalf});
+    browser: {menus: {getTargetElement: () => target}, runtime: {onMessage: {addListener(fn) {start = fn;}}, connect: () => port}}});
+  if (resume) source.paused = true;
+  const pendingStart = start({action: resume ? 'resume' : 'start', format, swap: true, scaleHalf, limitSource,
+    targetElementId: contextTarget ? 42 : null});
+  if (resume) {
+    assert.equal(streams.length, 0, 'Paused navigation must not start capture or playback');
+    source.paused = false;
+    interval();
+  }
+  const result = await pendingStart;
   assert.equal(result.ok, true);
   return {source, sender, port, streams, configurations, messages, canvas, callbacks, draws,
     frame() {const pending = [...callbacks.values()];callbacks.clear();pending.forEach(fn => fn());},
@@ -215,4 +234,42 @@ console.log('Capture: source reset/replacement, scaling, buffering, cancellation
   assert.equal(f.sender.track, original, 'Scaled capture must keep its canvas track');
   assert.equal(f.canvas.width, 3840);assert.equal(f.canvas.height, 1080);
   f.stop();assert.equal(f.callbacks.size, 0);
+}
+
+{
+  const f = await fixture('2d', 3840, 2160, false, true);
+  assert.ok(f.messages.some(m => m.action === 'quality' && /Select 1080p/.test(m.text)),
+    'Unsupported sites must receive a manual quality notice without breaking capture');
+  assert.equal(f.port.closed, false);
+  const count = f.messages.length;
+  f.stop();f.tick(5000);
+  assert.equal(f.messages.length, count, 'Stop must stop quality monitoring');
+}
+
+for (const target of ['video', 'overlay', 'missing']) {
+  const f = await fixture('2d', 1920, 1080, false, false, target);
+  assert.equal(f.sender.track.owner, f.source,
+    `${target}: select the clicked player's video, not another larger player`);
+  assert.ok(f.messages.some(m => m.action === 'start'), 'Context-menu capture must start signalling');
+  f.stop();
+}
+
+{
+  const f = await fixture('2d', 1920, 1080, false, false, null, true);
+  assert.ok(f.messages.some(m => m.action === 'start'), 'Resume captures after the user plays');
+  f.leavePage();
+  assert.ok(f.messages.some(m => m.action === 'navigate'), 'Page unload reports navigation before closing');
+}
+for (const action of ['cancel', 'pagehide']) {
+  let listener, interval;
+  const window = new EventTarget();
+  const context = {window, document: {querySelectorAll: () => []},
+    setInterval(fn) {interval = fn;return 1;}, clearInterval() {interval = null;},
+    browser: {runtime: {onMessage: {addListener(fn) {listener = fn;}}}}};
+  vm.runInNewContext(script, context);
+  const pending = listener({action: 'resume', sessionId: 123});
+  if (action === 'cancel') await listener({action: 'cancel', sessionId: 123});
+  else window.dispatchEvent(new Event('pagehide'));
+  assert.equal((await pending).cancelled, true);
+  assert.equal(interval, null, 'Cancel/navigation must remove the waiting-page timer');
 }

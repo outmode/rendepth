@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 
-// A video-only WebRTC receiver. Signalling files are exchanged once per session;
+// A video-only WebRTC receiver. Navigation replaces the peer within the same session;
 // media is decoded on GStreamer's threads and consumed through a newest-frame slot.
 class BrowserStream {
 public:
