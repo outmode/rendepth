@@ -20,3 +20,6 @@
 	path = ThirdParty/FFmpeg
 	url = https://github.com/FFmpeg/FFmpeg.git
 	branch = release/8.0
+[submodule "ThirdParty/SyLC"]
+	path = ThirdParty/SyLC
+	url = https://github.com/5ymph0en1x/SyLC.git

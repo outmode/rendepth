@@ -841,7 +841,7 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData,
 			imageData = Core::loadImageDirect(imageInfo.link);
 			if (imageData == nullptr) {
 				SDL_SetWindowTitle(context->window, imageInfo.name.c_str());
-				Core::drawText(context, "Could Not Load Image", helpFont, helpTexture,
+				Core::drawText(context, "Could Not Load Media", helpFont, helpTexture,
 				    helpTextSize, "Help Texture");
 				context->loading = false;
 				displayHelp = true;
@@ -1096,6 +1096,33 @@ void Image::updateVideoBackgroundAnimation() {
 	imageDataFrag.blurMix = glm::clamp(
 		std::chrono::duration<float>(BlurClock::now() - blurTransitionStart).count() /
 		std::chrono::duration<float>(videoBlurInterval).count(), 0.0f, 1.0f);
+}
+
+void Image::updateDiscBackground(Context* context, SDL_Surface* preview) {
+	const bool hadPreview = discBackgroundTexture != nullptr;
+	if (preview == nullptr) {
+		if (discBackgroundTexture) SDL_ReleaseGPUTexture(context->device, discBackgroundTexture);
+		discBackgroundTexture = nullptr;
+		videoBlurActive = false;
+		videoSolidTransitionActive = false;
+		videoSolidColorValid = false;
+		clearColorSolid = clearColorDark;
+		return;
+	}
+	if (uploadTexture(context, preview, &discBackgroundTexture, "Disc preview background", false, false) != 0)
+		return;
+	Context previewContext = *context;
+	previewContext.imageType = Color_Only;
+	if (hadPreview) std::swap(blurTexture, blurTextureNext);
+	blitBlurTexture(&previewContext, discBackgroundTexture, preview->w, preview->h, hadPreview, false);
+	videoBlurActive = true;
+	blurTransitionStart = BlurClock::now();
+	imageDataFrag.blurMix = 0.0f;
+	updateVideoSolidColor();
+	videoSolidTransitionSource = clearColorSolid;
+	videoSolidTransitionTarget = getBackgroundColor(preview, 4, preview->w, preview->h);
+	videoSolidTransitionStart = BlurClock::now();
+	videoSolidTransitionActive = true;
 }
 
 int Image::updateVideoDepth(Context* context, const std::vector<std::uint16_t>& values,
@@ -3091,7 +3118,7 @@ int Image::draw(Context* context) {
 		}
 	}
 	updateVideoBackgroundAnimation();
-	if (nativeOutputEnabled) {
+	if (nativeOutputEnabled && discMenuTexture == nullptr) {
 		nativeOutputSourceReady = imageTexture != nullptr;
 		if (nativeOutputSourceReady) drawNativeOutput(context);
 	}
@@ -3114,6 +3141,7 @@ int Image::draw(Context* context) {
 		else if (context->backgroundStyle == Light) clearColorCurrent = clearColorLight;
 		else if (context->backgroundStyle == Dark) clearColorCurrent = clearColorDark;
 		if (context->backgroundStyle == Solid && context->mode == RGB_Depth) clearColorCurrent = clearColorDepth;
+		if (discMenuTexture != nullptr && context->backgroundStyle == Blur) clearColorCurrent = clearColorDark;
 
 		SDL_GPUColorTargetInfo colorTargetInfo{};
 		colorTargetInfo.texture = swapchainTexture;
@@ -3136,6 +3164,7 @@ int Image::draw(Context* context) {
 			SDL_GetWindowSizeInPixels(context->window, &windowWidth, &windowHeight);
 		}
 		glm::vec2 windowSize = { windowWidth, windowHeight };
+		const float audioArtworkScale = 0.5f * std::max(0.1f, (windowSize.y - 240.0f) / windowSize.y);
 		auto aspectScale = glm::vec2(1.0, 1.0);
 
 		if (context->mode == SBS_Full && context->fullscreen) {
@@ -3168,7 +3197,34 @@ int Image::draw(Context* context) {
 			context->fullscreen && (nativeDisplayOnMainWindow || context->nativeOutputWindow == nullptr) && interlacerPipeline != nullptr &&
 			imageTexture != nullptr);
 
-		if (isMainInterlaced) {
+		if (discMenuTexture != nullptr) {
+			auto viewport = getViewport(0, 1, windowSize);
+			SDL_SetGPUViewport(renderPass, &viewport);
+			if (context->backgroundStyle == Blur && discBackgroundTexture && blurTexture && blurTextureNext) {
+				bindPipeline(renderPass, imagePipeline);
+				SDL_GPUTextureSamplerBinding bindings[4] = {
+					{.texture = discBackgroundTexture, .sampler = imageSampler},
+					{.texture = blurTexture, .sampler = imageSampler},
+					{.texture = blurTextureNext, .sampler = imageSampler},
+					{.texture = discBackgroundTexture, .sampler = imageSampler}};
+				SDL_BindGPUFragmentSamplers(renderPass, 0, bindings, 4);
+				auto vertices = imageDataVert;
+				vertices.projection = glm::mat4(1.0f);
+				vertices.transform = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f));
+				vertices.displayImageAspect = glm::vec3(1.0f);
+				vertices.fillScreen = 1;
+				auto fragments = imageDataFrag;
+				fragments.windowSize = windowSize;
+				fragments.mode = Native;
+				fragments.type = Color_Only;
+				fragments.visibility = 1.0f;
+				fragments.blur = 1;
+				fragments.force = 0;
+				SDL_PushGPUVertexUniformData(commandBuffer, 0, &vertices, sizeof(vertices));
+				SDL_PushGPUFragmentUniformData(commandBuffer, 0, &fragments, sizeof(fragments));
+				SDL_DrawGPUIndexedPrimitives(renderPass, 6, 1, 0, 0, 0);
+			}
+		} else if (isMainInterlaced) {
 			auto drawViewport = getViewport(0, 1, windowSize);
 			SDL_SetGPUViewport(renderPass, &drawViewport);
 			if (context->backgroundStyle == Blur && blurTexture != nullptr &&
@@ -3317,9 +3373,9 @@ int Image::draw(Context* context) {
 						imageDataVert.transform = glm::translate(imageDataVert.transform, glm::vec3(viewOffset * glm::vec2(1.0, -1.0), 0.0f));
 						imageDataVert.transform = glm::scale(imageDataVert.transform, glm::vec3(context->currentZoom, context->currentZoom, 1.0f));
 						if (displayAudioWaveform && !context->display3D) {
-							// Leave room below audio artwork for the waveform and controls.
-							const float artworkScale = std::max(0.1f, (windowSize.y - 240.0f) / windowSize.y);
-							imageDataVert.transform = glm::scale(imageDataVert.transform, glm::vec3(artworkScale, artworkScale, 1.0f));
+							// Keep audio artwork compact, with room for the waveform below it.
+							imageDataVert.transform = glm::scale(imageDataVert.transform,
+								glm::vec3(audioArtworkScale, audioArtworkScale, 1.0f));
 						}
 						imageDataVert.transform = glm::scale(imageDataVert.transform, glm::vec3(windowSize.x, windowSize.y, 1.0));
 						imageDataFrag.visibility = context->visibility;
@@ -3340,7 +3396,7 @@ int Image::draw(Context* context) {
 		}
 
 		viewsX = 1;
-		if ((context->mode == SBS_Full || context->mode == SBS_Half
+		if (discMenuTexture == nullptr && (context->mode == SBS_Full || context->mode == SBS_Half
 			|| context->mode == RGB_Depth) && context->fullscreen) {
 			viewsX = 2;
 		}
@@ -3366,6 +3422,16 @@ int Image::draw(Context* context) {
 			bindPipeline(renderPass, spritePipeline);
 			SDL_GPUTextureSamplerBinding sliderSampleBindings[1] = {{ .texture = sliderTexture, .sampler = imageSampler } };
 			SDL_BindGPUFragmentSamplers(renderPass, 0, &sliderSampleBindings[0], 1);
+
+			if (discMenuTexture != nullptr && !context->displayMenu) {
+				SDL_GPUTextureSamplerBinding discBinding{.texture = discMenuTexture, .sampler = imageSampler};
+				SDL_BindGPUFragmentSamplers(renderPass, 0, &discBinding, 1);
+				setSpriteUniforms(glm::vec3(context->windowSize * 0.5f, 0.0f),
+					glm::vec3(context->windowSize, 1.0f), glm::vec4(1.0f), 1.0f, 2,
+					glm::vec2(0.0f), glm::vec2(1.0f), glm::vec2(0.5f), glm::vec3(1.0f));
+				drawSprite(commandBuffer, renderPass);
+				SDL_BindGPUFragmentSamplers(renderPass, 0, &sliderSampleBindings[0], 1);
+			}
 
 			if (displayAudioPlaceholder && !displayHelp) {
 				// Use native texture pixels, independent of artwork zoom and UI scale.
@@ -3397,8 +3463,16 @@ int Image::draw(Context* context) {
 				const glm::vec2 pixelScale = context->windowSize / glm::vec2(drawViewport.w, drawViewport.h);
 				const float width = std::min(256.0f, drawViewport.w * 0.7f);
 				const float spacing = width / static_cast<float>(smoothedAudioWaveform.size());
-				const float baseline = std::min(drawViewport.h * 0.5f,
-					displayAudioPlaceholder ? std::max(88.0f, drawViewport.h * 0.5f - 176.0f) : 88.0f);
+				float baseline = displayAudioPlaceholder ? drawViewport.h * 0.5f - 176.0f : 88.0f;
+				if (!displayAudioPlaceholder && !context->display3D) {
+					// Match the fitted artwork height, including zoom and vertical pan.
+					const float artworkHeight = drawViewport.h *
+						std::min(1.0f, context->displayAspect.x / context->displayAspect.y) *
+						context->currentZoom * audioArtworkScale;
+					baseline = drawViewport.h * 0.5f - context->offset.y / pixelScale.y -
+						artworkHeight * 0.5f - 48.0f;
+				}
+				baseline = std::min(drawViewport.h * 0.5f, std::max(88.0f, baseline));
 				for (size_t i = 0; i < smoothedAudioWaveform.size(); ++i) {
 					const float height = 2.0f + 34.0f * smoothedAudioWaveform[i];
 					const glm::vec2 position(drawViewport.w * 0.5f - width * 0.5f +
@@ -3754,18 +3828,6 @@ int Image::draw(Context* context) {
 				drawIcon(commandBuffer, renderPass);
 			}
 
-			if (discMenuTexture != nullptr) {
-				bindPipeline(renderPass, spritePipeline);
-				SDL_GPUTextureSamplerBinding discBinding{.texture = discMenuTexture, .sampler = imageSampler};
-				SDL_BindGPUFragmentSamplers(renderPass, 0, &discBinding, 1);
-				setSpriteUniforms(glm::vec3(context->windowSize * 0.5f, 0.0f),
-					glm::vec3(context->windowSize, 1.0f), glm::vec4(1.0f), 1.0f, 1,
-					glm::vec2(0.0f), glm::vec2(1.0f), glm::vec2(0.5f), glm::vec3(1.0f));
-				drawSprite(commandBuffer, renderPass);
-				bindPipeline(renderPass, iconPipeline);
-				SDL_BindGPUFragmentSamplers(renderPass, 0, &iconSampleBindings[0], 1);
-			}
-
 			auto cursorPosition = context->mouse;
 			cursorPosition.y = context->windowSize.y - cursorPosition.y;
 			static glm::vec2 cursorOffset{9.0, -16.0 };
@@ -4061,6 +4123,8 @@ void Image::quit(Context* context){
 	if (videoDepthTexture != nullptr) SDL_ReleaseGPUTexture(context->device, videoDepthTexture);
 	SDL_ReleaseGPUTexture(context->device, blurTexture);
 	SDL_ReleaseGPUTexture(context->device, blurTextureNext);
+	if (discBackgroundTexture) SDL_ReleaseGPUTexture(context->device, discBackgroundTexture);
+	discBackgroundTexture = nullptr;
 	SDL_ReleaseGPUTexture(context->device, iconTexture);
 	SDL_ReleaseGPUTexture(context->device, helpTexture);
 	if (subtitleTexture != nullptr) SDL_ReleaseGPUTexture(context->device, subtitleTexture);

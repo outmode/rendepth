@@ -6,6 +6,7 @@
 #include <memory>
 #include <cstdint>
 #include <mutex>
+#include <map>
 
 #ifdef RENDEPTH_ENABLE_FFMPEG
 struct AVIOContext;
@@ -34,6 +35,13 @@ struct BlurayTitle {
     int angleCount = 0;
     int audioTrackCount = 0;
     std::vector<BlurayChapter> chapters;
+    std::vector<std::string> audioLanguages;
+    // Playlist languages keyed by transport-stream PID, not track order.
+    std::map<int, std::string> audioStreamLanguages;
+    std::map<int, std::string> subtitleStreamLanguages;
+    bool mainFeatureCandidate = false;
+    bool mvc = false;
+    std::string name;
 };
 
 class BlurayReader {

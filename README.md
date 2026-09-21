@@ -64,6 +64,60 @@ Build Instructions
   MinGW builds.
 - `RENDEPTH_MAC_BUNDLE` set `ON` to create macOS bundle after building.
 
+Disc playback
+------
+Opening a Blu-ray or DVD automatically starts the most likely main feature.
+The disc's main-title hint is preferred, with the reader's longest-title choice
+as a fallback. On supported builds, a 3D title with matching duration and chapter
+count is preferred over the 2D choice. Use **Track Selection** during playback
+to browse and choose another title manually.
+
+Blu-ray 3D decoding
+------
+Native MVC decoding uses the BSD-licensed `edge264` sources from the pinned
+[SyLC](https://github.com/5ymph0en1x/SyLC) submodule. Only that decoder is built;
+Rendepth continues to use libbluray for disc access and FFmpeg for transport,
+audio, and subtitles. Initialize it with
+`git submodule update --init ThirdParty/SyLC`.
+
+MVC playlists are labelled **Blu-ray 3D** in the title browser. Their original
+left and right views enter Rendepth's full-resolution stereo rendering path;
+depth inference is disabled for these titles. Decryption requirements are the
+same as for ordinary Blu-ray playback.
+
+Decoded pictures remain owned until both views have been submitted, so the
+right eye retains its inter-view references. A background reader prefetches
+compressed dependent-view packets so disc reads overlap decoding. The base
+stream also prefetches its next 2 MiB input block while decoding consumes the
+current one. The readers serialize whole refill chunks to avoid competing
+small reads on the same optical drive. The dependent queue has a 4 MiB
+high-water mark and a 128-packet limit; seeking and closing stop the reader
+before resetting the demuxer. x86-64 builds include runtime-selected
+SSE/AVX2 decoder variants.
+MVC playback primes one second of decoded video before starting audio and
+allows 1.5 seconds in the presentation queue to bridge optical-drive stalls.
+This uses more memory and adds startup buffering compared with ordinary video.
+
+The source decoder currently builds with GCC/Clang and POSIX threads. MSVC
+builds retain the explicit unsupported-MVC message. The decoder's BSD notice
+is installed alongside Rendepth's license.
+
+`BlurayPlaylistTest` checks playlist parsing without a disc.
+`DiscReadAheadTest` checks buffered reads, seeks, EOF and I/O errors without a disc.
+`MvcPlaybackTest <disc path>` checks stereo output, seeking, clip transitions,
+audio and looping using a readable 1080p MVC disc. Optional title-index and
+seek-seconds arguments select a particular title and seek for diagnosis.
+Appending a `frame.yuv` path runs a 240-frame throughput check and saves frame
+24 as 3840×1080 planar YUV420P for inspecting both eyes without the renderer.
+The test also reports the 95th-percentile and maximum frame-delivery gaps,
+and the number exceeding 100 ms. These measure decoder delivery, not display
+pacing; compare first reads from optical media with repeated runs, since the
+OS file cache can hide disc stalls.
+An optional final frame-count argument extends the throughput run beyond its
+default 240 frames, for example `MvcPlaybackTest <disc> 132 1950 frame.yuv 720`.
+Build a test target with
+`cmake --build <build-directory> --target <test-name> --parallel 14`.
+
 ### Made by Outmode.
 
 Keyboard presentation controls

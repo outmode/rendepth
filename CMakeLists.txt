@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(Rendepth VERSION 3.0.0 LANGUAGES CXX)
+project(Rendepth VERSION 3.0.0 LANGUAGES C CXX)
 set(EXECUTABLE_NAME Rendepth)
 
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
@@ -570,6 +570,38 @@ if(RENDEPTH_ENABLE_FFMPEG)
     endif()
 endif()
 
+if(RENDEPTH_ENABLE_FFMPEG)
+    target_sources(Rendepth PRIVATE Source/MvcDecoder.cpp)
+    if(RENDEPTH_HAVE_BLURAY AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
+        if(NOT EXISTS "${CMAKE_SOURCE_DIR}/ThirdParty/SyLC/edge264/src/edge264.c")
+            message(FATAL_ERROR "MVC decoder missing. Run: git submodule update --init ThirdParty/SyLC")
+        endif()
+        find_package(Threads REQUIRED)
+        add_library(RendepthMVC STATIC ThirdParty/SyLC/edge264/src/edge264.c)
+        target_include_directories(RendepthMVC PUBLIC ThirdParty/SyLC/edge264)
+        set_target_properties(RendepthMVC PROPERTIES C_STANDARD 17 C_EXTENSIONS ON)
+        target_compile_options(RendepthMVC PRIVATE -std=gnu17 -O3 -fno-strict-aliasing -flax-vector-conversions)
+        # Build upstream's SIMD variants separately. edge264 selects one at
+        # runtime, so the executable still works on baseline x86-64 CPUs.
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT APPLE)
+            foreach(variant IN ITEMS v2 v3)
+                add_library(RendepthMVC_${variant} OBJECT ThirdParty/SyLC/edge264/src/edge264_headers.c)
+                set_target_properties(RendepthMVC_${variant} PROPERTIES C_STANDARD 17 C_EXTENSIONS ON)
+                target_compile_options(RendepthMVC_${variant} PRIVATE
+                    -std=gnu17 -O3 -fno-strict-aliasing -flax-vector-conversions
+                    -march=x86-64-${variant} "-DADD_VARIANT(f)=f##_${variant}")
+                target_sources(RendepthMVC PRIVATE $<TARGET_OBJECTS:RendepthMVC_${variant}>)
+            endforeach()
+            target_compile_definitions(RendepthMVC PRIVATE HAS_X86_64_V2 HAS_X86_64_V3)
+        endif()
+        target_link_libraries(RendepthMVC PUBLIC Threads::Threads)
+        target_link_libraries(Rendepth PUBLIC RendepthMVC)
+        target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_MVC)
+        install(FILES ThirdParty/SyLC/edge264/LICENSE_BSD.txt
+                DESTINATION share/licenses/rendepth RENAME SyLC-edge264-LICENSE.txt)
+    endif()
+endif()
+
 if(RENDEPTH_ENABLE_ONNX_RUNTIME AND WIN32)
     include(Packaging/Windows/Inference.cmake)
 elseif(RENDEPTH_ENABLE_ONNX_RUNTIME AND UNIX AND NOT APPLE)
@@ -945,13 +977,32 @@ if(UNIX AND NOT APPLE)
 endif()
 
 # Disc integration test (requires a readable Blu-ray with at least two titles).
+add_executable(BlurayPlaylistTest EXCLUDE_FROM_ALL Source/BlurayPlaylistTest.cpp)
+add_executable(BlurayTitleNamesTest EXCLUDE_FROM_ALL Source/BlurayTitleNamesTest.cpp)
+if(MSVC)
+    target_compile_options(BlurayTitleNamesTest PRIVATE /UNDEBUG)
+else()
+    target_compile_options(BlurayTitleNamesTest PRIVATE -UNDEBUG)
+endif()
+add_executable(MvcPacketAssemblerTest EXCLUDE_FROM_ALL Source/MvcPacketAssemblerTest.cpp)
 if(RENDEPTH_ENABLE_FFMPEG AND RENDEPTH_HAVE_BLURAY)
     add_executable(DiscTitleMenuTest EXCLUDE_FROM_ALL
         Source/DiscTitleMenuTest.cpp Source/DiscTitleMenu.cpp Source/BlurayReader.cpp
-        Source/DvdReader.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp Source/VideoPlayer.cpp Source/Style.cpp)
+        Source/DvdReader.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp Source/VideoPlayer.cpp Source/MvcDecoder.cpp Source/Style.cpp)
     target_include_directories(DiscTitleMenuTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
     target_compile_definitions(DiscTitleMenuTest PRIVATE $<TARGET_PROPERTY:Rendepth,COMPILE_DEFINITIONS>)
     target_link_libraries(DiscTitleMenuTest PRIVATE $<TARGET_PROPERTY:Rendepth,LINK_LIBRARIES>)
+    add_executable(MvcPlaybackTest EXCLUDE_FROM_ALL Source/MvcPlaybackTest.cpp
+        Source/BlurayReader.cpp Source/DvdReader.cpp Source/AudioCdReader.cpp
+        Source/DiscSource.cpp Source/VideoPlayer.cpp Source/MvcDecoder.cpp)
+    target_include_directories(MvcPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(MvcPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,COMPILE_DEFINITIONS>)
+    target_link_libraries(MvcPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,LINK_LIBRARIES>)
+
+    find_package(Threads REQUIRED)
+    add_executable(DiscReadAheadTest EXCLUDE_FROM_ALL Source/DiscReadAheadTest.cpp)
+    target_include_directories(DiscReadAheadTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
+    target_link_libraries(DiscReadAheadTest PRIVATE Threads::Threads)
 endif()
 
 if(RENDEPTH_ENABLE_FFMPEG)
@@ -969,7 +1020,7 @@ endif()
 if(RENDEPTH_ENABLE_FFMPEG AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(AudioCdPlaybackTest EXCLUDE_FROM_ALL
         Source/AudioCdPlaybackTest.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp
-        Source/VideoPlayer.cpp Source/BlurayReader.cpp Source/DvdReader.cpp)
+        Source/VideoPlayer.cpp Source/MvcDecoder.cpp Source/BlurayReader.cpp Source/DvdReader.cpp)
     target_include_directories(AudioCdPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
     target_compile_definitions(AudioCdPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,COMPILE_DEFINITIONS>)
     target_link_libraries(AudioCdPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,LINK_LIBRARIES>)

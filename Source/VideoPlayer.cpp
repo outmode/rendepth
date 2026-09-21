@@ -5,12 +5,14 @@
 #include "AudioCdReader.h"
 #include "DiscSource.h"
 #include "BlurayReader.h"
+#include "MvcDecoder.h"
 #include "DvdReader.h"
 #include "Core.h"
 
 #include <SDL3_image/SDL_image.h>
 
 #ifdef RENDEPTH_ENABLE_FFMPEG
+#include "DiscReadAhead.h"
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -166,6 +168,8 @@ struct VideoPlayer::Impl {
 
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	AVIOContext* avioContext = nullptr;
+	std::unique_ptr<DiscReadAhead> discReadAhead;
+	std::shared_ptr<std::mutex> discReadMutex;
 	AVBufferRef* hwDeviceContext = nullptr;
 	HardwareDecodeState hardwareDecodeState{};
 	bool retryVideoPacketAfterHardwareFallback = false;
@@ -201,6 +205,7 @@ struct VideoPlayer::Impl {
 
 	AVFormatContext* format = nullptr;
 	std::unique_ptr<BlurayReader> blurayReader;
+	std::unique_ptr<MvcDecoder> mvcDecoder;
 	std::unique_ptr<DvdReader> dvdReader;
 	std::unique_ptr<AudioCdReader> audioCdReader;
 	std::vector<double> discChapterTimes;
@@ -995,7 +1000,9 @@ struct VideoPlayer::Impl {
 			std::optional<double>& seekFloor, bool& seekPreviewPending,
 			bool& fastPreviewPending) {
 		for (;;) {
-			const int result = avcodec_receive_frame(codec, frame);
+			AVFrame* mvcFrame = mvcDecoder ? mvcDecoder->receive() : nullptr;
+			if (mvcDecoder && !mvcFrame) return true;
+			const int result = mvcDecoder ? 0 : avcodec_receive_frame(codec, frame);
 			if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) return true;
 			if (result < 0) {
 				if (disableHardwareDecoding()) return true;
@@ -1006,8 +1013,9 @@ struct VideoPlayer::Impl {
 				return true;
 			}
 			const bool previewWasPending = seekPreviewPending;
-			const bool published = publishFrame(frame, clockValid, clockOrigin, mediaOrigin,
+			const bool published = publishFrame(mvcFrame ? mvcFrame : frame, clockValid, clockOrigin, mediaOrigin,
 				seekFloor, seekPreviewPending, fastPreviewPending);
+			av_frame_free(&mvcFrame);
 			av_frame_unref(frame);
 			if (!published) return false;
 			if (previewWasPending && !seekPreviewPending) return true;
@@ -1113,12 +1121,14 @@ struct VideoPlayer::Impl {
 			(request.seconds + streamStart) / av_q2d(stream->time_base));
 		int result = 0;
 		if (blurayReader || dvdReader) {
+			if (discReadAhead) discReadAhead->reset();
 			// Disc readers seek to access units. FFmpeg's arbitrary byte search
 			// can repeatedly land on the same packet and never make progress.
 			const bool sought = blurayReader ? blurayReader->seekTime(request.seconds) : dvdReader->seekTime(request.seconds);
 			if (sought) {
 				avio_flush(avioContext);
 				avioContext->pos = blurayReader ? blurayReader->bytePosition() : dvdReader->bytePosition();
+				if (discReadAhead) discReadAhead->setPosition(avioContext->pos);
 				avioContext->eof_reached = 0;
 				avioContext->error = 0;
 				result = avformat_flush(format);
@@ -1136,6 +1146,7 @@ struct VideoPlayer::Impl {
 			return false;
 		}
 		if (codec != nullptr) avcodec_flush_buffers(codec);
+		if (mvcDecoder) mvcDecoder->flush();
 		if (audioCodec != nullptr) avcodec_flush_buffers(audioCodec);
 		if (subtitleCodec != nullptr) avcodec_flush_buffers(subtitleCodec);
 		if (audioResampler != nullptr) {
@@ -1301,9 +1312,11 @@ struct VideoPlayer::Impl {
 				}
 				closeOpenBitmapSubtitle(totalDuration > 0.0
 					? totalDuration.load() : currentPosition.load());
-				const int flushResult = avcodec_send_packet(codec, nullptr);
+				std::string mvcError;
+				const int flushResult = mvcDecoder ? (mvcDecoder->finish(mvcError) ? 0 : AVERROR(EIO))
+					: avcodec_send_packet(codec, nullptr);
 				if (flushResult < 0 && flushResult != AVERROR_EOF) {
-					setRuntimeError("FFmpeg could not finish decoding the video: " +
+					setRuntimeError(mvcDecoder ? mvcError : "FFmpeg could not finish decoding the video: " +
 						ffmpegError(flushResult));
 					break;
 				}
@@ -1332,7 +1345,29 @@ struct VideoPlayer::Impl {
 				break;
 			}
 
+            if (mvcDecoder) {
+                // libbluray concatenates clip bytes; each transport stream can
+                // restart its timestamps. Keep video, audio and subtitles on
+                // the playlist timeline, including after a seek into a clip.
+                const int64_t offset = av_rescale_q(mvcDecoder->timestampOffset(packet->pos),
+                    AVRational{1, 90000}, format->streams[packet->stream_index]->time_base);
+                if (packet->pts != AV_NOPTS_VALUE) packet->pts += offset;
+                if (packet->dts != AV_NOPTS_VALUE) packet->dts += offset;
+            }
+
 			if (!audioOnly && packet->stream_index == streamIndex) {
+				if (mvcDecoder) {
+					std::string error;
+					const bool decoded = mvcDecoder->send(*packet, error);
+					av_packet_unref(packet);
+					if (!decoded) {
+						if (interrupted()) continue;
+						setRuntimeError(error); break;
+					}
+					if (!receiveFrames(clockValid, clockOrigin, mediaOrigin, seekFloor,
+						seekPreviewPending, fastPreviewPending) && !interrupted()) break;
+					continue;
+				}
 				bool packetHandled = false;
 				while (!packetHandled && !stopRequested && !interrupted()) {
 					const int sendResult = avcodec_send_packet(codec, packet);
@@ -1431,7 +1466,38 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 			impl->blurayReader = std::make_unique<BlurayReader>();
 			if (!impl->blurayReader->open(path, error)) { close(); return false; }
 			if (discTitle >= 0 && !impl->blurayReader->selectTitle(discTitle, error)) { close(); return false; }
-			impl->avioContext = impl->blurayReader->createAVIOContext();
+			const auto& titles = impl->blurayReader->titles();
+			const auto selected = std::find_if(titles.begin(), titles.end(), [&](const BlurayTitle& title) {
+				return title.index == impl->blurayReader->activeTitle();
+			});
+			if (selected != titles.end() && selected->mvc) {
+				impl->discReadMutex = std::make_shared<std::mutex>();
+				impl->mvcDecoder = std::make_unique<MvcDecoder>();
+				if (!impl->mvcDecoder->open(path, impl->blurayReader->activeTitle(),
+					[this] { return impl->stopRequested || impl->interrupted(); }, error, impl->discReadMutex)) {
+					close(); return false;
+				}
+			}
+			// MVC reads two interleaved files on the same optical drive. Read
+            // ahead in larger chunks instead of alternating tiny reads.
+            impl->avioContext = impl->blurayReader->createAVIOContext(impl->mvcDecoder ? 2 * 1024 * 1024 : 32768);
+			if (impl->mvcDecoder && impl->avioContext) {
+				auto* reader = impl->blurayReader.get();
+				impl->discReadAhead = std::make_unique<DiscReadAhead>(
+					[reader, mutex = impl->discReadMutex](uint8_t* data, int size) {
+						std::lock_guard lock(*mutex);
+						return BlurayReader::readPacket(reader, data, size);
+					},
+					[reader](int64_t offset, int whence) { return BlurayReader::seekPacket(reader, offset, whence); },
+					2 * 1024 * 1024, reader->bytePosition());
+				impl->avioContext->opaque = impl->discReadAhead.get();
+				impl->avioContext->read_packet = [](void* p, uint8_t* data, int size) {
+					return static_cast<DiscReadAhead*>(p)->read(data, size);
+				};
+				impl->avioContext->seek = [](void* p, int64_t offset, int whence) {
+					return static_cast<DiscReadAhead*>(p)->seek(offset, whence);
+				};
+			}
 		} else {
 			impl->dvdReader = std::make_unique<DvdReader>();
 			if (!impl->dvdReader->open(path, error)) { close(); return false; }
@@ -1464,6 +1530,27 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 		return false;
 	}
 
+	// MPEG-TS may omit languages that are present in the Blu-ray playlist.
+	// Match by PID: playlist order need not match FFmpeg's stream order.
+	if (impl->blurayReader) {
+		for (const auto& title : impl->blurayReader->titles()) {
+			if (title.index != impl->blurayReader->activeTitle()) continue;
+			for (unsigned i = 0; i < impl->format->nb_streams; ++i) {
+				auto* stream = impl->format->streams[i];
+				const auto type = stream->codecpar->codec_type;
+				if (type != AVMEDIA_TYPE_AUDIO && type != AVMEDIA_TYPE_SUBTITLE) continue;
+				const auto* existing = av_dict_get(stream->metadata, "language", nullptr, 0);
+				if (existing && existing->value && existing->value[0] &&
+					std::string(existing->value) != "und") continue;
+				const auto& languages = type == AVMEDIA_TYPE_AUDIO
+					? title.audioStreamLanguages : title.subtitleStreamLanguages;
+				if (const auto language = languages.find(stream->id); language != languages.end())
+					av_dict_set(&stream->metadata, "language", language->second.c_str(), 0);
+			}
+			break;
+		}
+	}
+
 	const AVCodec* decoder = nullptr;
 	impl->streamIndex = av_find_best_stream(
 		impl->format, AVMEDIA_TYPE_VIDEO, -1, -1, &decoder, 0);
@@ -1486,6 +1573,14 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 		impl->audioOnly = false;
 	}
 	impl->stream = impl->format->streams[impl->streamIndex];
+	// Disc playlists can also carry secondary video. We only decode the
+	// selected video stream; parsing the others wastes work and can report
+	// missing parameter sets after seeks into those unselected streams.
+	for (unsigned int i = 0; i < impl->format->nb_streams; ++i) {
+		if (static_cast<int>(i) != impl->streamIndex &&
+			impl->format->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+			impl->format->streams[i]->discard = AVDISCARD_ALL;
+	}
 	impl->audioStreamIndices.clear();
 	impl->subtitleStreamIndices.clear();
 	for (unsigned int i = 0; i < impl->format->nb_streams; ++i) {
@@ -1539,7 +1634,7 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 			return false;
 		}
 	}
-	if (!impl->audioOnly) {
+	if (!impl->audioOnly && !impl->mvcDecoder) {
 		impl->codec = avcodec_alloc_context3(decoder);
 		if (impl->codec == nullptr) {
 			error = "FFmpeg could not allocate the video decoder.";
@@ -1647,7 +1742,7 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 		}
 	}
 	impl->rotation = detectedRotation;
-	const int widthVal = impl->codec && impl->codec->width > 0 ? impl->codec->width : impl->stream->codecpar->width;
+	const int widthVal = (impl->codec && impl->codec->width > 0 ? impl->codec->width : impl->stream->codecpar->width) * (impl->mvcDecoder ? 2 : 1);
 	const int heightVal = impl->codec && impl->codec->height > 0 ? impl->codec->height : impl->stream->codecpar->height;
 	const bool swapDims = (detectedRotation == 90 || detectedRotation == 270);
 	impl->videoWidth = impl->audioOnly ? 0 : (swapDims ? heightVal : widthVal);
@@ -1703,7 +1798,10 @@ void VideoPlayer::close() {
 	}
 	// Release disc reader sessions after the input format and AVIO context are
 	// closed, so no AVIO callback can fire against a destroyed reader.
+	impl->discReadAhead.reset();
 	impl->blurayReader.reset();
+	impl->mvcDecoder.reset();
+	impl->discReadMutex.reset();
 	impl->dvdReader.reset();
 	impl->audioCdReader.reset();
 	impl->discChapterTimes.clear();
@@ -1795,6 +1893,14 @@ bool VideoPlayer::audioCd() const {
     return impl->audioCdReader != nullptr;
 #else
     return false;
+#endif
+}
+
+bool VideoPlayer::nativeStereo() const {
+#ifdef RENDEPTH_ENABLE_FFMPEG
+	return impl->mvcDecoder != nullptr;
+#else
+	return false;
 #endif
 }
 
@@ -1912,6 +2018,18 @@ void VideoPlayer::cycleSubtitleTrack() {
 	impl->stateChanged.notify_all();
 }
 
+void VideoPlayer::resetAudioTrack() {
+	if (!impl->isReady || impl->audioStreamIndices.empty()) return;
+	impl->requestedAudioTrack = 0;
+	impl->stateChanged.notify_all();
+}
+
+void VideoPlayer::resetSubtitleTrack() {
+	if (!impl->isReady || impl->subtitleStreamIndices.empty()) return;
+	impl->requestedSubtitleTrack = noSubtitleTrack;
+	impl->stateChanged.notify_all();
+}
+
 std::shared_ptr<const VideoSubtitle> VideoPlayer::subtitle() const {
 	const double position = impl->presentedPosition.load();
 	std::lock_guard lock(impl->subtitleMutex);
@@ -1956,7 +2074,7 @@ std::string streamLanguage(const AVStream* stream, bool includeHandlerName = tru
 		if (code == "nld" || code == "dut" || code == "nl") return "Dutch";
 		if (code == "pol" || code == "pl") return "Polish";
 		if (code == "tur" || code == "tr") return "Turkish";
-		return code.empty() ? "Unknown" : code;
+		return code.empty() || code == "und" ? "Unknown" : code;
 	}
 	return "Unknown";
 }
@@ -1965,15 +2083,16 @@ std::string streamLanguage(const AVStream* stream, bool includeHandlerName = tru
 
 std::string VideoPlayer::audioLanguage() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
-	if (impl->format != nullptr && impl->audioStreamIndices.size() >= 2) {
+	if (impl->format != nullptr && !impl->audioStreamIndices.empty()) {
 		const auto requested = impl->requestedAudioTrack.load();
 		const auto track = requested >= 0 ? requested : impl->selectedAudioTrack.load();
-		const auto index = impl->audioStreamIndices[std::clamp(track, 0,
-			static_cast<int>(impl->audioStreamIndices.size()) - 1)];
+		const auto selected = std::clamp(track, 0, static_cast<int>(impl->audioStreamIndices.size()) - 1);
+		const auto index = impl->audioStreamIndices[selected];
 		const auto language = streamLanguage(impl->format->streams[index], false);
+		const auto number = std::to_string(selected + 1) + "/" + std::to_string(impl->audioStreamIndices.size());
 		if (language == "Unknown" || language == "unknown" || language == "SoundHandler")
-			return "N/A";
-		return language;
+			return "Track " + number;
+		return language + " (Track " + number + ")";
 	}
 #endif
 	return "N/A";
@@ -1984,14 +2103,18 @@ std::string VideoPlayer::subtitleLanguage() const {
 	if (impl->format != nullptr && !impl->subtitleStreamIndices.empty()) {
 		const auto requested = impl->requestedSubtitleTrack.load();
 		const auto track = requested != noSubtitleRequest ? requested : impl->selectedSubtitleTrack.load();
-		if (track == noSubtitleTrack) return "None";
-		const auto index = impl->subtitleStreamIndices[std::clamp(track, 0,
-			static_cast<int>(impl->subtitleStreamIndices.size()) - 1)];
-		return streamLanguage(impl->format->streams[index]);
+		if (track == noSubtitleTrack)
+			return "Off (" + std::to_string(impl->subtitleStreamIndices.size()) + " available)";
+		const auto selected = std::clamp(track, 0, static_cast<int>(impl->subtitleStreamIndices.size()) - 1);
+		const auto index = impl->subtitleStreamIndices[selected];
+		const auto language = streamLanguage(impl->format->streams[index], false);
+		const auto number = std::to_string(selected + 1) + "/" + std::to_string(impl->subtitleStreamIndices.size());
+		if (language == "Unknown" || language == "unknown" || language == "SubtitleHandler")
+			return "Captions " + number;
+		return language + " (Captions " + number + ")";
 	}
-	return "None";
 #endif
-	return "None";
+	return "Off";
 }
 
 void VideoPlayer::seek(double seconds, bool fastPreview) {

@@ -62,6 +62,7 @@ public:
 	inline static glm::ivec2 subtitleBitmapCanvasSize{};
 	inline static SDL_GPUTexture* menuTexture = nullptr;
 	inline static SDL_GPUTexture* discMenuTexture = nullptr;
+	inline static SDL_GPUTexture* discBackgroundTexture = nullptr;
 	inline static SDL_GPUTexture* sliderTexture = nullptr;
 	inline static SDL_GPUTexture* nativeCalibrationTexture = nullptr;
 	inline static SDL_GPUTexture* exportTexture = nullptr;
@@ -221,6 +222,7 @@ public:
 	static int updateVideoFrame(Context* context, const VideoFrame& frame, bool firstFrame,
 		int logicalWidth, int logicalHeight, bool updateBlur = true);
 	static void updateVideoBackgroundAnimation();
+	static void updateDiscBackground(Context* context, SDL_Surface* preview);
 	static int updateVideoDepth(Context* context, const std::vector<std::uint16_t>& values,
 		int width, int height);
 	static void clearVideoDepth(Context* context);

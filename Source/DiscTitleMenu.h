@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <string>
 struct Context;
 struct TTF_Font;
 
@@ -13,14 +14,19 @@ class DiscTitleMenu {
 public:
     DiscTitleMenu();
     ~DiscTitleMenu();
-    void open(const std::filesystem::path& path);
+    void open(const std::filesystem::path& path, bool autoPlayMainFeature = false);
     void close();
     void shutdown(Context* context);
     bool visible() const;
+    void pageBy(int delta);
+    bool hasPages() const;
+    std::shared_ptr<SDL_Surface> backgroundPreview() const;
+    std::string hoveredMetadata() const;
     bool handleEvent(const SDL_Event& event, SDL_Window* window);
     void update(Context* context, TTF_Font* font);
     SDL_GPUTexture* texture() const;
     std::optional<int> takeSelection();
+    std::string takeError();
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;

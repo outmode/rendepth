@@ -75,6 +75,7 @@ public:
 	bool audioOnly() const;
 	AudioWaveform::Bars audioWaveform() const;
 	bool discSource() const;
+	bool nativeStereo() const;
 	bool audioCd() const;
 	bool audioReady() const;
 	double bufferedAudioDuration() const;
@@ -89,6 +90,8 @@ public:
 	void setVolume(double volume);
 	void cycleAudioTrack();
 	void cycleSubtitleTrack();
+	void resetAudioTrack();
+	void resetSubtitleTrack();
 	std::string audioLanguage() const;
 	std::string subtitleLanguage() const;
 	std::shared_ptr<const VideoSubtitle> subtitle() const;

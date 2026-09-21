@@ -112,6 +112,21 @@ void DvdReader::inspectTitles() {
                     if (pgc) {
                         title.duration = parseDvdTime(pgc->playback_time);
 
+                        if (vtsi->vtsi_mat) {
+                            for (int audio = 0; audio < std::min<int>(8, vtsi->vtsi_mat->nr_of_vts_audio_streams); ++audio) {
+                                if (!(pgc->audio_control[audio] & 0x8000)) continue;
+                                ++title.audioTrackCount;
+                                const auto& attr = vtsi->vtsi_mat->vts_audio_attr[audio];
+                                // DVD audio code extensions 3 and 4 identify commentary.
+                                title.commentaryAvailable |= attr.code_extension == 3 || attr.code_extension == 4;
+                                if (attr.lang_type == 1 && attr.lang_code) {
+                                    const std::string language{static_cast<char>(attr.lang_code >> 8), static_cast<char>(attr.lang_code & 0xff)};
+                                    if (std::find(title.audioLanguages.begin(), title.audioLanguages.end(), language) == title.audioLanguages.end())
+                                        title.audioLanguages.push_back(language);
+                                }
+                            }
+                        }
+
                         double accumulatedTime = 0.0;
                         for (uint16_t c = 0; c < ttu->nr_of_ptts; ++c) {
                             ptt_info_t* ptt = &ttu->ptt[c];

@@ -40,26 +40,90 @@ int main(int argc, char** argv) {
     context.window = SDL_CreateWindow("Disc title test",1280,800,0);
     auto* font = TTF_OpenFont("Assets/Lato.ttf",20);
     if (!context.window || !font) return 1;
+    DiscTitleMenu menu;
+    menu.open(std::filesystem::path(argv[1]) / "missing-disc-source");
+    if (menu.visible()) { std::cerr << "Disc browser appeared before loading\n"; return 21; }
+    std::string scanError;
+    const auto failureEnd = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (scanError.empty() && std::chrono::steady_clock::now() < failureEnd) {
+        menu.update(&context,font);
+        if (menu.visible() || snapshot) { std::cerr << "Failed scan displayed a loading page\n"; return 22; }
+        scanError = menu.takeError();
+        SDL_Delay(10);
+    }
+    if (scanError.empty() || !menu.takeError().empty()) { std::cerr << "Missing or repeated disc error\n"; return 23; }
+    if (std::string(argv[1]) == "--failure-only") {
+        menu.shutdown(&context);
+        TTF_CloseFont(font); SDL_DestroyWindow(context.window); TTF_Quit(); SDL_Quit();
+        std::cout << "PASS: disc scan stays hidden and reports failure once\n";
+        return 0;
+    }
     std::vector<BlurayTitle> titles;
+    int defaultTitle = -1;
     {
         BlurayReader reader; std::string error;
         if (!reader.open(argv[1], error)) { std::cerr << error << '\n'; return 1; }
         titles = reader.titles();
+        defaultTitle = reader.activeTitle();
     }
     std::stable_sort(titles.begin(),titles.end(),[](const auto& a,const auto& b) { return a.duration > b.duration; });
     if (titles.size() < 2) { std::cerr << "Test requires at least two titles\n"; return 1; }
-    DiscTitleMenu menu;
+    const auto mainFeature = std::find_if(titles.begin(), titles.end(), [](const auto& title) {
+        return title.mainFeatureCandidate;
+    });
+    int expectedAutomatic = mainFeature != titles.end() ? mainFeature->index : defaultTitle;
+#ifdef RENDEPTH_ENABLE_MVC
+    const auto preferred = std::find_if(titles.begin(), titles.end(), [&](const auto& title) {
+        return title.index == expectedAutomatic;
+    });
+    if (preferred != titles.end() && !preferred->mvc) {
+        const auto stereo = std::find_if(titles.begin(), titles.end(), [&](const auto& title) {
+            return title.mvc && std::abs(title.duration - preferred->duration) < 1.0 &&
+                title.chapterCount == preferred->chapterCount;
+        });
+        if (stereo != titles.end()) expectedAutomatic = stereo->index;
+    }
+#endif
+    menu.open(argv[1], true);
+    std::optional<int> automatic;
+    const auto automaticEnd = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (!automatic && std::chrono::steady_clock::now() < automaticEnd) {
+        menu.update(&context, font);
+        if (menu.visible() || snapshot) { std::cerr << "Autoplay displayed the title browser\n"; return 24; }
+        if (auto error = menu.takeError(); !error.empty()) { std::cerr << error << '\n'; return 25; }
+        automatic = menu.takeSelection();
+        SDL_Delay(10);
+    }
+    if (!automatic || *automatic != expectedAutomatic || menu.takeSelection()) {
+        std::cerr << "Wrong or repeated automatic main feature\n"; return 26;
+    }
+    std::cout << "Automatic main feature: title index " << *automatic << '\n';
+    {
+        VideoPlayer automaticPlayer;
+        std::string error;
+        if (!automaticPlayer.open(argv[1], error, *automatic) || !waitForFrame(automaticPlayer)) {
+            std::cerr << "Automatic main feature did not play: " << error << '\n'; return 27;
+        }
+    }
+    // Opening Track Selection explicitly must still wait for the user.
     menu.open(argv[1]);
+    if (menu.visible()) { std::cerr << "Disc browser appeared before loading\n"; return 21; }
     const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(argc > 2 ? 15 : 3);
     while (std::chrono::steady_clock::now() < end) {
         menu.update(&context,font);
-        if (!menu.visible() || menu.takeSelection()) { std::cerr << "Unexpected autoplay\n"; return 2; }
+        if (menu.takeSelection()) { std::cerr << "Unexpected autoplay\n"; return 2; }
         SDL_Delay(20);
     }
-    if (!snapshot) return 3;
+    if (!snapshot || !menu.visible()) return 3;
+    Uint8 red, green, blue, alpha;
+    SDL_ReadSurfacePixel(snapshot, 0, 0, &red, &green, &blue, &alpha);
+    if (alpha != 0) { std::cerr << "Disc browser obscures the app background\n"; return 18; }
     if (argc > 2) IMG_SavePNG(snapshot,argv[2]);
     SDL_Event event{}; event.type = SDL_EVENT_KEY_DOWN; event.key.key = SDLK_RIGHT;
-    menu.handleEvent(event,context.window);
+    if (menu.handleEvent(event,context.window)) return 19; // App navigation owns arrow keys.
+    event.key.key = SDLK_F;
+    if (menu.handleEvent(event,context.window)) return 20; // Fullscreen shortcut passes through.
+    event.key.key = SDLK_TAB; menu.handleEvent(event,context.window);
     if (menu.takeSelection()) return 4; // Moving focus must not play.
     event.key.key = SDLK_RETURN; menu.handleEvent(event,context.window);
     std::optional<int> selected;
@@ -113,7 +177,7 @@ int main(int argc, char** argv) {
     while (!selected && std::chrono::steady_clock::now() < clickEnd) { selected = menu.takeSelection(); SDL_Delay(10); }
     if (!selected || *selected != titles.front().index) return 10;
     // Narrow layout must keep paging and hit testing aligned.
-    SDL_SetWindowSize(context.window, 600, 600);
+    SDL_SetWindowSize(context.window, 600, 450);
     menu.open(argv[1]);
     const auto narrowEnd = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (std::chrono::steady_clock::now() < narrowEnd) { menu.update(&context,font); SDL_Delay(20); }
@@ -126,12 +190,12 @@ int main(int argc, char** argv) {
     while (!selected && std::chrono::steady_clock::now() < narrowSelectionEnd) { selected = menu.takeSelection(); SDL_Delay(10); }
     if (!selected || *selected != titles[1].index) return 11;
     menu.open(argv[1]);
-    event.key.key = SDLK_ESCAPE; menu.handleEvent(event,context.window);
-    if (menu.visible() || menu.takeSelection()) return 9;
+    event.key.key = SDLK_ESCAPE;
+    if (menu.handleEvent(event,context.window) || menu.visible() || menu.takeSelection()) return 9;
     // Reopening while a canceled scan is winding down must not publish old results.
     menu.open(argv[1]); menu.close();
     menu.shutdown(&context);
     SDL_DestroySurface(snapshot); TTF_CloseFont(font);
     SDL_DestroyWindow(context.window); TTF_Quit(); SDL_Quit();
-    std::cout << "PASS: no autoplay, keyboard/mouse selection, responsive paging, decode/audio, release-only disc scrubbing, cancel, reopen\n";
+    std::cout << "PASS: main-feature autoplay, manual title browser, transparent background, app shortcuts, keyboard/mouse selection, responsive paging, decode/audio, release-only disc scrubbing, reopen\n";
 }

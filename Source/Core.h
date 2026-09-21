@@ -79,7 +79,7 @@ enum class IconType {
 	Loading, Loading_Fade, Options, Settings, Folder, Save, Delete, Crop,
 	Glasses, Focus, Layers, Stereo_2D, Stereo_3D, Cursor_Empty, Cursor_Black, Cursor_Pink,
 	Logo_White, Logo_Dark, Logo_Light, Play, Pause, File, Mono_SD, Mono_SR,
-	VideoSeek, VideoVolume, VideoAudio, VideoCaption, BluRay
+	VideoSeek, VideoVolume, VideoAudio, VideoCaption, BluRay, TrackSelection
 };
 
 enum class IconGroup {

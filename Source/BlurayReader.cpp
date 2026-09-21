@@ -1,5 +1,9 @@
 #include "DiscSource.h"
 #include "BlurayReader.h"
+#include "BlurayPlaylist.h"
+#include "BlurayTitleNames.h"
+#include <cstdlib>
+#include <format>
 #include <iostream>
 #include <algorithm>
 #include <cctype>
@@ -61,17 +65,76 @@ void BlurayReader::inspectTitles() {
         numTitles = bd_get_titles(bd_, TITLES_ALL, 0);
     }
 
+    const int mainTitle = bd_get_main_title(bd_);
+    // Disc-index title numbers and playlist indices are different namespaces.
+    // Resolve names only through explicit HDMV playlist references.
+    std::map<uint32_t, std::set<std::string>> playlistNames;
+    void* movieObjects = nullptr;
+    int64_t movieObjectsSize = 0;
+    if (bd_read_file(bd_, "BDMV/MovieObject.bdmv", &movieObjects, &movieObjectsSize) > 0 &&
+        movieObjects && movieObjectsSize > 0) {
+        const auto references = BlurayTitleNames::playlistReferences({
+            static_cast<const uint8_t*>(movieObjects), static_cast<size_t>(movieObjectsSize)});
+        const auto* disc = bd_get_disc_info(bd_);
+        if (disc && disc->titles) {
+            for (unsigned n = 1; n <= disc->num_titles; ++n) {
+                const auto* entry = disc->titles[n];
+                if (!entry || entry->bdj || !entry->name || !entry->name[0] ||
+                    entry->id_ref >= references.size()) continue;
+                for (const auto playlist : references[entry->id_ref])
+                    playlistNames[playlist].insert(entry->name);
+            }
+        }
+    }
+    std::free(movieObjects);
+    std::map<int, std::string> contentKeys;
     for (uint32_t i = 0; i < numTitles; ++i) {
         BLURAY_TITLE_INFO* info = bd_get_title_info(bd_, i, 0);
         if (info) {
             BlurayTitle title;
             title.index = static_cast<int>(i);
             title.playlist = info->playlist;
+            if (const auto names = playlistNames.find(title.playlist);
+                names != playlistNames.end() && names->second.size() == 1)
+                title.name = *names->second.begin();
             title.duration = static_cast<double>(info->duration) / 90000.0;
             title.chapterCount = info->chapter_count;
             title.angleCount = static_cast<int>(info->angle_count);
-            for (uint32_t clip = 0; info->clips && clip < info->clip_count; ++clip)
+            title.mainFeatureCandidate = static_cast<int>(i) == mainTitle;
+            void* playlistData = nullptr;
+            int64_t playlistSize = 0;
+            const auto playlistPath = std::format("BDMV/PLAYLIST/{:05}.mpls", info->playlist);
+            if (bd_read_file(bd_, playlistPath.c_str(), &playlistData, &playlistSize) > 0 &&
+                playlistData && playlistSize > 0) {
+                title.mvc = BlurayPlaylist::hasMvc({static_cast<const uint8_t*>(playlistData),
+                    static_cast<size_t>(playlistSize)});
+            }
+            std::free(playlistData);
+            for (uint32_t clip = 0; info->clips && clip < info->clip_count; ++clip) {
                 title.audioTrackCount = std::max(title.audioTrackCount, static_cast<int>(info->clips[clip].audio_stream_count));
+                const auto& streams = info->clips[clip];
+                contentKeys[title.index] += std::format("{}:{}:{};", streams.clip_id,
+                    streams.in_time, streams.out_time);
+                const auto collectLanguages = [](const BLURAY_STREAM_INFO* tracks, unsigned count,
+                    std::map<int, std::string>& languages) {
+                    for (unsigned track = 0; tracks && track < count; ++track) {
+                        const auto* code = reinterpret_cast<const char*>(tracks[track].lang);
+                        std::string language(code, std::find(code, code + 3, '\0'));
+                        if (!language.empty() && language != "und")
+                            languages.try_emplace(tracks[track].pid, language);
+                    }
+                };
+                collectLanguages(streams.audio_streams, streams.audio_stream_count, title.audioStreamLanguages);
+                collectLanguages(streams.sec_audio_streams, streams.sec_audio_stream_count, title.audioStreamLanguages);
+                collectLanguages(streams.pg_streams, streams.pg_stream_count, title.subtitleStreamLanguages);
+                for (unsigned audio = 0; streams.audio_streams && audio < streams.audio_stream_count; ++audio) {
+                    const auto* code = reinterpret_cast<const char*>(streams.audio_streams[audio].lang);
+                    std::string language(code, std::find(code, code + 3, '\0'));
+                    if (!language.empty() && language != "und" &&
+                        std::find(title.audioLanguages.begin(), title.audioLanguages.end(), language) == title.audioLanguages.end())
+                        title.audioLanguages.push_back(language);
+                }
+            }
 
             for (uint32_t c = 0; c < info->chapter_count && info->chapters; ++c) {
                 BlurayChapter chapter;
@@ -85,6 +148,18 @@ void BlurayReader::inspectTitles() {
             titles_.push_back(title);
             bd_free_title_info(info);
         }
+    }
+    // Alternate playlists can use exactly the same footage with different
+    // audio, chapter, or stereo settings. Share a name only if unambiguous.
+    std::map<std::string, std::set<std::string>> contentNames;
+    for (const auto& title : titles_)
+        if (!title.name.empty() && !contentKeys[title.index].empty())
+            contentNames[contentKeys[title.index]].insert(title.name);
+    for (auto& title : titles_) {
+        if (!title.name.empty()) continue;
+        const auto names = contentNames.find(contentKeys[title.index]);
+        if (names != contentNames.end() && names->second.size() == 1)
+            title.name = *names->second.begin();
     }
 }
 

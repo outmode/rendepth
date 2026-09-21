@@ -40,6 +40,9 @@ struct DvdTitle {
     int chapterCount = 0;
     int angleCount = 0;
     std::vector<DvdChapter> chapters;
+    int audioTrackCount = 0;
+    std::vector<std::string> audioLanguages;
+    bool commentaryAvailable = false;
 };
 
 class DvdReader {
