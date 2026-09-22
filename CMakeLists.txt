@@ -1067,6 +1067,15 @@ if(RENDEPTH_ENABLE_FFMPEG AND RENDEPTH_HAVE_BLURAY)
     target_link_libraries(DiscReadAheadTest PRIVATE Threads::Threads)
 endif()
 
+if(RENDEPTH_ENABLE_FFMPEG AND RENDEPTH_HAVE_DVD)
+    add_executable(DvdPlaybackTest EXCLUDE_FROM_ALL
+        Source/DvdPlaybackTest.cpp Source/DvdReader.cpp Source/DiscSource.cpp
+        Source/VideoPlayer.cpp Source/AudioCdReader.cpp Source/BlurayReader.cpp Source/MvcDecoder.cpp)
+    target_include_directories(DvdPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(DvdPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,COMPILE_DEFINITIONS>)
+    target_link_libraries(DvdPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,LINK_LIBRARIES>)
+endif()
+
 if(RENDEPTH_ENABLE_FFMPEG)
     add_executable(AudioCdReaderTest EXCLUDE_FROM_ALL
         Source/AudioCdReaderTest.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp)

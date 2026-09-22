@@ -10,10 +10,12 @@ DialogState current;
 DialogAction callback;
 HFONT font = nullptr;
 enum { Key = 100, Activate, Deactivate, Buy, Support, Close };
+// Convert UTF-8 application text to the wide strings expected by Win32 controls.
 std::wstring wide(const std::string& value) {
     int n = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
     std::wstring out(n, L'\0'); MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, out.data(), n); return out;
 }
+// Read a Windows control's text as UTF-8 for the licensing service.
 std::string text(HWND control) {
     std::wstring value(GetWindowTextLengthW(control) + 1, L'\0');
     GetWindowTextW(control, value.data(), static_cast<int>(value.size()));
@@ -21,6 +23,7 @@ std::string text(HWND control) {
     std::string out(n, '\0'); WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, out.data(), n, nullptr, nullptr);
     if (!out.empty()) out.pop_back(); return out;
 }
+// Dispatch license-window commands, confirmation prompts, and cleanup messages.
 LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     if (message == WM_COMMAND) {
         const int id = LOWORD(w);
@@ -50,6 +53,7 @@ LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     return DefWindowProcW(hwnd, message, w, l);
 }
 }
+// Update status text and enable only the actions valid for the current licensing state.
 void update(const DialogState& state) {
     current = state;
     if (!window) return;
@@ -62,6 +66,7 @@ void update(const DialogState& state) {
     EnableWindow(deactivate, !state.busy);
     if (state.licensed) SetWindowTextW(entry, L"");
 }
+// Create or focus a DPI-scaled Windows license dialog and integrate its keyboard handling with SDL.
 void open(SDL_Window* parent, const DialogState& state, DialogAction action) {
     callback = std::move(action);
     if (window) { update(state); ShowWindow(window, SW_RESTORE); SetForegroundWindow(window); return; }
@@ -104,11 +109,13 @@ void open(SDL_Window* parent, const DialogState& state, DialogAction action) {
     }, nullptr);
     update(state); ShowWindow(window, SW_SHOW); SetForegroundWindow(window); SetFocus(entry);
 }
+// Pump a bounded number of license-dialog messages through Windows dialog handling.
 void poll() {
     MSG message;
     for (int i = 0; window && i < 32 && PeekMessageW(&message, window, 0, 0, PM_REMOVE); ++i) {
         if (!IsDialogMessageW(window, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
     }
 }
+// Destroy the license window and clear its callback.
 void close() { if (window) DestroyWindow(window); callback = {}; }
 }

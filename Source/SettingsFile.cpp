@@ -15,6 +15,7 @@
 #endif
 
 namespace {
+// Describe the most recent platform I/O error.
 std::string systemError() {
 #ifdef _WIN32
     return std::system_category().message(GetLastError());
@@ -23,6 +24,7 @@ std::string systemError() {
 #endif
 }
 }
+// Create the settings directory and acquire a process-shared lock for a settings transaction.
 SettingsFile::SettingsFile(const std::filesystem::path& path, std::string& error) : path_(path) {
     error.clear();
     std::error_code ec;
@@ -45,6 +47,7 @@ SettingsFile::SettingsFile(const std::filesystem::path& path, std::string& error
 #endif
     if (!locked_) error = systemError();
 }
+// Release the transaction lock while retaining the lock file for other waiting instances.
 SettingsFile::~SettingsFile() {
 #ifdef _WIN32
     if (lock_) CloseHandle(lock_);
@@ -53,6 +56,7 @@ SettingsFile::~SettingsFile() {
 #endif
     // Do not unlink the lock file: another instance may already be waiting on it.
 }
+// Flush new settings to a temporary file and replace the destination only after a successful write.
 bool SettingsFile::write(std::string_view contents, std::string& error) {
     error.clear();
     if (!locked_) { error = "Settings transaction is not locked"; return false; }

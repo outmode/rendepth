@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+// Recognize image files eligible for the command-line super-resolution test.
 static bool isImagePath(const std::filesystem::path& path) {
 	std::string extension = path.extension().string();
 	std::transform(extension.begin(), extension.end(), extension.begin(),
@@ -25,6 +26,7 @@ static bool isImagePath(const std::filesystem::path& path) {
 		extension == ".jxl";
 }
 
+// Run repeated super-resolution inference for one image, save its result, and report timing.
 static bool processImage(SuperResolution& estimator,
 	const std::filesystem::path& inputPath, const std::filesystem::path& outputPath,
 	int repeats, const std::string& modelName) {
@@ -75,6 +77,7 @@ static bool processImage(SuperResolution& estimator,
 	return saved;
 }
 
+// Configure a super-resolution model and process an input image or directory.
 int main(int argc, char** argv) {
 	if (argc < 4) {
 		std::cerr << "Usage: SuperTest <model.onnx> <input-file-or-directory> "

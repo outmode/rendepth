@@ -55,6 +55,7 @@ struct MvcDecoder::Impl {
     std::multiset<int64_t> timestamps;
     std::deque<AVFrame*> frames;
     std::vector<void*> borrowedFrames;
+    // Release an owned FFmpeg frame when its smart pointer is destroyed.
     struct FrameDeleter { void operator()(AVFrame* f) const { av_frame_free(&f); } };
     using Frame = std::unique_ptr<AVFrame, FrameDeleter>;
     std::map<int, Frame> baseViews, dependentViews;
@@ -63,20 +64,24 @@ struct MvcDecoder::Impl {
     std::shared_ptr<std::mutex> discReadMutex;
     unsigned withoutStereo = 0;
 
+    // Stop dependent-view input and release queued frames, decoder state, and the disc handle.
     ~Impl() {
         closeFile();
         for (auto* frame : frames) av_frame_free(&frame);
         edge264_free(&decoder);
         if (disc) bd_close(disc);
     }
+    // Check local shutdown and the player's external cancellation callback.
     bool cancelled() const {
         return stopInput || (interrupted && interrupted());
     }
+    // Wake and join the dependent-view read-ahead thread.
     void stopReader() {
         stopInput = true;
         inputChanged.notify_all();
         if (inputThread.joinable()) inputThread.join();
     }
+    // Close the current dependent-view clip and reset its buffered input state.
     void closeFile() {
         stopReader();
         avformat_close_input(&format);
@@ -87,9 +92,11 @@ struct MvcDecoder::Impl {
         dependentPicture.reset();
         pendingBytes = 0; inputResult = 0; stopInput = false;
     }
+    // Bound dependent-view buffering by both packet count and total bytes.
     bool inputFull() const {
         return dependentPackets.size() >= maxPendingPackets || pendingBytes >= maxPendingBytes;
     }
+    // Publish an assembled dependent picture under its timestamp and wake waiting consumers.
     void queuePicture(MvcPacketAssembler::Packet picture) {
         {
             std::lock_guard lock(inputMutex);
@@ -100,6 +107,7 @@ struct MvcDecoder::Impl {
         }
         inputChanged.notify_all();
     }
+    // Assemble dependent-view packet fragments into complete timestamped pictures.
     bool appendPacket(const AVPacket& packet) {
         std::optional<MvcPacketAssembler::Packet> completed;
         const auto pts = packet.pts == AV_NOPTS_VALUE
@@ -109,6 +117,7 @@ struct MvcDecoder::Impl {
         if (completed) queuePicture(std::move(*completed));
         return true;
     }
+    // Read and assemble dependent-view packets in the background with bounded buffering.
     void readAhead(int stream) {
         AVPacket* packet = av_packet_alloc();
         int result = packet ? 0 : AVERROR(ENOMEM);
@@ -142,6 +151,8 @@ struct MvcDecoder::Impl {
         }
         inputChanged.notify_all();
     }
+    // Wait for the dependent picture matching a base-view timestamp, reporting synchronization
+    // failures.
     bool takePacket(int64_t pts, std::vector<uint8_t>& bytes, std::string& error) {
         std::unique_lock lock(inputMutex);
         while (!dependentPackets.contains(pts)) {
@@ -162,6 +173,7 @@ struct MvcDecoder::Impl {
         inputChanged.notify_all();
         return true;
     }
+    // Serve decrypted clip bytes through a block cache while serializing optical-drive reads.
     static int read(void* opaque, uint8_t* out, int size) {
         auto& s = *static_cast<Impl*>(opaque);
         // Keep each AVIO refill contiguous on the optical drive. Interleaving
@@ -186,6 +198,7 @@ struct MvcDecoder::Impl {
         }
         return copied ? copied : AVERROR_EOF;
     }
+    // Handle bounded byte seeks and size queries for the dependent-view clip.
     static int64_t seek(void* opaque, int64_t offset, int whence) {
         auto& s = *static_cast<Impl*>(opaque);
         if (whence == AVSEEK_SIZE) return s.fileSize;
@@ -196,6 +209,7 @@ struct MvcDecoder::Impl {
         s.position = origin + offset;
         return s.position;
     }
+    // Open and probe a dependent-view clip, align it to the requested timestamp, and start read-ahead.
     bool openClip(int index, int64_t pts, std::string& error) {
         closeFile();
         const auto path = std::format("BDMV/STREAM/{}.m2ts", clips[index].dependent.clip);
@@ -257,6 +271,8 @@ struct MvcDecoder::Impl {
         }
         return true;
     }
+    // Pair base and dependent pictures by picture order count before packing stereo frames in display
+    // order.
     bool pairViews(std::string& error, bool drain = false) {
         // The decoder may return a base picture alongside a different dependent
         // picture. Own both views and match their POCs before publishing. A small
@@ -301,10 +317,12 @@ struct MvcDecoder::Impl {
         }
         return true;
     }
+    // Return borrowed decoder pictures after both views have finished using them.
     void releasePictures() {
         for (auto* token : borrowedFrames) edge264_return_frame(decoder, token);
         borrowedFrames.clear();
     }
+    // Collect decoded pictures, validate their pixel layout, and queue matching stereo pairs.
     bool collect(std::string& error) {
         Edge264Frame decoded{};
         while (edge264_get_frame(decoder, &decoded, 1) == 0) {
@@ -348,6 +366,8 @@ struct MvcDecoder::Impl {
         }
         return true;
     }
+    // Submit one padded NAL unit to edge264 while deferring stream draining until both views are
+    // supplied.
     bool nal(std::span<const uint8_t> data, std::string& error) {
         if (data.empty()) return true;
         // End markers belong to each elementary stream. Draining on the base
@@ -373,6 +393,7 @@ struct MvcDecoder::Impl {
         // picture cannot be recycled before its dependent view uses it.
         return true;
     }
+    // Split Annex B data into NAL payload spans without copying their bytes.
     static std::vector<std::span<const uint8_t>> nals(std::span<const uint8_t> data) {
         std::vector<std::span<const uint8_t>> result;
         const auto* bytes = data.data();
@@ -393,8 +414,11 @@ struct MvcDecoder::Impl {
 struct MvcDecoder::Impl {};
 #endif
 
+// Allocate private MVC decoder state.
 MvcDecoder::MvcDecoder() : impl(std::make_unique<Impl>()) {}
+// Release the private decoder state, which stops workers and frees its media resources.
 MvcDecoder::~MvcDecoder() = default;
+// Open a Blu-ray MVC title and map its base and dependent clips for synchronized decoding.
 bool MvcDecoder::open(const std::filesystem::path& path, int titleIndex,
     std::function<bool()> interrupted, std::string& error,
     std::shared_ptr<std::mutex> discReadMutex) {
@@ -437,6 +461,7 @@ bool MvcDecoder::open(const std::filesystem::path& path, int titleIndex,
 #endif
 }
 
+// Find the timestamp adjustment for the playlist clip containing a byte offset.
 int64_t MvcDecoder::timestampOffset(int64_t bytePosition) const {
 #ifdef RENDEPTH_ENABLE_MVC
     for (const auto& clip : impl->clips)
@@ -445,6 +470,7 @@ int64_t MvcDecoder::timestampOffset(int64_t bytePosition) const {
     return 0;
 }
 
+// Match a base packet to its dependent picture and submit both views to the stereo decoder.
 bool MvcDecoder::send(const AVPacket& base, std::string& error) {
 #ifdef RENDEPTH_ENABLE_MVC
     if (base.pts == AV_NOPTS_VALUE || base.pos < 0) { error = "MVC base view is missing timing or clip position."; return false; }
@@ -482,6 +508,7 @@ bool MvcDecoder::send(const AVPacket& base, std::string& error) {
     return false;
 #endif
 }
+// Transfer the next decoded stereo frame to the caller.
 AVFrame* MvcDecoder::receive() {
 #ifdef RENDEPTH_ENABLE_MVC
     if (impl->frames.empty()) return nullptr;
@@ -490,6 +517,7 @@ AVFrame* MvcDecoder::receive() {
     return nullptr;
 #endif
 }
+// Discard queued pictures and input after a seek so the next packet reopens at the correct position.
 void MvcDecoder::flush() {
 #ifdef RENDEPTH_ENABLE_MVC
     impl->stopReader();
@@ -502,6 +530,7 @@ void MvcDecoder::flush() {
     impl->baseViews.clear(); impl->dependentViews.clear(); impl->lastPoc = -1;
 #endif
 }
+// Drain the decoder and publish the remaining matched stereo pictures at end of input.
 bool MvcDecoder::finish(std::string& error) {
 #ifdef RENDEPTH_ENABLE_MVC
     edge264_bump_frames(impl->decoder);

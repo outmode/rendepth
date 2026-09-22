@@ -2,6 +2,7 @@
 #include <vector>
 #include <cassert>
 
+// Smoke-test depth reprojection with a synthetic block motion vector.
 int main() {
     int width = 10;
     int height = 10;

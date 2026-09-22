@@ -12,6 +12,7 @@
 
 namespace {
 
+// Apply a light separable Gaussian blur to reduce local depth noise.
 void applyLightGaussianBlur(std::vector<float>& values, int width, int height) {
 	if (width <= 1 || height <= 1 ||
 		values.size() != static_cast<size_t>(width) * height) return;
@@ -42,10 +43,12 @@ void applyLightGaussianBlur(std::vector<float>& values, int width, int height) {
 
 }
 
+// Stop inference before destroying the processor.
 VideoDepthProcessor::~VideoDepthProcessor() {
 	stop();
 }
 
+// Launch a fresh depth worker using the requested model and provider configuration.
 bool VideoDepthProcessor::start(const Config& config) {
 	stop();
 	activeConfig = config;
@@ -67,6 +70,7 @@ bool VideoDepthProcessor::start(const Config& config) {
 	return true;
 }
 
+// Cancel and join inference, unload the model, and clear queued and temporal data.
 void VideoDepthProcessor::stop() {
 	stopRequested = true;
 	if (isReady) estimator.cancel();
@@ -85,6 +89,7 @@ void VideoDepthProcessor::stop() {
 	isRunning = false;
 }
 
+// Discard queued frames and temporal history without unloading the running model.
 void VideoDepthProcessor::reset() {
 	std::lock_guard lock(mutex);
 	pendingFrame.reset();
@@ -94,6 +99,7 @@ void VideoDepthProcessor::reset() {
 	clearTemporalState();
 }
 
+// Keep the newest eligible frame for inference, rejecting repeated timestamps within a generation.
 void VideoDepthProcessor::submit(const std::shared_ptr<const VideoFrame>& frame) {
 	if (!isRunning || frame == nullptr || frame->inferenceWidth <= 0 ||
 		frame->inferenceHeight <= 0 || frame->inferenceRGBA.size() <
@@ -109,11 +115,13 @@ void VideoDepthProcessor::submit(const std::shared_ptr<const VideoFrame>& frame)
 	changed.notify_one();
 }
 
+// Transfer ownership of the latest completed depth frame to the caller.
 std::unique_ptr<VideoDepthFrame> VideoDepthProcessor::takeFrame() {
 	std::lock_guard lock(mutex);
 	return std::move(completedFrame);
 }
 
+// Consume the worker's pending error message.
 std::string VideoDepthProcessor::takeError() {
 	std::lock_guard lock(mutex);
 	std::string result;
@@ -121,9 +129,12 @@ std::string VideoDepthProcessor::takeError() {
 	return result;
 }
 
+// Report whether the depth worker is active.
 bool VideoDepthProcessor::running() const { return isRunning; }
+// Report whether the model has finished loading and can run inference.
 bool VideoDepthProcessor::ready() const { return isReady; }
 
+// Clear depth normalization history and scene-change samples.
 void VideoDepthProcessor::clearTemporalState() {
 	std::lock_guard lock(temporalMutex);
 	temporalGeneration = 0;
@@ -135,6 +146,8 @@ void VideoDepthProcessor::clearTemporalState() {
 	previousLuminance.clear();
 }
 
+// Normalize depth with temporally smoothed bounds, resetting history across scene or generation
+// changes.
 VideoDepthFrame VideoDepthProcessor::stabilize(const DepthEstimator::Result& depth,
 		const VideoFrame& source) {
 	std::lock_guard temporalLock(temporalMutex);
@@ -158,6 +171,8 @@ VideoDepthFrame VideoDepthProcessor::stabilize(const DepthEstimator::Result& dep
 		}
 	}
 
+	// Reset normalization across seeks, size changes, or abrupt luminance changes rather than carrying
+	// old scene history.
 	bool sceneCut = source.generation != temporalGeneration || depth.width != temporalWidth ||
 		depth.height != temporalHeight || previousLuminance.size() != luminance.size();
 	if (!sceneCut) {
@@ -174,6 +189,7 @@ VideoDepthFrame VideoDepthProcessor::stabilize(const DepthEstimator::Result& dep
 	for (size_t index = 0; index < depth.values.size(); index += sampleStep)
 		if (std::isfinite(depth.values[index])) samples.push_back(depth.values[index]);
 	if (samples.empty()) return result;
+	// Use percentile bounds to resist isolated depth outliers, then ease those bounds between frames.
 	const auto lowIndex = static_cast<size_t>((samples.size() - 1) * 0.02);
 	const auto highIndex = static_cast<size_t>((samples.size() - 1) * 0.98);
 	std::nth_element(samples.begin(), samples.begin() + lowIndex, samples.end());
@@ -212,6 +228,8 @@ VideoDepthFrame VideoDepthProcessor::stabilize(const DepthEstimator::Result& dep
 	return result;
 }
 
+// Load the model and process submitted frames at the configured rate, publishing stabilized depth
+// results.
 void VideoDepthProcessor::run() {
 	std::string error;
 	DepthEstimator::Config estimatorConfig;

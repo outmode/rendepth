@@ -62,6 +62,7 @@ public:
 	inline static glm::ivec2 subtitleBitmapCanvasSize{};
 	inline static SDL_GPUTexture* menuTexture = nullptr;
 	inline static SDL_GPUTexture* discMenuTexture = nullptr;
+	inline static SDL_GPUTexture* discMenuDepthTexture = nullptr;
 	inline static SDL_GPUTexture* discBackgroundTexture = nullptr;
 	inline static SDL_GPUTexture* sliderTexture = nullptr;
 	inline static SDL_GPUTexture* nativeCalibrationTexture = nullptr;

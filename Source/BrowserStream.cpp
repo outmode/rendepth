@@ -25,7 +25,10 @@ constexpr size_t maxSDP = 64 * 1024;
 struct InferenceConverter {
 	GstVideoConverter* converter = nullptr;
 	GstVideoInfo input{}, output{};
+	// Release the cached video converter when its input session ends.
 	~InferenceConverter() { if (converter) gst_video_converter_free(converter); }
+	// Prepare a small RGBA copy of a captured frame for depth inference, reusing the converter when
+	// possible.
 	bool fill(const GstVideoInfo& info, const GstVideoFrame& source, VideoFrame& frame) {
 		if (!converter || !gst_video_info_is_equal(&input, &info)) {
 			if (converter) gst_video_converter_free(converter);
@@ -57,6 +60,7 @@ struct InferenceConverter {
 	}
 };
 
+// Publish connection data through a temporary file so readers do not see a partial response.
 void publish(const std::filesystem::path& path, const std::string& text) {
 	const auto pending = path.string() + ".pending";
 	std::ofstream output(pending, std::ios::binary);
@@ -73,7 +77,9 @@ struct Promise {
 	GstPromise* value = gst_promise_new_with_change_func(
 		[](GstPromise*, gpointer data) { static_cast<std::atomic<bool>*>(data)->store(true); },
 		ready, [](gpointer data) { delete static_cast<std::atomic<bool>*>(data); });
+	// Interrupt and release the GStreamer promise on scope exit.
 	~Promise() { gst_promise_interrupt(value); gst_promise_unref(value); }
+	// Wait for a negotiation reply while honoring cancellation, timeout, and reported errors.
 	void wait(const std::atomic<bool>& cancelled) {
 		const auto deadline = Clock::now() + std::chrono::seconds(10);
 		while (!ready->load()) {
@@ -101,6 +107,8 @@ struct BrowserStream::Impl {
 	std::shared_ptr<VideoFrame> newest;
 	std::thread worker;
 
+	// Negotiate one WebRTC connection, receive decoded frames, and detect browser requests to restart
+	// the stream.
 	bool receivePeer(const std::filesystem::path& directory, bool prepareDepth, uint64_t& generation) {
 		bool restart = false;
 		const auto offerPath = directory / (generation == 0 ? "offer.sdp" : "offer-" + std::to_string(generation) + ".sdp");
@@ -369,6 +377,7 @@ struct BrowserStream::Impl {
 		return restart && !cancelled;
 	}
 
+	// Receive successive browser connection generations until streaming ends or is cancelled.
 	void receive(const std::filesystem::path& directory, bool prepareDepth) {
 		uint64_t generation = 0;
 		while (receivePeer(directory, prepareDepth, generation)) {}
@@ -376,8 +385,11 @@ struct BrowserStream::Impl {
 	}
 };
 
+// Allocate private browser-stream state.
 BrowserStream::BrowserStream() : impl(std::make_unique<Impl>()) {}
+// Stop the receive worker before destroying the stream.
 BrowserStream::~BrowserStream() { stop(); }
+// Validate the browser offer and GStreamer dependencies, then launch the receiving worker.
 bool BrowserStream::start(const std::string& directory, std::string& error, bool prepareDepth) {
 	stop();
 	std::error_code ec;
@@ -400,6 +412,7 @@ bool BrowserStream::start(const std::string& directory, std::string& error, bool
 	impl->worker = std::thread([this, directory, prepareDepth] { impl->receive(directory, prepareDepth); });
 	return true;
 }
+// Cancel and join the receiver and discard its last pending frame.
 void BrowserStream::stop() {
 	impl->cancelled = true;
 	if (impl->worker.joinable()) impl->worker.join();
@@ -407,7 +420,9 @@ void BrowserStream::stop() {
 	std::lock_guard lock(impl->mutex);
 	impl->newest.reset();
 }
+// Report whether the browser receiver is active.
 bool BrowserStream::running() const { return impl->active; }
+// Consume the newest received frame, dropping any previously superseded frames.
 std::shared_ptr<VideoFrame> BrowserStream::takeFrame() {
 	std::lock_guard lock(impl->mutex);
 	return std::exchange(impl->newest, nullptr);

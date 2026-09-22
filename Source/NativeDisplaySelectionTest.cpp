@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <initializer_list>
 
+// Verify supported display models are selected once regardless of enumeration order or duplicates.
 int main() {
     int failures = 0;
     // Both enumeration orders, including duplicates before the other model.

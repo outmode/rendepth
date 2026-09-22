@@ -3,6 +3,7 @@
 #include "rapidjson/writer.h"
 #include <cstdio>
 
+// Check current and legacy engine settings and ensure saves preserve the intended preference.
 int main() {
     int failures = 0;
     auto check = [&](const char* json, int expected) {

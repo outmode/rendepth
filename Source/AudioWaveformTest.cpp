@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <vector>
 
+// Verify waveform energy, playback alignment, volume, reset behavior, and bounded history.
 int main() {
     AudioWaveform waveform;
     std::vector<float> samples(48000 * 2, 0.0f);

@@ -15,8 +15,10 @@
 #include <unistd.h>
 #endif
 
+// Close the browser bridge and its current session on destruction.
 BrowserBridge::~BrowserBridge() { stop(); }
 
+// Choose a per-user runtime directory for the local browser bridge.
 std::filesystem::path BrowserBridge::runtimeDirectory() {
 #if defined(__linux__)
 	if (const char* runtime = std::getenv("XDG_RUNTIME_DIR"); runtime && *runtime)
@@ -27,6 +29,7 @@ std::filesystem::path BrowserBridge::runtimeDirectory() {
 #endif
 }
 
+// Validate a private runtime directory and bind the nonblocking browser-request socket.
 bool BrowserBridge::start(const std::filesystem::path& directory, std::string& error) {
 #if defined(__linux__)
 	stop();
@@ -66,6 +69,7 @@ bool BrowserBridge::start(const std::filesystem::path& directory, std::string& e
 #endif
 }
 
+// Validate one incoming browser request, dispatch it to the application, and send an acknowledgement.
 void BrowserBridge::poll(const std::function<std::string(const Request&)>& handler) {
 #if defined(__linux__)
 	if (socket < 0) return;
@@ -121,6 +125,7 @@ void BrowserBridge::poll(const std::function<std::string(const Request&)>& handl
 #endif
 }
 
+// Signal the native host that the active browser session has ended.
 void BrowserBridge::endSession() {
 	if (session.empty()) return;
 	// The native host owns this private directory and removes it on disconnect.
@@ -128,6 +133,7 @@ void BrowserBridge::endSession() {
 	session.clear();
 }
 
+// End the active session and remove the bridge's socket endpoint.
 void BrowserBridge::stop() {
 	endSession();
 #if defined(__linux__)

@@ -19,6 +19,7 @@ namespace {
 constexpr const char* modelBaseUrl = "https://rendepth.com/models/";
 
 #ifndef _WIN32
+// Write downloaded response data into the model's temporary file.
 size_t writeFile(void* data, size_t size, size_t count, void* stream) {
 	return std::fwrite(data, size, count, static_cast<FILE*>(stream));
 }
@@ -29,6 +30,7 @@ size_t writeFile(void* data, size_t size, size_t count, void* stream) {
 namespace ModelDownloader {
 
 #ifdef _WIN32
+// Fetch a model over HTTPS using the Windows HTTP backend.
 bool downloadFile(const std::string& filename, FILE* output) {
 	const std::wstring wideFilename(filename.begin(), filename.end());
 	HINTERNET session = WinHttpOpen(L"Rendepth/3.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -62,6 +64,7 @@ bool downloadFile(const std::string& filename, FILE* output) {
 }
 #endif
 
+// Reuse an existing model or download to a temporary file before installing it at the requested path.
 std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 	const std::string& filename, std::string& error) {
 	if (directory.empty() || filename.empty()) {

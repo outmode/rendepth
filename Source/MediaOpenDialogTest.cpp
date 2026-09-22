@@ -9,10 +9,12 @@
 #include <chrono>
 static bool called = false;
 static std::vector<std::string> paths;
+// Capture the chooser's returned paths for test assertions.
 static void SDLCALL callback(void*, const char* const* files, int) {
     called = true; paths.clear();
     for (; files && *files; ++files) paths.emplace_back(*files);
 }
+// Find the file chooser recursively within its GTK dialog widgets.
 static GtkWidget* findChooser(GtkWidget* w) {
     if (GTK_IS_FILE_CHOOSER(w)) return w;
     if (!GTK_IS_CONTAINER(w)) return nullptr;
@@ -21,9 +23,11 @@ static GtkWidget* findChooser(GtkWidget* w) {
     for (auto* c = children; c && !found; c = c->next) found = findChooser(GTK_WIDGET(c->data));
     g_list_free(children); return found;
 }
+// Service dialog events for a bounded interval so asynchronous GTK updates can settle.
 static void pump(int ticks = 100) {
     for (int i = 0; i < ticks; ++i) { MediaOpenDialog::poll(); g_usleep(10000); }
 }
+// Verify ordinary-folder navigation, file and disc selection, and chooser cancellation.
 int main() {
     assert(gtk_init_check(nullptr, nullptr));
     const auto root = std::filesystem::temp_directory_path() / ("rendepth-dialog-fixture-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));

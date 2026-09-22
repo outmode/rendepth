@@ -6,6 +6,7 @@
 #include <iostream>
 
 using Command = std::array<uint32_t, 3>;
+// Build a minimal MovieObject binary fixture containing the supplied navigation commands.
 std::vector<uint8_t> movieObject(std::initializer_list<Command> commands) {
     std::vector<uint8_t> bytes(50, 0);
     bytes[0] = 'M'; bytes[1] = 'O'; bytes[2] = 'B'; bytes[3] = 'J';
@@ -19,6 +20,7 @@ std::vector<uint8_t> movieObject(std::initializer_list<Command> commands) {
     for (int i = 0; i < 4; ++i) bytes[40 + i] = uint8_t(length >> (24 - 8 * i));
     return bytes;
 }
+// Verify playlist references are resolved only when command flow identifies them unambiguously.
 int main() {
     const auto check = [](std::initializer_list<Command> commands, std::set<uint32_t> expected) {
         const auto refs = BlurayTitleNames::playlistReferences(movieObject(commands));

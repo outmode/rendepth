@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cstdio>
 
+// Verify mount parsing excludes optical media from calibration-file searches.
 int main() {
 #ifdef __linux__
     FILE* mounts = std::tmpfile();

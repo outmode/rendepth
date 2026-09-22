@@ -27,6 +27,7 @@ HMODULE runtimeModule = nullptr;
 AppendDML appendDML = nullptr;
 int dmlDevice = -1;
 
+// Return a readable name for a supported Windows inference backend.
 const char* backendName(Provider backend) {
     switch (backend) {
     case Provider::CPU: return "CPU";
@@ -36,6 +37,7 @@ const char* backendName(Provider backend) {
     }
 }
 
+// Fill unset application and per-user runtime-pack paths from Windows defaults.
 void defaultPaths() {
     if (applicationRoot.empty()) {
         if (const char* base = SDL_GetBasePath())
@@ -47,6 +49,7 @@ void defaultPaths() {
     }
 }
 
+// Locate the runtime DLL belonging to the requested backend pack.
 std::filesystem::path libraryPath(Provider backend) {
     if (backend == Provider::CPU) return applicationRoot / "Runtimes/cpu/bin/onnxruntime.dll";
     if (packsRoot.empty()) return {};
@@ -55,11 +58,13 @@ std::filesystem::path libraryPath(Provider backend) {
     return {};
 }
 
+// Check whether a path is a regular file without throwing filesystem errors.
 bool regularFile(const std::filesystem::path& path) {
     std::error_code error;
     return std::filesystem::is_regular_file(path, error);
 }
 
+// Check that the runtime core and its required provider DLLs are installed together.
 bool completePack(Provider backend) {
     const auto core = libraryPath(backend);
     if (core.empty() || !regularFile(core)) return false;
@@ -69,6 +74,7 @@ bool completePack(Provider backend) {
         regularFile(core.parent_path() / "onnxruntime_providers_shared.dll");
 }
 
+// Format the latest Windows error with its numeric code and system message.
 std::string windowsError() {
     const DWORD code = GetLastError();
     char* message = nullptr;
@@ -80,6 +86,7 @@ std::string windowsError() {
     return result;
 }
 
+// Load and bind a runtime pack while rejecting a conflicting preloaded ONNX Runtime core.
 bool load(Provider backend, std::string& error) {
     const auto path = libraryPath(backend);
     if (!completePack(backend)) {
@@ -140,6 +147,7 @@ bool load(Provider backend, std::string& error) {
     return true;
 }
 
+// Choose a hardware DirectX 12 adapter for DirectML, honoring an explicit device override.
 int selectDirectMLAdapter() {
     ComPtr<IDXGIFactory6> factory;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
@@ -188,6 +196,7 @@ int selectDirectMLAdapter() {
 }
 
 namespace InferenceRuntime {
+// Configure runtime roots and the preferred backend before initialization begins.
 void configure(const std::filesystem::path& appRoot, const std::filesystem::path& packRoot, Provider preferred) {
     std::lock_guard lock(runtimeMutex);
     if (attempted) return;
@@ -196,6 +205,7 @@ void configure(const std::filesystem::path& appRoot, const std::filesystem::path
     preference = preferred;
 }
 
+// Initialize the Windows runtime once with controlled DLL search paths and CPU fallback.
 bool initialize(Provider requested, std::string& error) {
     std::lock_guard lock(runtimeMutex);
     error.clear();
@@ -222,10 +232,15 @@ bool initialize(Provider requested, std::string& error) {
     return false;
 }
 
+// Return the inference backend currently selected by the loader.
 Provider provider() { std::lock_guard lock(runtimeMutex); return selected; }
+// Check whether the requested backend has a complete runtime pack.
 bool installed(Provider backend) { std::lock_guard lock(runtimeMutex); defaultPaths(); return completePack(backend); }
+// Return the directory searched for optional GPU runtime packs.
 std::filesystem::path packDirectory() { std::lock_guard lock(runtimeMutex); defaultPaths(); return packsRoot; }
+// Return the runtime status shown by the application.
 std::string status() { std::lock_guard lock(runtimeMutex); return runtimeStatus; }
+// Record that session creation fell back to CPU and retain the diagnostic reason.
 void useCpuFallback(const std::string& reason) {
     std::lock_guard lock(runtimeMutex);
     selected = Provider::CPU;
@@ -233,6 +248,7 @@ void useCpuFallback(const std::string& reason) {
     SDL_Log("%s", runtimeStatus.c_str());
 }
 
+// Attach DirectML to session options using the selected adapter and required execution settings.
 void appendDirectML(OrtSessionOptions* options) {
     std::lock_guard lock(runtimeMutex);
     if (!loaded || !runtimeModule || !appendDML)

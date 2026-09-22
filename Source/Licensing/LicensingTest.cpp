@@ -10,16 +10,20 @@
 #include <sys/stat.h>
 #endif
 using namespace Licensing;
+// Fail a licensing regression check with its diagnostic message.
 static void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
+// Build a synthetic successful activation response with configurable product identifiers.
 static std::string activated(int store = 1, int product = 2, int variant = 3) {
     return "{\"activated\":true,\"license_key\":{\"key\":\"test-key\",\"status\":\"active\",\"expires_at\":null},"
         "\"instance\":{\"id\":\"instance-123\",\"created_at\":\"2001-01-01T00:00:00Z\"},"
         "\"meta\":{\"store_id\":" + std::to_string(store) + ",\"product_id\":" + std::to_string(product) + ",\"variant_id\":" + std::to_string(variant) + "}}";
 }
+// Verify activation, offline persistence, deactivation, and failure recovery through a fake transport.
 int main() {
     const auto root = std::filesystem::temp_directory_path() / ("rendepth-license-test-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(root);
+    // Remove the temporary license-test directory on scope exit.
     struct Cleanup { std::filesystem::path p; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(p, ec); } } cleanup{root};
     try {
         int calls = 0; bool deactivate = false;

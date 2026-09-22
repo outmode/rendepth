@@ -4,6 +4,7 @@
 #include <rapidjson/writer.h>
 #include <fstream>
 namespace Licensing {
+// Validate and load the persisted activation record without requiring an online license check.
 Result LicenseStorage::load() const {
     std::error_code ec;
     if (path_.empty()) return {Status::StorageError, "The license storage folder is unavailable."};
@@ -33,6 +34,7 @@ Result LicenseStorage::load() const {
     // hardware, or provider availability. Keep old activations across migration.
     return {Status::Licensed, "Rendepth Pro is activated on this computer.", std::move(record), true};
 }
+// Serialize activation state through an already locked settings transaction.
 bool LicenseStorage::save(SettingsFile& transaction, const Record& record, std::string& error) const {
     rapidjson::StringBuffer buffer;
     rapidjson::Writer<rapidjson::StringBuffer> json(buffer);
@@ -51,6 +53,7 @@ bool LicenseStorage::save(SettingsFile& transaction, const Record& record, std::
     json.EndObject();
     return transaction.write({buffer.GetString(), buffer.GetSize()}, error);
 }
+// Persist an inactive marker before removing the file so failed deletion cannot revive activation.
 bool LicenseStorage::remove(SettingsFile& transaction, std::string& error) const {
     // Persist an inactive marker first, so a failed unlink cannot revive Pro.
     if (!save(transaction, {}, error)) return false;

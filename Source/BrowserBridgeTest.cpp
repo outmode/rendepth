@@ -11,10 +11,12 @@
 #include <unistd.h>
 #include "rapidjson/document.h"
 
+// Fail a bridge test immediately with its diagnostic message.
 static void require(bool value, const char* error) {
 	if (!value) throw std::runtime_error(error);
 }
 
+// Exercise local bridge requests, responses, session signaling, and invalid request handling.
 int main() {
 	char pattern[] = "/tmp/rendepth-bridge-test-XXXXXX";
 	const char* temporary = mkdtemp(pattern);

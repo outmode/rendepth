@@ -4,10 +4,13 @@
 #include <iostream>
 #include <stdexcept>
 
+// Fail immediately when a dependent-picture assembly check does not hold.
 static void require(bool condition) {
     if (!condition) throw std::runtime_error("MVC packet assembly regression");
 }
 
+// Verify fragmented MVC pictures are assembled correctly across timestamps, EOF, resets, and input
+// limits.
 int main() {
     MvcPacketAssembler assembler;
     std::optional<MvcPacketAssembler::Packet> completed;

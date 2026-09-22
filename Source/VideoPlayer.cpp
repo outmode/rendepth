@@ -50,6 +50,7 @@ std::atomic<bool> audioDeviceInitInProgress = false;
 constexpr int noSubtitleTrack = -1;
 constexpr int noSubtitleRequest = -2;
 
+// Normalize file extensions for supported-format checks.
 std::string lowerExtension(const std::filesystem::path& path) {
 	auto extension = path.extension().string();
 	std::transform(extension.begin(), extension.end(), extension.begin(),
@@ -58,6 +59,7 @@ std::string lowerExtension(const std::filesystem::path& path) {
 }
 
 #ifdef RENDEPTH_ENABLE_FFMPEG
+// Convert an FFmpeg error code into a readable diagnostic.
 std::string ffmpegError(int code) {
 	char message[AV_ERROR_MAX_STRING_SIZE]{};
 	av_strerror(code, message, sizeof(message));
@@ -69,6 +71,7 @@ struct HardwareDecodeState {
 	std::atomic<bool> failed{false};
 };
 
+// Prefer VA-API when usable, otherwise select a software pixel format offered by the decoder.
 enum AVPixelFormat selectHardwareFormat(AVCodecContext* context, const enum AVPixelFormat* formats) {
 	auto* state = static_cast<HardwareDecodeState*>(context->opaque);
 	const bool failed = state != nullptr && state->failed.load();
@@ -81,6 +84,7 @@ enum AVPixelFormat selectHardwareFormat(AVCodecContext* context, const enum AVPi
 	return formats[0];
 }
 
+// Rotate a pitched pixel plane into tightly packed output storage.
 template <typename T>
 void rotateBufferFromPitch(int rotation, const T* src, int srcPitchElements, int srcW, int srcH, std::vector<std::uint8_t>& dstBytes) {
 	dstBytes.resize(static_cast<size_t>(srcW) * srcH * sizeof(T));
@@ -184,6 +188,7 @@ struct VideoPlayer::Impl {
 		std::atomic<bool> playing = false;
 		std::atomic<float> volume = 1.0f;
 
+		// Detach the audio stream under its lock, then stop and destroy it outside the lock.
 		void shutdown() {
 			SDL_AudioStream* stream = nullptr;
 			{
@@ -234,6 +239,7 @@ struct VideoPlayer::Impl {
 	static constexpr int audioBytesPerFrame = audioChannels * static_cast<int>(sizeof(float));
 	static constexpr int maxQueuedAudioBytes = audioSampleRate * audioBytesPerFrame * 3;
 
+	// Decode embedded cover art into an oriented surface suitable for the audio display.
 	SDL_Surface* decodeAlbumArt() {
 		if (format == nullptr) return nullptr;
 		for (unsigned int index = 0; index < format->nb_streams; ++index) {
@@ -255,6 +261,7 @@ struct VideoPlayer::Impl {
 		return nullptr;
 	}
 
+	// Open the requested audio stream decoder and prepare conversion to the playback sample format.
 	bool prepareAudioDecoder() {
 		if (SDL_WasInit(SDL_INIT_AUDIO) == 0) return false;
 
@@ -305,6 +312,7 @@ struct VideoPlayer::Impl {
 		return true;
 	}
 
+	// Open the selected subtitle decoder, leaving subtitles disabled when no track is selected.
 	bool prepareSubtitleDecoder() {
 		if (selectedSubtitleTrack.load() == noSubtitleTrack || subtitleStreamIndices.empty()) {
 			subtitleStreamIndex = -1;
@@ -329,6 +337,7 @@ struct VideoPlayer::Impl {
 		return true;
 	}
 
+	// Extract displayable text from plain or ASS subtitle records, stripping formatting tags.
 	static std::string subtitleRectText(const AVSubtitleRect* rect) {
 		if (rect == nullptr) return {};
 		std::string result = rect->text != nullptr ? rect->text :
@@ -360,6 +369,8 @@ struct VideoPlayer::Impl {
 		return result;
 	}
 
+	// Composite paletted subtitle rectangles into a cropped RGBA overlay with video-relative
+	// positioning.
 	static std::shared_ptr<VideoSubtitle> subtitleBitmap(const AVSubtitle& subtitle,
 		int videoWidth, int videoHeight) {
 		int canvasWidth = std::max(videoWidth, 1);
@@ -432,6 +443,7 @@ struct VideoPlayer::Impl {
 		return result;
 	}
 
+	// End the most recent open-ended bitmap cue when a later subtitle supplies its boundary.
 	void closeOpenBitmapSubtitle(double end) {
 		std::lock_guard lock(subtitleMutex);
 		for (auto cue = subtitleCues.rbegin(); cue != subtitleCues.rend(); ++cue) {
@@ -442,6 +454,7 @@ struct VideoPlayer::Impl {
 		}
 	}
 
+	// Decode subtitle packets into timed text or bitmap cues for presentation.
 	void decodeSubtitlePacket(AVPacket* subtitlePacket) {
 		if (subtitleCodec == nullptr) return;
 		AVSubtitle subtitle{};
@@ -495,6 +508,8 @@ struct VideoPlayer::Impl {
 		avsubtitle_free(&subtitle);
 	}
 
+	// Open the SDL audio stream and transfer samples that accumulated while the device was
+	// initializing.
 	static void initializeAudioDevice(const std::shared_ptr<AudioState>& state) {
 		if (audioDeviceInitInProgress.exchange(true)) return;
 		SDL_AudioSpec audioSpec{ SDL_AUDIO_F32, audioChannels, audioSampleRate };
@@ -529,6 +544,7 @@ struct VideoPlayer::Impl {
 		if (state->playing) startAudio(state);
 	}
 
+	// Publish the first playback error and wake waiting work after marking the player unavailable.
 	void setRuntimeError(const std::string& message) {
 		{
 			std::lock_guard lock(stateMutex);
@@ -539,6 +555,7 @@ struct VideoPlayer::Impl {
 		stateChanged.notify_all();
 	}
 
+	// Resume the audio device once playback is active and buffering is complete.
 	static void startAudio(const std::shared_ptr<AudioState>& state) {
 		std::lock_guard lock(state->mutex);
 		if (state->closing || state->output == nullptr || state->started ||
@@ -551,12 +568,14 @@ struct VideoPlayer::Impl {
 		state->started = true;
 	}
 
+	// Pause the audio device and mark its playback clock as stopped.
 	static void pauseAudio(const std::shared_ptr<AudioState>& state) {
 		std::lock_guard lock(state->mutex);
 		if (state->output != nullptr) SDL_PauseAudioStreamDevice(state->output);
 		state->started = false;
 	}
 
+	// Queue converted samples, waiting for space when audio-only playback must preserve every sample.
 	bool queueAudio(const float* samples, int sampleFrames) {
 		const auto state = audioState;
 		if (sampleFrames <= 0) return true;
@@ -615,11 +634,13 @@ struct VideoPlayer::Impl {
 		}
 	}
 
+	// Check whether decoding should yield to shutdown or a pending seek.
 	bool interrupted() {
 		std::lock_guard lock(stateMutex);
 		return stopRequested || requestedSeek.has_value() || audioSeekPending;
 	}
 
+	// Recreate the video decoder in software after hardware decoding fails.
 	bool disableHardwareDecoding() {
 		if (hwDeviceContext == nullptr || codec == nullptr || videoDecoder == nullptr)
 			return false;
@@ -654,6 +675,8 @@ struct VideoPlayer::Impl {
 		return true;
 	}
 
+	// Convert a decoded timestamp to source-relative seconds, estimating it when timestamps are
+	// missing.
 	double framePosition(const AVFrame* decodedFrame) const {
 		if (decodedFrame->best_effort_timestamp == AV_NOPTS_VALUE)
 			return currentPosition.load() + fallbackFrameDuration;
@@ -661,6 +684,8 @@ struct VideoPlayer::Impl {
 		return std::max(0.0, timestamp - streamStart);
 	}
 
+	// Convert a decoded frame for display and inference, then queue it with playback timing and
+	// generation metadata.
 	bool publishFrame(AVFrame* decodedFrame, bool& clockValid,
 			std::chrono::steady_clock::time_point& clockOrigin, double& mediaOrigin,
 			std::optional<double>& seekFloor, bool& seekPreviewPending,
@@ -688,6 +713,7 @@ struct VideoPlayer::Impl {
 		}
 		struct TransferredFrame {
 			AVFrame* frame = nullptr;
+			// Release a temporary CPU frame transferred from hardware decoding.
 			~TransferredFrame() { av_frame_free(&frame); }
 		} transferredFrame;
 		if (decodedFrame->format == AV_PIX_FMT_VAAPI) {
@@ -995,6 +1021,7 @@ struct VideoPlayer::Impl {
 		return true;
 	}
 
+	// Drain available video frames from FFmpeg or MVC decoding into the presentation queue.
 	bool receiveFrames(bool& clockValid,
 			std::chrono::steady_clock::time_point& clockOrigin, double& mediaOrigin,
 			std::optional<double>& seekFloor, bool& seekPreviewPending,
@@ -1022,6 +1049,7 @@ struct VideoPlayer::Impl {
 		}
 	}
 
+	// Drain decoded audio, trim samples before a seek target, and resample them for playback.
 	bool receiveAudioFrames(std::optional<double>& audioSeekFloor, bool discardAudio) {
 		for (;;) {
 			const int result = avcodec_receive_frame(audioCodec, audioFrame);
@@ -1110,6 +1138,7 @@ struct VideoPlayer::Impl {
 		}
 	}
 
+	// Reposition the source and flush decoder, subtitle, and audio state for the new timeline position.
 	bool applySeek(const SeekRequest& request, std::optional<double>& seekFloor,
 				std::optional<double>& audioSeekFloor) {
 		if (audioOnly || !audioStreamIndices.empty()) audioSeekPending = true;
@@ -1192,6 +1221,7 @@ struct VideoPlayer::Impl {
 		return true;
 	}
 
+	// Estimate queued audio duration from pending samples or the SDL stream queue.
 	double queuedAudioDuration() const {
 		std::lock_guard lock(audioState->mutex);
 		int bytes = audioState->pendingBytes;
@@ -1200,6 +1230,8 @@ struct VideoPlayer::Impl {
 		return bytes / static_cast<double>(audioSampleRate * audioBytesPerFrame);
 	}
 
+	// Demux and decode on the worker thread while handling seeks, track changes, buffering, and end of
+	// stream.
 	void decodeLoop() {
 		if (prepareAudioDecoder()) {
 			const auto state = audioState;
@@ -1425,6 +1457,7 @@ struct VideoPlayer::Impl {
 #endif
 };
 
+// Recognize supported video extensions and candidate optical-disc sources.
 bool VideoPlayer::supported(const std::filesystem::path& path) {
 	if (DiscSource::candidate(path)) return true;
 	const auto extension = lowerExtension(path);
@@ -1436,10 +1469,13 @@ bool VideoPlayer::supported(const std::filesystem::path& path) {
 		extension == ".gif";
 }
 
+// Allocate the player's private decoding and playback state.
 VideoPlayer::VideoPlayer() : impl(std::make_unique<Impl>()) {}
 
+// Stop playback and release owned resources when the player is destroyed.
 VideoPlayer::~VideoPlayer() { close(); }
 
+// Open a file or disc source, select its streams and decoding path, and start the decode worker.
 bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, int discTitle) {
 	close();
 #ifndef RENDEPTH_ENABLE_FFMPEG
@@ -1752,6 +1788,7 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 #endif
 }
 
+// Stop the decode worker, invalidate outstanding frames, and release all source and playback resources.
 void VideoPlayer::close() {
 	impl->playbackGeneration.fetch_add(1);
 	impl->stopRequested = true;
@@ -1838,6 +1875,7 @@ void VideoPlayer::close() {
 	impl->videoHeight = 0;
 }
 
+// Pause or resume playback, restarting from the beginning when resuming after end of stream.
 void VideoPlayer::setPlaying(bool playing) {
 	if (!impl->isReady) return;
 	{
@@ -1853,6 +1891,7 @@ void VideoPlayer::setPlaying(bool playing) {
 	impl->stateChanged.notify_all();
 }
 
+// Hold or release audio playback while the presentation buffer catches up.
 void VideoPlayer::setAudioBuffering(bool buffering) {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	if (!buffering && impl->audioSeekPending) return;
@@ -1864,12 +1903,14 @@ void VideoPlayer::setAudioBuffering(bool buffering) {
 #endif
 }
 
+// Transfer ownership of the decoded album-art surface to the caller.
 SDL_Surface* VideoPlayer::takeAlbumArt() {
 	auto result = impl->albumArt;
 	impl->albumArt = nullptr;
 	return result;
 }
 
+// Report whether the source exposes any audio tracks.
 bool VideoPlayer::hasAudio() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	return !impl->audioStreamIndices.empty();
@@ -1878,8 +1919,10 @@ bool VideoPlayer::hasAudio() const {
 #endif
 }
 
+// Report whether the current source plays without a video stream.
 bool VideoPlayer::audioOnly() const { return impl->audioOnly; }
 
+// Sample waveform bars at the audible position, suppressing them during pauses and seeks.
 AudioWaveform::Bars VideoPlayer::audioWaveform() const {
 	if (!impl->audioOnly || !impl->isPlaying || impl->audioSeekPending) return {};
 	const double position = audioPlaybackPosition();
@@ -1888,6 +1931,7 @@ AudioWaveform::Bars VideoPlayer::audioWaveform() const {
 	return impl->waveform.at(position, static_cast<float>(impl->audioVolume.load()));
 }
 
+// Identify playback backed by an audio-CD reader.
 bool VideoPlayer::audioCd() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
     return impl->audioCdReader != nullptr;
@@ -1896,6 +1940,7 @@ bool VideoPlayer::audioCd() const {
 #endif
 }
 
+// Identify native MVC stereo playback that does not need inferred depth.
 bool VideoPlayer::nativeStereo() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	return impl->mvcDecoder != nullptr;
@@ -1904,6 +1949,7 @@ bool VideoPlayer::nativeStereo() const {
 #endif
 }
 
+// Report whether playback uses one of the optical-disc readers.
 bool VideoPlayer::discSource() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	return impl->blurayReader != nullptr || impl->dvdReader != nullptr || impl->audioCdReader != nullptr;
@@ -1912,6 +1958,7 @@ bool VideoPlayer::discSource() const {
 #endif
 }
 
+// Report whether the asynchronous audio-device initialization has produced an output stream.
 bool VideoPlayer::audioReady() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	std::lock_guard lock(impl->audioState->mutex);
@@ -1921,6 +1968,7 @@ bool VideoPlayer::audioReady() const {
 #endif
 }
 
+// Estimate the duration of audio waiting to be played.
 double VideoPlayer::bufferedAudioDuration() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	std::lock_guard lock(impl->audioState->mutex);
@@ -1933,6 +1981,7 @@ double VideoPlayer::bufferedAudioDuration() const {
 #endif
 }
 
+// Estimate the audio device's buffering latency from its sample-block size.
 double VideoPlayer::audioDeviceLatency() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	std::lock_guard lock(impl->audioState->mutex);
@@ -1948,6 +1997,7 @@ double VideoPlayer::audioDeviceLatency() const {
 #endif
 }
 
+// Estimate the audible timeline position after subtracting queued samples and device latency.
 double VideoPlayer::audioPlaybackPosition() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	if (impl->audioSeekPending) return -1.0;
@@ -1972,10 +2022,12 @@ double VideoPlayer::audioPlaybackPosition() const {
 #endif
 }
 
+// Record the timestamp actually presented by the renderer.
 void VideoPlayer::setPresentedPosition(double seconds) {
 	impl->presentedPosition = std::max(0.0, seconds);
 }
 
+// Apply a clamped volume to current and future audio output, treating near-zero values as mute.
 void VideoPlayer::setVolume(double volume) {
 	volume = std::clamp(volume, 0.0, 1.0);
 	if (volume < 0.01) volume = 0.0;
@@ -1996,6 +2048,7 @@ void VideoPlayer::setVolume(double volume) {
 #endif
 }
 
+// Queue selection of the next audio track for the decode worker.
 void VideoPlayer::cycleAudioTrack() {
 	if (!impl->isReady || impl->audioStreamIndices.size() < 2) return;
 	const int requested = impl->requestedAudioTrack.load();
@@ -2006,6 +2059,7 @@ void VideoPlayer::cycleAudioTrack() {
 	impl->stateChanged.notify_all();
 }
 
+// Cycle through subtitle tracks and the disabled state.
 void VideoPlayer::cycleSubtitleTrack() {
 	if (!impl->isReady || impl->subtitleStreamIndices.empty()) return;
 	const int requested = impl->requestedSubtitleTrack.load();
@@ -2018,18 +2072,21 @@ void VideoPlayer::cycleSubtitleTrack() {
 	impl->stateChanged.notify_all();
 }
 
+// Request a return to the source's first audio track.
 void VideoPlayer::resetAudioTrack() {
 	if (!impl->isReady || impl->audioStreamIndices.empty()) return;
 	impl->requestedAudioTrack = 0;
 	impl->stateChanged.notify_all();
 }
 
+// Request that subtitle decoding be disabled.
 void VideoPlayer::resetSubtitleTrack() {
 	if (!impl->isReady || impl->subtitleStreamIndices.empty()) return;
 	impl->requestedSubtitleTrack = noSubtitleTrack;
 	impl->stateChanged.notify_all();
 }
 
+// Find the subtitle cue covering the displayed timestamp and discard expired cues.
 std::shared_ptr<const VideoSubtitle> VideoPlayer::subtitle() const {
 	const double position = impl->presentedPosition.load();
 	std::lock_guard lock(impl->subtitleMutex);
@@ -2042,6 +2099,7 @@ std::shared_ptr<const VideoSubtitle> VideoPlayer::subtitle() const {
 	return nullptr;
 }
 
+// Return the current textual subtitle, or an empty string for bitmap or absent cues.
 std::string VideoPlayer::subtitleText() const {
 	const auto current = subtitle();
 	return current != nullptr && current->format == VideoSubtitle::Format::Text
@@ -2050,6 +2108,7 @@ std::string VideoPlayer::subtitleText() const {
 
 namespace {
 #ifdef RENDEPTH_ENABLE_FFMPEG
+// Build a readable track label from title, handler, or language metadata.
 std::string streamLanguage(const AVStream* stream, bool includeHandlerName = true) {
 	if (stream == nullptr) return "Unknown";
 	if (const AVDictionaryEntry* title = av_dict_get(stream->metadata, "title", nullptr, 0))
@@ -2081,6 +2140,7 @@ std::string streamLanguage(const AVStream* stream, bool includeHandlerName = tru
 #endif
 }
 
+// Describe the selected or pending audio track for the playback UI.
 std::string VideoPlayer::audioLanguage() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	if (impl->format != nullptr && !impl->audioStreamIndices.empty()) {
@@ -2098,6 +2158,7 @@ std::string VideoPlayer::audioLanguage() const {
 	return "N/A";
 }
 
+// Describe the selected subtitle track or the disabled state for the playback UI.
 std::string VideoPlayer::subtitleLanguage() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	if (impl->format != nullptr && !impl->subtitleStreamIndices.empty()) {
@@ -2117,6 +2178,7 @@ std::string VideoPlayer::subtitleLanguage() const {
 	return "Off";
 }
 
+// Queue a seek and invalidate old presentation data before waking the decoder.
 void VideoPlayer::seek(double seconds, bool fastPreview) {
 	if (!impl->isReady || (fastPreview && discSource())) return;
 	seconds = std::clamp(seconds, 0.0,
@@ -2151,6 +2213,7 @@ void VideoPlayer::seek(double seconds, bool fastPreview) {
 	impl->stateChanged.notify_all();
 }
 
+// Advance the audio-only presentation clock and release its initial buffering hold when ready.
 void VideoPlayer::update() {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	if (!impl->audioOnly) return;
@@ -2163,6 +2226,7 @@ void VideoPlayer::update() {
 #endif
 }
 
+// Remove the next decoded frame and wake the producer when queue space becomes available.
 std::shared_ptr<VideoFrame> VideoPlayer::takeFrame(bool* preview) {
 	std::lock_guard lock(impl->stateMutex);
 	if (impl->pendingFrames.empty()) return nullptr;
@@ -2173,6 +2237,7 @@ std::shared_ptr<VideoFrame> VideoPlayer::takeFrame(bool* preview) {
 	return item.frame;
 }
 
+// Consume the pending playback error so it is reported only once.
 std::string VideoPlayer::takeError() {
 	std::lock_guard lock(impl->stateMutex);
 	std::string result;
@@ -2180,20 +2245,26 @@ std::string VideoPlayer::takeError() {
 	return result;
 }
 
+// Set the maximum dimensions used when preparing display frames.
 void VideoPlayer::setOutputSize(int maxWidth, int maxHeight) {
 	impl->outputMaxWidth = std::max(0, maxWidth);
 	impl->outputMaxHeight = std::max(0, maxHeight);
 }
 
+// Set the size and sampling rate of RGBA frames prepared for depth inference.
 void VideoPlayer::setInferenceSize(int maxDimension, double framesPerSecond) {
 	impl->inferenceMaxDimension = std::max(0, maxDimension);
 	impl->inferenceFramesPerSecond = std::max(0.0, framesPerSecond);
 }
 
+// Report whether playback is currently advancing.
 bool VideoPlayer::playing() const { return impl->isPlaying; }
+// Report whether a source is ready for playback controls.
 bool VideoPlayer::ready() const { return impl->isReady; }
+// Report whether chapter or audio-CD track navigation is available.
 bool VideoPlayer::hasChapters() const { return chapterCount() > 0; }
 
+// Return chapter count from the disc reader or container metadata.
 int VideoPlayer::chapterCount() const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	if (discSource()) return static_cast<int>(impl->discChapterTimes.size());
@@ -2202,10 +2273,12 @@ int VideoPlayer::chapterCount() const {
 	return 0;
 }
 
+// Find the chapter containing the last presented position.
 int VideoPlayer::currentChapter() const {
 	return chapterAtTime(position());
 }
 
+// Find the chapter at a timeline position, allowing the disc-specific boundary tolerance.
 int VideoPlayer::chapterAtTime(double seconds) const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	if (discSource()) {
@@ -2229,6 +2302,7 @@ int VideoPlayer::chapterAtTime(double seconds) const {
 	return 0;
 }
 
+// Return a chapter's start time from disc or container metadata.
 double VideoPlayer::chapterTime(int chapterIndex) const {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	if (discSource()) {
@@ -2244,6 +2318,7 @@ double VideoPlayer::chapterTime(int chapterIndex) const {
 	return 0.0;
 }
 
+// Seek to a chapter after clamping its index to the available range.
 void VideoPlayer::seekChapter(int chapterIndex) {
 	const int count = chapterCount();
 	if (count <= 0) return;
@@ -2252,6 +2327,7 @@ void VideoPlayer::seekChapter(int chapterIndex) {
 	seek(targetTime);
 }
 
+// Advance to the next chapter when one exists.
 void VideoPlayer::nextChapter() {
 	const int count = chapterCount();
 	if (count <= 0) return;
@@ -2261,6 +2337,7 @@ void VideoPlayer::nextChapter() {
 	}
 }
 
+// Restart the current chapter after three seconds of playback, otherwise move to the previous one.
 void VideoPlayer::previousChapter() {
 	const int count = chapterCount();
 	if (count <= 0) return;
@@ -2274,9 +2351,15 @@ void VideoPlayer::previousChapter() {
 	}
 }
 
+// Return the last presented timeline position in seconds.
 double VideoPlayer::position() const { return impl->presentedPosition; }
+// Return the known source duration in seconds.
 double VideoPlayer::duration() const { return impl->totalDuration; }
+// Expose the generation used to reject frames from earlier opens or seeks.
 std::uint64_t VideoPlayer::generation() const { return impl->playbackGeneration; }
+// Return the source width after applying display rotation.
 int VideoPlayer::width() const { return impl->videoWidth; }
+// Return the source height after applying display rotation.
 int VideoPlayer::height() const { return impl->videoHeight; }
+// Return the source's display rotation in degrees.
 int VideoPlayer::rotation() const { return impl->rotation; }

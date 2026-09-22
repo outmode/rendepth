@@ -15,6 +15,7 @@
 #include <set>
 #include <unistd.h>
 
+// Provide a no-op orientation stub so playback tests do not depend on the image renderer.
 SDL_Surface* Core::orientSurface(SDL_Surface* surface, const std::string&) { return surface; }
 static std::mutex deviceMutex;
 static std::set<int> devices;
@@ -22,6 +23,7 @@ static bool simulateRemoval = false;
 extern "C" int __real_open(const char*, int, ...);
 extern "C" int __real_close(int);
 extern "C" int __real_ioctl(int, unsigned long, ...);
+// Substitute a synthetic optical-drive descriptor while forwarding ordinary file opens.
 extern "C" int __wrap_open(const char* path, int flags, ...) {
     if (std::strcmp(path, "/dev/sr999") == 0) {
         const int fd = __real_open("/dev/null", O_RDONLY);
@@ -31,10 +33,12 @@ extern "C" int __wrap_open(const char* path, int flags, ...) {
     if (flags & O_CREAT) { va_list args; va_start(args, flags); mode = va_arg(args, int); va_end(args); }
     return __real_open(path, flags, mode);
 }
+// Forget synthetic drive descriptors before forwarding close to the operating system.
 extern "C" int __wrap_close(int fd) {
     { std::lock_guard lock(deviceMutex); devices.erase(fd); }
     return __real_close(fd);
 }
+// Emulate audio-CD metadata, sector reads, and removal for the synthetic drive.
 extern "C" int __wrap_ioctl(int fd, unsigned long op, ...) {
     va_list args; va_start(args, op); void* data = va_arg(args, void*); va_end(args);
     std::lock_guard lock(deviceMutex);
@@ -64,6 +68,7 @@ extern "C" int __wrap_ioctl(int fd, unsigned long op, ...) {
     }
     errno = EINVAL; return -1;
 }
+// Wait for buffered audio to reach the expected playback position within a fixed timeout.
 static bool waitAudio(VideoPlayer& player, double target = 0.0) {
     const auto end = SDL_GetTicks() + 4000;
     do {
@@ -75,6 +80,7 @@ static bool waitAudio(VideoPlayer& player, double target = 0.0) {
     } while (SDL_GetTicks() < end);
     return false;
 }
+// Exercise audio-CD playback, navigation, scrubbing, cleanup, and removal using a simulated drive.
 int main() {
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
     assert(SDL_Init(SDL_INIT_AUDIO));

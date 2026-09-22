@@ -19,6 +19,7 @@ bool loaded = false;
 std::string runtimeStatus = "Not initialized";
 std::string loadError;
 
+// Fill unset application and user runtime-pack directories from platform defaults.
 void defaultPaths() {
     if (applicationRoot.empty()) {
         const char* base = SDL_GetBasePath();
@@ -30,6 +31,7 @@ void defaultPaths() {
     }
 }
 
+// Resolve the shared library path for the requested CPU or GPU runtime pack.
 std::filesystem::path libraryPath(Provider backend) {
     if (backend == Provider::CPU)
         return applicationRoot / "Runtimes/cpu/lib/libonnxruntime.so.1";
@@ -38,6 +40,7 @@ std::filesystem::path libraryPath(Provider backend) {
         "lib/libonnxruntime.so.1";
 }
 
+// Check that the runtime core and required provider libraries exist together.
 bool completePack(Provider backend) {
     std::error_code error;
     const auto core = libraryPath(backend);
@@ -49,6 +52,7 @@ bool completePack(Provider backend) {
         std::filesystem::is_regular_file(core.parent_path() / "libonnxruntime_providers_shared.so", error);
 }
 
+// Load the selected runtime library and bind its API after checking provider availability.
 bool load(Provider backend, std::string& error) {
     const auto path = libraryPath(backend);
     if (path.empty()) {
@@ -101,6 +105,7 @@ bool load(Provider backend, std::string& error) {
 }
 
 namespace InferenceRuntime {
+// Set runtime roots and the preferred provider before the first initialization attempt.
 void configure(const std::filesystem::path& appRoot,
     const std::filesystem::path& packRoot, Provider preferred) {
     std::lock_guard lock(runtimeMutex);
@@ -110,6 +115,7 @@ void configure(const std::filesystem::path& appRoot,
     preference = preferred;
 }
 
+// Initialize the runtime once, falling back to CPU if the requested GPU runtime cannot load.
 bool initialize(Provider requested, std::string& error) {
     std::lock_guard lock(runtimeMutex);
     if (attempted) {
@@ -137,28 +143,33 @@ bool initialize(Provider requested, std::string& error) {
     return false;
 }
 
+// Return the selected inference backend under the runtime lock.
 Provider provider() {
     std::lock_guard lock(runtimeMutex);
     return selected;
 }
 
+// Check whether a complete runtime pack is installed for the requested backend.
 bool installed(Provider backend) {
     std::lock_guard lock(runtimeMutex);
     defaultPaths();
     return completePack(backend);
 }
 
+// Return the user directory where optional runtime packs are discovered.
 std::filesystem::path packDirectory() {
     std::lock_guard lock(runtimeMutex);
     defaultPaths();
     return packsRoot;
 }
 
+// Return the current runtime status for display in the application.
 std::string status() {
     std::lock_guard lock(runtimeMutex);
     return runtimeStatus;
 }
 
+// Record a session-level CPU fallback and its failure reason.
 void useCpuFallback(const std::string& reason) {
     std::lock_guard lock(runtimeMutex);
     selected = Provider::CPU;

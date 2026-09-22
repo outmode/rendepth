@@ -19,6 +19,7 @@ namespace CubeViCalibration {
 namespace {
 constexpr size_t maxFileSize = 64 * 1024;
 
+// Decode the CubeVi encrypted calibration format using the supported platform crypto backend.
 bool decode(std::string_view encoded, std::string& decoded, std::string& error) {
 #ifdef _WIN32
     // Public CubeVi SDK compatibility: CryptoJS/OpenSSL salted AES-256-CBC,
@@ -41,6 +42,7 @@ bool decode(std::string_view encoded, std::string& decoded, std::string& error) 
     struct Crypto {
         BCRYPT_ALG_HANDLE md5 = nullptr, aes = nullptr;
         BCRYPT_KEY_HANDLE key = nullptr;
+        // Release the Windows crypto key and algorithm providers after calibration decoding.
         ~Crypto() {
             if (key) BCryptDestroyKey(key);
             if (aes) BCryptCloseAlgorithmProvider(aes, 0);
@@ -83,6 +85,7 @@ bool decode(std::string_view encoded, std::string& decoded, std::string& error) 
 #endif
 }
 
+// Read a finite calibration number from a direct or nested value field.
 bool number(const rapidjson::Value& value, const char* key, float& result) {
     if (!value.HasMember(key)) return false;
     const auto& entry = value[key];
@@ -94,6 +97,7 @@ bool number(const rapidjson::Value& value, const char* key, float& result) {
 }
 }
 
+// Parse and validate CubeVi optical calibration, decoding its protected form when necessary.
 bool parse(std::string_view json, Optics& optics, std::string& error) {
     error.clear();
     if (json.empty() || json.size() > maxFileSize) {
@@ -133,6 +137,7 @@ bool parse(std::string_view json, Optics& optics, std::string& error) {
     return true;
 }
 
+// Read a bounded-size calibration file and validate its optical settings.
 bool load(const std::filesystem::path& path, Optics& optics, std::string& error) {
     std::error_code ec;
     const auto size = std::filesystem::file_size(path, ec);
@@ -149,6 +154,7 @@ bool load(const std::filesystem::path& path, Optics& optics, std::string& error)
     return parse(json, optics, error);
 }
 
+// Locate an explicit calibration override or a known CubeVi application configuration file.
 std::filesystem::path find() {
     if (const char* requested = std::getenv("RENDEPTH_NATIVE_CALIBRATION")) return requested;
     if (const char* root = std::getenv("APPDATA")) {

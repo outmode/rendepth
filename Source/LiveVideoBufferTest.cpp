@@ -16,11 +16,13 @@ struct Frame {
     std::array<std::vector<std::uint8_t>, 3> planes;
     std::vector<std::uint8_t> inferenceRGBA;
 };
+// Create a minimal frame carrying a known presentation timestamp.
 static auto frame(double time) {
     auto result = std::make_shared<Frame>();
     result->presentationTime = time;
     return result;
 }
+// Verify adaptive capture delay, bounded buffering, and recovery after playback stalls.
 int main() {
     LiveVideoBuffer<Frame> buffer;
     buffer.push(frame(1), 10);

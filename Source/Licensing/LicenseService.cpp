@@ -8,12 +8,14 @@ namespace {
 std::unique_ptr<LicenseManager> manager;
 std::future<Result> pending;
 DialogState state;
+// Translate the stored license result into dialog state and a default status message.
 void apply(const Result& result) {
     state.licensed = result.record.complete();
     state.message = result.message;
     if (state.message.empty()) state.message = state.licensed ? "Rendepth Pro is activated on this computer." :
         "Enter the license key from your purchase email.";
 }
+// Launch activation or deactivation asynchronously while marking the dialog busy.
 void action(bool deactivate, std::string key) {
     if (!manager || state.busy) return;
     state.busy = true;
@@ -25,6 +27,7 @@ void action(bool deactivate, std::string key) {
     });
 }
 }
+// Initialize licensing from build configuration and the saved per-user activation record.
 void initialize() {
     if (manager) return;
     const auto config = buildConfig();
@@ -37,6 +40,7 @@ void initialize() {
     apply(manager->load());
     if (!state.canActivate && !state.licensed) state.message = "Pro activation is not available in this build yet.";
 }
+// Refresh saved licensing state and open or focus the native license dialog.
 void open(SDL_Window* parent) {
     initialize();
     if (!state.busy) {
@@ -45,6 +49,7 @@ void open(SDL_Window* parent) {
     }
     NativeDialog::open(parent, state, action);
 }
+// Consume completed license operations, refresh authoritative local state, and service the dialog.
 bool poll() {
     const bool before = state.licensed;
     if (pending.valid() && pending.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -58,11 +63,13 @@ bool poll() {
     NativeDialog::poll();
     return before != state.licensed;
 }
+// Allow an in-flight license operation to finish before closing its dialog and manager.
 void close() {
     // Let an in-flight activation finish and persist even if the user quits.
     if (pending.valid()) pending.wait();
     NativeDialog::close();
     manager.reset();
 }
+// Report the locally established licensing state used by feature checks.
 bool isLicensed() { return state.licensed; }
 }

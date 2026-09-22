@@ -8,6 +8,7 @@
 #include <thread>
 #include <unistd.h>
 
+// Fail the capture test with a readable diagnostic when a required condition is missing.
 static void require(bool condition, const char* message) {
 	if (!condition) throw std::runtime_error(message);
 }
@@ -105,6 +106,7 @@ static int navigation(const std::filesystem::path& directory) {
 	throw std::runtime_error("Navigation test timed out");
 }
 
+// Run browser capture integration modes or verify missing-offer failure handling.
 int main(int argc, char** argv) {
 	try {
 		if (argc == 3 && std::string(argv[2]) == "navigation") return navigation(argv[1]);

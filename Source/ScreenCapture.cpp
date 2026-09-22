@@ -14,6 +14,7 @@
 #include <utility>
 
 namespace {
+// Store a capture error while returning failure to the caller.
 bool setCaptureError(std::string& destination, const char* message) {
 	destination = message;
 	return false;
@@ -58,6 +59,7 @@ struct RequestWaiter {
 	GVariant* results = nullptr;
 };
 
+// Collect a successful desktop-portal response and stop the request's waiting loop.
 void portalResponse(GDBusConnection*, const gchar*, const gchar*, const gchar*,
 	const gchar*, GVariant* parameters, gpointer data) {
 	auto* waiter = static_cast<RequestWaiter*>(data);
@@ -69,6 +71,7 @@ void portalResponse(GDBusConnection*, const gchar*, const gchar*, const gchar*,
 	g_main_loop_quit(waiter->loop);
 }
 
+// Wait for the portal's asynchronous response at the supplied request path.
 GVariant* waitForPortalRequest(GDBusConnection* connection, const char* path) {
 	RequestWaiter waiter;
 	waiter.loop = g_main_loop_new(nullptr, FALSE);
@@ -81,6 +84,7 @@ GVariant* waitForPortalRequest(GDBusConnection* connection, const char* path) {
 	return waiter.results;
 }
 
+// Invoke a desktop-portal method and collect the response from its returned request object.
 GVariant* callPortalRequest(GDBusConnection* connection, GDBusProxy* proxy,
 	const char* method, GVariant* parameters) {
 	GError* error = nullptr;
@@ -99,6 +103,7 @@ GVariant* callPortalRequest(GDBusConnection* connection, GDBusProxy* proxy,
 	return waitForPortalRequest(connection, requestPath.c_str());
 }
 
+// Close an existing desktop-portal capture session and release the D-Bus connection.
 void closePortalSession(const std::string& session) {
 	if (session.empty()) return;
 	GError* error = nullptr;
@@ -119,6 +124,7 @@ void closePortalSession(const std::string& session) {
 	g_object_unref(connection);
 }
 
+// Create portal request options carrying the caller's handle token.
 GVariantBuilder* portalOptions(const char* token) {
 	auto* options = g_variant_builder_new(G_VARIANT_TYPE_VARDICT);
 	g_variant_builder_add(options, "{sv}", "handle_token", g_variant_new_string(token));
@@ -128,12 +134,15 @@ GVariantBuilder* portalOptions(const char* token) {
 } // namespace
 #endif
 
+// Allocate private capture state.
 ScreenCapture::ScreenCapture() : impl(std::make_unique<Impl>()) {}
 
+// Stop capture before destroying its state.
 ScreenCapture::~ScreenCapture() {
 	stop();
 }
 
+// Request a desktop capture source through the portal and start the PipeWire/GStreamer frame receiver.
 bool ScreenCapture::start(SDL_Window* parentWindow, std::string& error) {
 	stop();
 	if (parentWindow == nullptr) return setCaptureError(error, "Rendepth window is unavailable.");
@@ -325,6 +334,7 @@ bool ScreenCapture::start(SDL_Window* parentWindow, std::string& error) {
 #endif
 }
 
+// Start the browser-stream backend through the shared capture interface.
 bool ScreenCapture::startBrowser(const std::string& directory, std::string& error, bool prepareDepth) {
 #if defined(__linux__)
 	stop();
@@ -335,6 +345,7 @@ bool ScreenCapture::startBrowser(const std::string& directory, std::string& erro
 #endif
 }
 
+// Stop the active capture backend and release its worker, pipeline, portal session, and pending frame.
 void ScreenCapture::stop() {
 	if (impl == nullptr) return;
 #if defined(__linux__)
@@ -359,6 +370,7 @@ void ScreenCapture::stop() {
 	impl->newestFrame.reset();
 }
 
+// Report whether desktop or browser capture is currently active.
 bool ScreenCapture::running() const {
 #if defined(__linux__)
 	if (impl->browser) return impl->browser->running();
@@ -367,6 +379,7 @@ bool ScreenCapture::running() const {
 	return impl->active;
 }
 
+// Consume the newest frame from the active capture backend.
 std::shared_ptr<VideoFrame> ScreenCapture::takeFrame() {
 #if defined(__linux__)
 	if (impl->browser) return impl->browser->takeFrame();

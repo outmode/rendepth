@@ -17,16 +17,20 @@ extern "C" {
 }
 #endif
 
+// Construct a reader with no Blu-ray source open.
 BlurayReader::BlurayReader() = default;
 
+// Close the disc handle when the reader is destroyed.
 BlurayReader::~BlurayReader() {
     close();
 }
 
+// Determine whether a path identifies a Blu-ray source.
 bool BlurayReader::isBluraySource(const std::filesystem::path& path) {
     return DiscSource::detect(path) == DiscSource::Type::Bluray;
 }
 
+// Normalize a Blu-ray folder or metadata-file selection to the disc root.
 std::filesystem::path BlurayReader::resolveDiscRoot(const std::filesystem::path& path) {
     std::error_code ec;
     if (std::filesystem::is_regular_file(path, ec)) {
@@ -56,6 +60,7 @@ std::filesystem::path BlurayReader::resolveDiscRoot(const std::filesystem::path&
 
 #ifdef RENDEPTH_ENABLE_BLURAY
 
+// Collect playable title metadata and resolve unambiguous title names from disc content.
 void BlurayReader::inspectTitles() {
     titles_.clear();
     if (!bd_) return;
@@ -163,6 +168,7 @@ void BlurayReader::inspectTitles() {
     }
 }
 
+// Open the disc, inspect its capabilities and titles, and prepare an initial title for playback.
 bool BlurayReader::open(const std::filesystem::path& path, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     close();
@@ -244,6 +250,7 @@ bool BlurayReader::open(const std::filesystem::path& path, std::string& error) {
     return true;
 }
 
+// Select a Blu-ray title and refresh its duration and chapter metadata.
 bool BlurayReader::selectTitle(int titleIndex, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!bd_) {
@@ -273,6 +280,7 @@ bool BlurayReader::selectTitle(int titleIndex, std::string& error) {
     return true;
 }
 
+// Release the disc handle and clear cached title and chapter state.
 void BlurayReader::close() {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (bd_) {
@@ -288,6 +296,7 @@ void BlurayReader::close() {
     chapters_.clear();
 }
 
+// Read bytes from the selected Blu-ray title, distinguishing EOF from failure.
 int BlurayReader::read(uint8_t* buffer, int size) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!bd_) return -1;
@@ -297,6 +306,7 @@ int BlurayReader::read(uint8_t* buffer, int size) {
     return bytesRead;
 }
 
+// Translate byte seeks and size queries into libbluray operations.
 int64_t BlurayReader::seek(int64_t offset, int whence) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!bd_) return -1;
@@ -324,11 +334,13 @@ int64_t BlurayReader::seek(int64_t offset, int whence) {
     return -1;
 }
 
+// Return the byte cursor within the active title, or an invalid position when closed.
 int64_t BlurayReader::bytePosition() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     return bd_ ? static_cast<int64_t>(bd_tell(bd_)) : -1;
 }
 
+// Seek to a time expressed in seconds using the disc's 90 kHz clock.
 bool BlurayReader::seekTime(double seconds) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!bd_) return false;
@@ -336,23 +348,27 @@ bool BlurayReader::seekTime(double seconds) {
     return bd_seek_time(bd_, ticks) >= 0;
 }
 
+// Seek directly to a valid chapter of the active title.
 bool BlurayReader::seekChapter(int chapterIndex) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!bd_ || chapterIndex < 0 || chapterIndex >= chapterCount_) return false;
     return bd_seek_chapter(bd_, static_cast<unsigned>(chapterIndex)) >= 0;
 }
 
+// Return the number of chapters in the selected title.
 int BlurayReader::chapterCount() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     return chapterCount_;
 }
 
+// Return the chapter selected by the disc reader.
 int BlurayReader::currentChapter() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!bd_) return 0;
     return static_cast<int>(bd_get_current_chapter(bd_));
 }
 
+// Return a chapter start time in seconds, or zero for an invalid index.
 double BlurayReader::chapterStartTime(int chapterIndex) const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (chapterIndex >= 0 && chapterIndex < static_cast<int>(chapters_.size())) {
@@ -361,27 +377,33 @@ double BlurayReader::chapterStartTime(int chapterIndex) const {
     return 0.0;
 }
 
+// Expose the cached chapter metadata for the selected title.
 const std::vector<BlurayChapter>& BlurayReader::chapters() const {
     return chapters_;
 }
 
+// Return the number of discovered disc titles.
 int BlurayReader::titleCount() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     return static_cast<int>(titles_.size());
 }
 
+// Return the selected title index.
 int BlurayReader::activeTitle() const {
     return activeTitle_;
 }
 
+// Expose the cached list of available disc titles.
 const std::vector<BlurayTitle>& BlurayReader::titles() const {
     return titles_;
 }
 
+// Return the selected title duration in seconds.
 double BlurayReader::duration() const {
     return duration_;
 }
 
+// Convert the disc reader's current timestamp to seconds.
 double BlurayReader::currentTime() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!bd_) return 0.0;
@@ -389,15 +411,18 @@ double BlurayReader::currentTime() const {
     return ticks >= 0 ? static_cast<double>(ticks) / 90000.0 : 0.0;
 }
 
+// Return the disc name retained when the source was opened.
 std::string BlurayReader::discTitle() const {
     return discTitle_;
 }
 
+// Report whether the reader has an active disc source.
 bool BlurayReader::isOpen() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     return bd_ != nullptr;
 }
 
+// Report encryption or AACS errors exposed by libbluray's disc metadata.
 bool BlurayReader::isEncrypted() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!bd_) return false;
@@ -411,6 +436,7 @@ bool BlurayReader::isEncrypted() const {
     return false;
 }
 
+// Check whether detected disc protection is handled by the loaded playback libraries.
 bool BlurayReader::encryptionHandled() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!bd_) return true;
@@ -425,60 +451,82 @@ bool BlurayReader::encryptionHandled() const {
 
 #else
 
+// Report that disc playback is unavailable in this build.
 bool BlurayReader::open(const std::filesystem::path&, std::string& error) {
     error = "Blu-ray playback is not enabled in this build.";
     return false;
 }
 
+// Report that disc playback is unavailable in this build.
 bool BlurayReader::selectTitle(int, std::string& error) {
     error = "Blu-ray playback is not enabled in this build.";
     return false;
 }
 
+// Provide the unavailable-backend fallback for cleanup.
 void BlurayReader::close() {}
 
+// Provide the unavailable-backend fallback for reading.
 int BlurayReader::read(uint8_t*, int) { return -1; }
 
+// Provide the unavailable-backend fallback for byte seeking.
 int64_t BlurayReader::seek(int64_t, int) { return -1; }
 
+// Provide the unavailable-backend fallback for the byte cursor.
 int64_t BlurayReader::bytePosition() const { return -1; }
 
+// Provide the unavailable-backend fallback for time seeking.
 bool BlurayReader::seekTime(double) { return false; }
 
+// Provide the unavailable-backend fallback for chapter seeking.
 bool BlurayReader::seekChapter(int) { return false; }
 
+// Provide the unavailable-backend fallback for chapter count.
 int BlurayReader::chapterCount() const { return 0; }
 
+// Provide the unavailable-backend fallback for the current chapter.
 int BlurayReader::currentChapter() const { return 0; }
 
+// Provide the unavailable-backend fallback for chapter timing.
 double BlurayReader::chapterStartTime(int) const { return 0.0; }
 
 static const std::vector<BlurayChapter> emptyChapters;
+// Provide the unavailable-backend fallback for chapter metadata.
 const std::vector<BlurayChapter>& BlurayReader::chapters() const { return emptyChapters; }
 
+// Provide the unavailable-backend fallback for title count.
 int BlurayReader::titleCount() const { return 0; }
 
+// Provide the unavailable-backend fallback for title selection.
 int BlurayReader::activeTitle() const { return -1; }
 
 static const std::vector<BlurayTitle> emptyTitles;
+// Provide the unavailable-backend fallback for title metadata.
 const std::vector<BlurayTitle>& BlurayReader::titles() const { return emptyTitles; }
 
+// Provide the unavailable-backend fallback for duration.
 double BlurayReader::duration() const { return 0.0; }
 
+// Provide the unavailable-backend fallback for playback time.
 double BlurayReader::currentTime() const { return 0.0; }
 
+// Provide the unavailable-backend fallback for the disc name.
 std::string BlurayReader::discTitle() const { return ""; }
 
+// Provide the unavailable-backend fallback for open state.
 bool BlurayReader::isOpen() const { return false; }
 
+// Provide the unavailable-backend fallback for encryption detection.
 bool BlurayReader::isEncrypted() const { return false; }
 
+// Provide the unavailable-backend fallback for encryption handling.
 bool BlurayReader::encryptionHandled() const { return true; }
 
 #endif
 
 #ifdef RENDEPTH_ENABLE_FFMPEG
 
+// Adapt disc reads to FFmpeg callbacks, translating EOF and I/O failures.
 int BlurayReader::readPacket(void* opaque, uint8_t* buf, int buf_size) {
     auto* reader = static_cast<BlurayReader*>(opaque);
     if (!reader) return AVERROR_EOF;
@@ -488,6 +536,7 @@ int BlurayReader::readPacket(void* opaque, uint8_t* buf, int buf_size) {
     return bytesRead;
 }
 
+// Adapt disc byte seeks to FFmpeg error and offset conventions.
 int64_t BlurayReader::seekPacket(void* opaque, int64_t offset, int whence) {
     auto* reader = static_cast<BlurayReader*>(opaque);
     if (!reader) return AVERROR(EIO);
@@ -496,6 +545,7 @@ int64_t BlurayReader::seekPacket(void* opaque, int64_t offset, int whence) {
     return result;
 }
 
+// Create a seekable FFmpeg input context backed by this disc reader.
 AVIOContext* BlurayReader::createAVIOContext(int bufferSize) {
     if (!isOpen()) return nullptr;
     auto* buffer = static_cast<unsigned char*>(av_malloc(static_cast<size_t>(bufferSize)));

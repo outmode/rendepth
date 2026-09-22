@@ -8,8 +8,10 @@
 #include <iostream>
 #include <algorithm>
 #include <fstream>
+// Provide a no-op image orientation dependency for the standalone MVC test.
 SDL_Surface* Core::orientSurface(SDL_Surface* surface, const std::string&) { return surface; }
 
+// Verify native stereo frames, timing, seeking, clip transitions, and looping on a supplied MVC disc.
 int main(int argc, char** argv) {
     if (argc < 2) { std::cerr << "Usage: MvcPlaybackTest <disc> [title index] [seek seconds] [frame.yuv] [frame count]\n"; return 1; }
     const int dumpFrameCount = argc > 5 ? std::stoi(argv[5]) : 240;

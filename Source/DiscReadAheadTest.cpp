@@ -4,10 +4,12 @@
 #include <iostream>
 #include <stdexcept>
 
+// Fail immediately when a read-ahead regression check does not hold.
 static void require(bool condition) {
     if (!condition) throw std::runtime_error("Disc read-ahead regression");
 }
 
+// Verify buffered reads, logical seeks, resets, EOF, and I/O failure propagation.
 int main() {
     std::vector<uint8_t> source(29);
     for (size_t i = 0; i < source.size(); ++i) source[i] = static_cast<uint8_t>(i);

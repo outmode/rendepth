@@ -9,6 +9,7 @@ GtkWidget* dialog = nullptr;
 GtkFileChooser* chooser = nullptr;
 SDL_DialogFileCallback resultCallback = nullptr;
 bool folderChanged = false;
+// Convert a chooser URI to a local path when one is available.
 std::string localPath(const char* uri) {
     if (!uri) return {};
     GFile* file = g_file_new_for_uri(uri);
@@ -17,6 +18,7 @@ std::string localPath(const char* uri) {
     g_free(path); g_object_unref(file);
     return value;
 }
+// Close the chooser and deliver its selected paths through the SDL-style callback.
 void finish(const std::vector<std::string>& paths) {
     auto callback = resultCallback;
     MediaOpenDialog::close();
@@ -25,6 +27,7 @@ void finish(const std::vector<std::string>& paths) {
     names.push_back(nullptr);
     if (callback) callback(nullptr, names.data(), 0);
 }
+// Accept files or a disc source, while navigating into ordinary directories.
 void accept() {
     std::vector<std::string> paths;
     auto* uris = gtk_file_chooser_get_uris(chooser);
@@ -46,6 +49,8 @@ void accept() {
     if (!paths.empty()) finish(paths);
 }
 }
+// Open a GTK media chooser that can accept disc directories, falling back to SDL when GTK is
+// unavailable.
 void MediaOpenDialog::open(SDL_DialogFileCallback callback, SDL_Window* parent,
                           const SDL_DialogFileFilter* filters, int count) {
     if (dialog) { gtk_window_present(GTK_WINDOW(dialog)); return; }
@@ -89,6 +94,7 @@ void MediaOpenDialog::open(SDL_DialogFileCallback callback, SDL_Window* parent,
     gtk_file_chooser_set_current_folder(chooser, g_get_home_dir());
     gtk_widget_show_all(dialog);
 }
+// Pump chooser events on the main thread and recognize disc selections from sidebar navigation.
 void MediaOpenDialog::poll() {
     // Service the chooser on the SDL main thread; playback keeps running.
     if (!dialog) return;
@@ -101,6 +107,7 @@ void MediaOpenDialog::poll() {
         if (!path.empty() && DiscSource::candidate(path)) finish({path});
     }
 }
+// Destroy the GTK chooser and clear its callback state.
 void MediaOpenDialog::close() {
     if (dialog) gtk_widget_destroy(dialog);
     dialog = nullptr; chooser = nullptr; resultCallback = nullptr; folderChanged = false;
@@ -112,19 +119,25 @@ void MediaOpenDialog::close() {
 #include <SDL3/SDL_properties.h>
 #include <thread>
 namespace {
+// Convert a Windows filesystem name into the UTF-8 path expected by the application.
 std::string utf8(const wchar_t* text) {
     const auto value = std::filesystem::path(text).u8string();
     return {reinterpret_cast<const char*>(value.data()), value.size()};
 }
 struct DiscEvents : IFileDialogEvents {
     std::vector<std::string>& paths;
+    // Attach the dialog event handler to the caller's selected-path storage.
     explicit DiscEvents(std::vector<std::string>& p) : paths(p) {}
+    // Expose the COM interfaces implemented by this dialog event handler.
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** out) override {
         if (id == IID_IUnknown || id == IID_IFileDialogEvents) { *out = this; AddRef(); return S_OK; }
         *out = nullptr; return E_NOINTERFACE;
     }
+    // Keep the stack-owned event handler alive without transferring ownership to COM.
     ULONG STDMETHODCALLTYPE AddRef() override { return 2; }
+    // Acknowledge COM release without deleting the stack-owned event handler.
     ULONG STDMETHODCALLTYPE Release() override { return 1; }
+    // Accept an optical-disc folder as a source instead of navigating into it.
     HRESULT STDMETHODCALLTYPE OnFolderChanging(IFileDialog* dialog, IShellItem* folder) override {
         PWSTR name = nullptr;
         if (SUCCEEDED(folder->GetDisplayName(SIGDN_FILESYSPATH, &name))) {
@@ -135,14 +148,21 @@ struct DiscEvents : IFileDialogEvents {
         }
         return S_OK;
     }
+    // Allow the dialog's normal file acceptance behavior.
     HRESULT STDMETHODCALLTYPE OnFileOk(IFileDialog*) override { return S_OK; }
+    // Accept folder-change notifications without additional work.
     HRESULT STDMETHODCALLTYPE OnFolderChange(IFileDialog*) override { return S_OK; }
+    // Accept selection-change notifications without additional work.
     HRESULT STDMETHODCALLTYPE OnSelectionChange(IFileDialog*) override { return S_OK; }
+    // Leave sharing-violation handling to the Windows dialog's default behavior.
     HRESULT STDMETHODCALLTYPE OnShareViolation(IFileDialog*, IShellItem*, FDE_SHAREVIOLATION_RESPONSE* r) override { *r = FDESVR_DEFAULT; return S_OK; }
+    // Accept file-type changes without additional work.
     HRESULT STDMETHODCALLTYPE OnTypeChange(IFileDialog*) override { return S_OK; }
+    // Leave overwrite handling to the Windows dialog's default behavior.
     HRESULT STDMETHODCALLTYPE OnOverwrite(IFileDialog*, IShellItem*, FDE_OVERWRITE_RESPONSE* r) override { *r = FDEOR_DEFAULT; return S_OK; }
 };
 }
+// Run the Windows file dialog on its own COM thread with disc-folder selection support.
 void MediaOpenDialog::open(SDL_DialogFileCallback callback, SDL_Window* parent,
                           const SDL_DialogFileFilter* filters, int count) {
     auto hwnd = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(parent), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
@@ -188,13 +208,18 @@ void MediaOpenDialog::open(SDL_DialogFileCallback callback, SDL_Window* parent,
         values.push_back(nullptr); callback(nullptr, values.data(), 0);
     }).detach();
 }
+// Provide the common polling interface; the Windows dialog runs on its own thread.
 void MediaOpenDialog::poll() {}
+// Provide the common cleanup interface; the Windows dialog owns its lifetime.
 void MediaOpenDialog::close() {}
 #else
+// Open the platform's standard SDL file chooser.
 void MediaOpenDialog::open(SDL_DialogFileCallback callback, SDL_Window* parent,
                           const SDL_DialogFileFilter* filters, int count) {
     SDL_ShowOpenFileDialog(callback, nullptr, parent, filters, count, nullptr, true);
 }
+// Provide the common polling interface for the SDL-managed chooser.
 void MediaOpenDialog::poll() {}
+// Provide the common cleanup interface for the SDL-managed chooser.
 void MediaOpenDialog::close() {}
 #endif

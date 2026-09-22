@@ -100,6 +100,7 @@ namespace {
 		}
 	}
 
+	// Derive the size of one displayed view from a packed stereo or quilt image.
 	glm::vec2 getStereoImageSize(glm::vec2 packedSize, StereoFormat type,
 		glm::vec3 gridSize = glm::vec3(1.0f)) {
 		if (type == Color_Plus_Depth || type == Side_By_Side_Full ||
@@ -114,6 +115,7 @@ namespace {
 		return packedSize;
 	}
 
+	// Estimate a subdued background color from sparse samples of the frame's available pixel data.
 	glm::vec4 getVideoBackgroundColor(const VideoFrame& frame) {
 		constexpr int sampleSize = 4;
 		glm::vec4 result{};
@@ -214,6 +216,7 @@ namespace {
 		return glm::mix(glm::vec4(0.1f, 0.1f, 0.1f, 1.0f), result, 0.9f);
 	}
 
+// Blend the solid background toward the latest video color sample.
 void updateVideoSolidColor() {
 		if (!videoSolidTransitionActive) return;
 		const auto elapsed = BlurClock::now() - videoSolidTransitionStart;
@@ -225,6 +228,7 @@ void updateVideoSolidColor() {
 		if (blend >= 1.0f) videoSolidTransitionActive = false;
 	}
 
+	// Read a calibration number from either a direct value or a nested value field.
 	bool readCalibrationNumber(const rapidjson::Value& object, const char* name, float& result) {
 		if (!object.IsObject() || !object.HasMember(name)) return false;
 		const auto& entry = object[name];
@@ -239,6 +243,7 @@ void updateVideoSolidColor() {
 		return false;
 	}
 
+	// Interpret a numeric calibration flag as a boolean.
 	bool readCalibrationBool(const rapidjson::Value& object, const char* name, bool& result) {
 		float value = 0.0f;
 		if (!readCalibrationNumber(object, name, value)) return false;
@@ -246,6 +251,8 @@ void updateVideoSolidColor() {
 		return true;
 	}
 
+	// Validate Looking Glass calibration JSON and translate its optical settings into the renderer's
+	// configuration.
 	bool parseLookingGlassCalibration(const std::string& text, const std::string& source,
 		NativeDisplayConfig& config) {
 		rapidjson::Document document;
@@ -322,6 +329,7 @@ void updateVideoSolidColor() {
 		return true;
 	}
 
+	// Load and parse a bounded-size Looking Glass calibration file.
 	bool loadLookingGlassCalibration(const std::filesystem::path& path,
 		NativeDisplayConfig& config) {
 		std::error_code error;
@@ -333,6 +341,7 @@ void updateVideoSolidColor() {
 		return parseLookingGlassCalibration(text, path.string(), config);
 	}
 
+	// Locate calibration using an explicit override, mounted device storage, or local fallback paths.
 	std::filesystem::path findLookingGlassCalibration() {
 		if (const char* requested = std::getenv("RENDEPTH_NATIVE_CALIBRATION"))
 			return requested;
@@ -395,6 +404,7 @@ void updateVideoSolidColor() {
 		return {};
 	}
 
+	// Apply environment overrides for native display dimensions and optical calibration.
 	void applyNativeDisplayOverrides(NativeDisplayConfig& config) {
 		if (const char* value = std::getenv("RENDEPTH_NATIVE_WIDTH"))
 			config.screenSize.x = (int)std::strtol(value, nullptr, 10);
@@ -426,6 +436,7 @@ void updateVideoSolidColor() {
 			config.invertView = (std::string(value) == "1" || std::string(value) == "true");
 	}
 
+	// Reload device-specific calibration while retaining the selected display identity.
 	void reloadNativeDisplayConfig(NativeDisplayConfig& config) {
 		const auto displayName = config.displayName;
 		NativeDisplayConfig reloaded{};
@@ -485,10 +496,12 @@ void updateVideoSolidColor() {
 	}
 }
 
+// Advance the shared solid-color background animation.
 void updateVideoBackgroundAnimationImpl() {
 	updateVideoSolidColor();
 }
 
+// Locate an icon's normalized origin in the texture atlas.
 glm::vec2 Image::getIconCoordinates(IconType iconType) {
 	auto iconIndex = static_cast<int>(iconType);
 	auto iconX = iconIndex % gridSize;
@@ -496,6 +509,7 @@ glm::vec2 Image::getIconCoordinates(IconType iconType) {
 	return glm::vec2(iconX, iconY) / (float)gridSize;
 }
 
+// Discover supported lenticular displays and create or reuse their GPU output windows.
 int Image::initNativeOutput(Context* context) {
 	if (context == nullptr || context->device == nullptr) return -1;
 	const char* enabled = std::getenv("RENDEPTH_NATIVE_OUTPUT");
@@ -619,6 +633,7 @@ int Image::initNativeOutput(Context* context) {
 	return 0;
 }
 
+// Select a fullscreen mode suited to the target display's calibrated dimensions.
 void Image::configureFullscreenMode(SDL_Window* window, SDL_DisplayID displayID) {
 	if (window == nullptr || displayID == 0) return;
 	const auto output = std::find_if(nativeOutputs.begin(), nativeOutputs.end(), [displayID](const NativeOutput& value) {
@@ -670,10 +685,12 @@ void Image::configureFullscreenMode(SDL_Window* window, SDL_DisplayID displayID)
 	if (modes != nullptr) SDL_free(modes);
 }
 
+// Report whether native display output has been enabled.
 bool Image::nativeOutputAvailable() {
 	return nativeOutputEnabled;
 }
 
+// Serialize the device-specific optical calibration to the requested JSON file.
 bool Image::saveNativeDisplayConfig(const std::filesystem::path& path, const NativeDisplayConfig& config) {
 	rapidjson::StringBuffer buffer;
 	rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
@@ -725,11 +742,13 @@ bool Image::saveNativeDisplayConfig(const std::filesystem::path& path, const Nat
 	return true;
 }
 
+// Save calibration to the default file in the current working directory.
 bool Image::saveNativeDisplayConfig(const NativeDisplayConfig& config) {
 	std::filesystem::path savePath = std::filesystem::current_path() / "calibration.json";
 	return saveNativeDisplayConfig(savePath, config);
 }
 
+// Restore native calibration from the device or default settings and refresh its shader data.
 void Image::resetNativeDisplayConfig(Context* context) {
 	std::string currentDisplayName = nativeDisplayConfig.displayName;
 	if (nativeDisplayConfig.cubeViC1 || nativeDisplayConfig.lookingGlassGo) {
@@ -744,10 +763,12 @@ void Image::resetNativeDisplayConfig(Context* context) {
 	}
 }
 
+// Report whether the main application window is also the native display output.
 bool Image::isNativeDisplayOnMainWindow() {
 	return nativeDisplayOnMainWindow;
 }
 
+// Initialize native output when enabled, or release its additional windows and display state.
 void Image::setNativeOutputActive(Context* context, bool active) {
 	if (context == nullptr || context->device == nullptr) return;
 	if (active) {
@@ -769,6 +790,7 @@ void Image::setNativeOutputActive(Context* context, bool active) {
 	nativeDisplayOnMainWindow = false;
 }
 
+// Calculate the fitted image size and aspect ratios for the current stereo presentation.
 glm::vec2 Image::updateRatio(Context* context, glm::vec2 windowSize) {
 	auto visualSize = imageSize;
 	if (context->mode == SBS_Full && context->fullscreen)
@@ -781,6 +803,7 @@ glm::vec2 Image::updateRatio(Context* context, glm::vec2 windowSize) {
 	return newImageSize;
 }
 
+// Update the safe image bounds for the current window and render mode.
 void Image::updateSize(Context* context) {
 	imageSize = glm::vec3(context->imageSize.x, context->imageSize.y, 0);
 	auto visualSize = imageSize;
@@ -789,6 +812,7 @@ void Image::updateSize(Context* context) {
 	safeImageSize = Utils::getSafeSize(visualSize, context->virtualSize, (float)safePercent, true);
 }
 
+// Read a surface pixel's RGB channels, using black if the read fails.
 glm::vec3 Image::getColor(SDL_Surface* surface, int x, int y) {
 	Uint8 red, green, blue, alpha;
 	auto success = SDL_ReadSurfacePixel(surface, x, y, &red, &green, &blue, &alpha);
@@ -796,6 +820,7 @@ glm::vec3 Image::getColor(SDL_Surface* surface, int x, int y) {
 	return { 0, 0, 0 };
 }
 
+// Sample a surface to choose a background color that complements the image.
 glm::vec4 Image::getBackgroundColor(SDL_Surface* surface, int size, int width, int height) {
 	std::vector<glm::vec4> backgroundColors{};
 	Uint8 red, green, blue, alpha;
@@ -822,6 +847,7 @@ glm::vec4 Image::getBackgroundColor(SDL_Surface* surface, int size, int width, i
 	return result;
 }
 
+// Load an image surface into rendering state, resolve its stereo layout, and prepare its background.
 int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData,
 		StereoFormat forcedType) {
 	if (imageInfo.path.empty()) {
@@ -892,6 +918,8 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData,
 	return 0;
 }
 
+// Upload packed or planar video pixels, reusing compatible textures and refreshing the background when
+// requested.
 int Image::updateVideoFrame(Context* context, const VideoFrame& frame, bool firstFrame,
 		int logicalWidth, int logicalHeight, bool updateBlur) {
 	if (context == nullptr || context->device == nullptr || frame.width <= 0 ||
@@ -1087,6 +1115,7 @@ int Image::updateVideoFrame(Context* context, const VideoFrame& frame, bool firs
 	return 0;
 }
 
+// Advance the solid and blurred background transitions between video snapshots.
 void Image::updateVideoBackgroundAnimation() {
 	updateVideoBackgroundAnimationImpl();
 	if (!videoBlurActive) {
@@ -1098,6 +1127,7 @@ void Image::updateVideoBackgroundAnimation() {
 		std::chrono::duration<float>(videoBlurInterval).count(), 0.0f, 1.0f);
 }
 
+// Replace or clear the disc-menu preview and animate its matching background.
 void Image::updateDiscBackground(Context* context, SDL_Surface* preview) {
 	const bool hadPreview = discBackgroundTexture != nullptr;
 	if (preview == nullptr) {
@@ -1125,6 +1155,7 @@ void Image::updateDiscBackground(Context* context, SDL_Surface* preview) {
 	videoSolidTransitionActive = true;
 }
 
+// Upload a 16-bit video depth map and refine it with the available color guide.
 int Image::updateVideoDepth(Context* context, const std::vector<std::uint16_t>& values,
 		int width, int height) {
 	if (context == nullptr || context->device == nullptr || width <= 0 || height <= 0 ||
@@ -1194,6 +1225,7 @@ int Image::updateVideoDepth(Context* context, const std::vector<std::uint16_t>& 
 	return 0;
 }
 
+// Release the current video depth texture and reset its dimensions.
 void Image::clearVideoDepth(Context* context) {
 	if (context != nullptr && context->device != nullptr && videoDepthTexture != nullptr)
 		SDL_ReleaseGPUTexture(context->device, videoDepthTexture);
@@ -1201,6 +1233,7 @@ void Image::clearVideoDepth(Context* context) {
 	videoDepthTextureSize = {};
 }
 
+// Release video and background textures so no output can display a stale frame.
 void Image::clearVideoFrame(Context* context) {
 	// Hiding the image alone leaves its last frame available to native output.
 	for (auto* texture : {&imageTexture, &videoYTexture, &videoUTexture,
@@ -1217,6 +1250,7 @@ void Image::clearVideoFrame(Context* context) {
 	nativeOutputSourceReady = false;
 }
 
+// Build or clear the subtitle overlay from a text or bitmap cue.
 void Image::updateVideoSubtitle(Context* context,
 	const std::shared_ptr<const VideoSubtitle>& subtitle) {
 	if (context == nullptr) return;
@@ -1323,6 +1357,7 @@ void Image::updateVideoSubtitle(Context* context,
 	SDL_DestroySurface(whiteText);
 }
 
+// Reset the CPU surface and placement state used to build the menu text atlas.
 void Image::initMenuTexture() {
 	if (menuTextSurface) SDL_DestroySurface(menuTextSurface);
 	optionsLabels.clear();
@@ -1332,6 +1367,7 @@ void Image::initMenuTexture() {
 	menuTextureOffset = { 2, 2 };
 }
 
+// Render menu labels and choices into their shared GPU text texture.
 void Image::createMenuAssets(Context* context) {
 	const auto originalStyle = TTF_GetFontStyle(menuFont);
 	for (const Choice& choice : *context->menuChoices) {
@@ -1350,6 +1386,7 @@ void Image::createMenuAssets(Context* context) {
 	uploadTexture(context, menuTextSurface, &menuTexture, "Menu Texture");
 }
 
+// Append a rendered label to the menu atlas and record its texture coordinates.
 void Image::addToMenuText(Context* context, const std::string& text) {
 	static SDL_Color fgColor = { 255, 255, 255, 255 };
 	optionsLabels.push_back(text);
@@ -1392,6 +1429,7 @@ void Image::addToMenuText(Context* context, const std::string& text) {
 }
 
 
+// Calculate menu row geometry, hit areas, and scrolling limits for the current window.
 void Image::saveMenuLayout(Context* context) {
 	int windowWidth, windowHeight;
 	SDL_GetWindowSizeInPixels(context->window, &windowWidth, &windowHeight);
@@ -1509,6 +1547,7 @@ void Image::saveMenuLayout(Context* context) {
 	menuMargin.y += menuScroll;
 }
 
+// Move the menu within its scroll limits and update its drawing offset.
 void Image::scrollMenu(float pixels) {
 	const float previous = menuScroll;
 	menuScroll = std::clamp(menuScroll + pixels, 0.0f, menuScrollLimit);
@@ -1516,6 +1555,7 @@ void Image::scrollMenu(float pixels) {
 }
 
 
+// Create the window, GPU resources, shaders, fonts, and initial image state used by the renderer.
 int Image::init(Context* context, FileInfo& imageInfo) {
 	context->nativeOutputWindow = nullptr;
 	auto currentDisplay = SDL_GetPrimaryDisplay();
@@ -1683,6 +1723,8 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	initNativeOutput(context);
 	if (context->mode != Light_Field) setNativeOutputActive(context, false);
 
+	// Load the shader stages shared by image rendering, video conversion, depth refinement, and UI
+	// pipelines.
 	SDL_GPUShader* imageVertexShader = Core::loadShader(context->device,
 		"Image.vert", 0, 1, 0, 0);
 	if (imageVertexShader == nullptr) {
@@ -1755,6 +1797,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 		return -1;
 	}
 
+	// Describe the shared textured quad so each pipeline can use the same vertex and index buffers.
 	SDL_GPUVertexBufferDescription vertexBufferDescription[1] =  {{
 		.slot = 0,
 		.pitch = sizeof(Vertex),
@@ -1808,6 +1851,8 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 		SDL_Log("Failed To Create Image Pipeline.");
 		return -1;
 	}
+	// Reuse the image pipeline layout for offscreen filtering, choosing render-target formats for each
+	// pass.
 	SDL_GPUGraphicsPipelineCreateInfo lanczosPipelineInfo = imagePipelineCreateInfo;
 	lanczosPipelineInfo.fragment_shader = lanczosFragmentShader;
 	SDL_GPUColorTargetDescription lanczosTargetDescription{
@@ -1981,6 +2026,8 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	};
 	imageSampler = SDL_CreateGPUSampler(context->device, &samplerCreateInfo);
 
+	// Upload one reusable quad and its indices instead of rebuilding geometry for each image or UI
+	// draw.
 	SDL_GPUBufferCreateInfo vertexBufferCreateInfo = {
 		.usage = SDL_GPU_BUFFERUSAGE_VERTEX,
 		.size = sizeof(Vertex) * 4
@@ -2083,6 +2130,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	return 0;
 }
 
+// Rebuild the image pipeline from disk and replace it only after successful creation.
 int Image::reloadShader(Context* context) {
 	if (context == nullptr || context->device == nullptr) return -1;
 
@@ -2158,6 +2206,7 @@ int Image::reloadShader(Context* context) {
 	return reloadInterlacerShader(context);
 }
 
+// Reload the lenticular interlacer pipeline while retaining the existing pipeline if creation fails.
 int Image::reloadInterlacerShader(Context* context) {
 	if (context == nullptr || context->device == nullptr || interlacerPipeline == nullptr)
 		return -1;
@@ -2218,6 +2267,7 @@ int Image::reloadInterlacerShader(Context* context) {
 	return 0;
 }
 
+// Reload the application's fonts at sizes appropriate to the current display scale.
 int Image::initFonts(Context* context) {
 	std::filesystem::path exePath = SDL_GetBasePath();
 	std::filesystem::path appPath = exePath.parent_path().parent_path();
@@ -2266,6 +2316,7 @@ int Image::initFonts(Context* context) {
 	return 0;
 }
 
+// Transfer an RGBA surface to a new or reusable GPU texture with optional mipmaps and synchronization.
 int Image::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTexture** gpuTexture,
 		const std::string& textureName, bool reuseTexture, bool waitForGpu, bool generateMipmaps) {
 	auto textureMipLevels = generateMipmaps
@@ -2351,6 +2402,7 @@ int Image::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTextur
 	return 0;
 }
 
+// Resize an RGBA surface with the GPU filtering pipeline and read the result back to CPU memory.
 SDL_Surface* Image::upscaleSurfaceGPU(Context* context, const SDL_Surface* source,
 		int outputWidth, int outputHeight) {
 	if (context == nullptr || context->device == nullptr || source == nullptr ||
@@ -2484,6 +2536,8 @@ SDL_Surface* Image::upscaleSurfaceGPU(Context* context, const SDL_Surface* sourc
 	return result;
 }
 
+// Refine and enlarge a depth surface using color as an edge guide, then return the GPU result as a
+// surface.
 SDL_Surface* Image::refineDepthSurfaceGPU(Context* context, const SDL_Surface* color,
 		const SDL_Surface* depth, int outputWidth, int outputHeight) {
 	if (context == nullptr || context->device == nullptr || color == nullptr || depth == nullptr ||
@@ -2597,6 +2651,7 @@ SDL_Surface* Image::refineDepthSurfaceGPU(Context* context, const SDL_Surface* c
 	return result;
 }
 
+// Create an enlarged 16-bit depth texture using the color-guided refinement shader.
 SDL_GPUTexture* Image::refineDepthTextureGPU(Context* context, SDL_GPUTexture* color,
 		SDL_GPUTexture* depth, int width, int height, int scale) {
 	if (context == nullptr || context->device == nullptr || color == nullptr || depth == nullptr ||
@@ -2672,6 +2727,7 @@ SDL_GPUTexture* Image::refineDepthTextureGPU(Context* context, SDL_GPUTexture* c
 	return output;
 }
 
+// Capture a small background texture for blur sampling and optional crossfading.
 void Image::blitBlurTexture(Context* context, SDL_GPUTexture* inputTexture,
 		Uint32 imageWidth, Uint32 imageHeight, bool nextSnapshotOnly, bool waitForGpu) {
 	if (context == nullptr || inputTexture == nullptr) return;
@@ -2732,6 +2788,7 @@ void Image::blitBlurTexture(Context* context, SDL_GPUTexture* inputTexture,
 	}
 }
 
+// Divide a render rectangle into horizontal viewports for packed stereo output.
 static SDL_GPUViewport getViewport(int view, int views, glm::vec2 rect) {
 	SDL_GPUViewport result{ 0, 0, rect.x, rect.y, 0, 0 };
 	auto viewWidth = rect.x / (float)views;
@@ -2740,11 +2797,13 @@ static SDL_GPUViewport getViewport(int view, int views, glm::vec2 rect) {
 	return result;
 }
 
+// Locate one tile's viewport in a regular quilt grid.
 static SDL_GPUViewport getViewportGrid(glm::vec2 view, glm::vec2 rect) {
 	SDL_GPUViewport result{ rect.x * view.x, rect.y * view.y, rect.x, rect.y, 0, 0 };
 	return result;
 }
 
+// Render the source into the requested stereo or quilt export layout.
 int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 		SDL_GPUTexture* sourceTexture) {
 	if (context == nullptr || context->device == nullptr || context->window == nullptr) {
@@ -2958,6 +3017,7 @@ int Image::renderStereoImage(Context* context, StereoFormat stereoFormat,
 	return 0;
 }
 
+// Read the rendered export texture back into a CPU surface after GPU completion.
 SDL_Surface* Image::getExportTexture(Context* context) {
 	if (context == nullptr || context->device == nullptr || exportTexture == nullptr ||
 		exportTextureSize.x == 0 || exportTextureSize.y == 0) {
@@ -3074,6 +3134,7 @@ SDL_Surface* Image::getExportTexture(Context* context) {
 	return result;
 }
 
+// Bind a graphics pipeline and the shared quad geometry used by image and UI draws.
 void Image::bindPipeline(SDL_GPURenderPass* renderPass, SDL_GPUGraphicsPipeline* pipeline) {
 	SDL_GPUBufferBinding bindingVertex = { .buffer = sharedVertexBuffer, .offset = 0 };
 	SDL_GPUBufferBinding bindingIndex = { .buffer = sharedIndexBuffer, .offset = 0 };
@@ -3082,24 +3143,28 @@ void Image::bindPipeline(SDL_GPURenderPass* renderPass, SDL_GPUGraphicsPipeline*
 	SDL_BindGPUIndexBuffer(renderPass, &bindingIndex, SDL_GPU_INDEXELEMENTSIZE_16BIT);
 }
 
+// Draw the image quad using the current image shader uniforms.
 void Image::drawImage(SDL_GPUCommandBuffer* commandBuffer, SDL_GPURenderPass* renderPass) {
 	SDL_PushGPUVertexUniformData(commandBuffer, 0, &imageDataVert, sizeof(ImageDataVert));
 	SDL_PushGPUFragmentUniformData(commandBuffer, 0, &imageDataFrag, sizeof(ImageDataFrag));
 	SDL_DrawGPUIndexedPrimitives(renderPass, 6, 1, 0, 0, 0);
 }
 
+// Draw an icon quad using the current icon shader uniforms.
 void Image::drawIcon(SDL_GPUCommandBuffer* commandBuffer, SDL_GPURenderPass* renderPass) {
 	SDL_PushGPUVertexUniformData(commandBuffer, 0, &iconDataVert, sizeof(IconDataVert));
 	SDL_PushGPUFragmentUniformData(commandBuffer, 0, &iconDataFrag, sizeof(IconDataFrag));
 	SDL_DrawGPUIndexedPrimitives(renderPass, 6, 1, 0, 0, 0);
 }
 
+// Draw a sprite quad using the current sprite shader uniforms.
 void Image::drawSprite(SDL_GPUCommandBuffer* commandBuffer, SDL_GPURenderPass* renderPass) {
 	SDL_PushGPUVertexUniformData(commandBuffer, 0, &spriteDataVert, sizeof(SpriteDataVert));
 	SDL_PushGPUFragmentUniformData(commandBuffer, 0, &spriteDataFrag, sizeof(SpriteDataFrag));
 	SDL_DrawGPUIndexedPrimitives(renderPass, 6, 1, 0, 0, 0);
 }
 
+// Build the translation and scale matrix for a canvas element.
 glm::mat4 Image::getTransform(glm::vec3 position, glm::vec3 size, glm::vec3 aspect) {
 	auto value = glm::mat4(1.0f);
 	value = translate(value, position);
@@ -3107,6 +3172,7 @@ glm::mat4 Image::getTransform(glm::vec3 position, glm::vec3 size, glm::vec3 aspe
 	return value;
 }
 
+// Prepare the transform, texture region, and appearance for the next sprite draw.
 void Image::setSpriteUniforms(glm::vec3 position, glm::vec3 size, glm::vec4 color,
 	float visibility, int useTexture, glm::vec2 uvOffset, glm::vec2 uvSize,
 		glm::vec2 slice, glm::vec3 aspect) {
@@ -3119,8 +3185,11 @@ void Image::setSpriteUniforms(glm::vec3 position, glm::vec3 size, glm::vec4 colo
 	spriteDataFrag.slice = slice;
 }
 
+// Render media, backgrounds, subtitles, and UI overlays for the active presentation mode.
 int Image::draw(Context* context) {
 	imageDataFrag.packedOutput = 0;
+	// Use faster attack than decay so waveform bars follow transients without flickering between
+	// frames.
 	const auto waveformNow = BlurClock::now();
 	const float waveformDelta = std::clamp(
 		std::chrono::duration<float>(waveformNow - waveformDrawTime).count(), 0.0f, 0.1f);
@@ -3203,19 +3272,20 @@ int Image::draw(Context* context) {
 			viewsY = 2;
 		}
 
-		// Disc selection is a normal 2D screen even when playback uses stereo views.
+		// Disc selection is mono content, but still follows the output layout.
 		if (discMenuTexture != nullptr) {
-			viewsX = viewsY = 1;
-			aspectScale = glm::vec2(1.0f);
+			viewsX = context->fullscreen && (context->mode == SBS_Full ||
+				context->mode == SBS_Half || context->mode == RGB_Depth) ? 2 : 1;
+			viewsY = 1;
 		}
 
+		// Choose calibrated interlacing only when the main window is presenting a usable native-display
+		// source.
 		const bool isMainInterlaced = (context->mode == Lenticular && context->display3D &&
 			context->fullscreen && (nativeDisplayOnMainWindow || context->nativeOutputWindow == nullptr) && interlacerPipeline != nullptr &&
 			imageTexture != nullptr);
 
 		if (discMenuTexture != nullptr) {
-			auto viewport = getViewport(0, 1, windowSize);
-			SDL_SetGPUViewport(renderPass, &viewport);
 			if (context->backgroundStyle == Blur && discBackgroundTexture && blurTexture && blurTextureNext) {
 				bindPipeline(renderPass, imagePipeline);
 				SDL_GPUTextureSamplerBinding bindings[4] = {
@@ -3238,7 +3308,11 @@ int Image::draw(Context* context) {
 				fragments.force = 0;
 				SDL_PushGPUVertexUniformData(commandBuffer, 0, &vertices, sizeof(vertices));
 				SDL_PushGPUFragmentUniformData(commandBuffer, 0, &fragments, sizeof(fragments));
-				SDL_DrawGPUIndexedPrimitives(renderPass, 6, 1, 0, 0, 0);
+				for (int view = 0; view < viewsX; ++view) {
+					auto viewport = getViewport(view, viewsX, windowSize);
+					SDL_SetGPUViewport(renderPass, &viewport);
+					SDL_DrawGPUIndexedPrimitives(renderPass, 6, 1, 0, 0, 0);
+				}
 			}
 		} else if (isMainInterlaced) {
 			auto drawViewport = getViewport(0, 1, windowSize);
@@ -3300,6 +3374,8 @@ int Image::draw(Context* context) {
 				drawNativeCalibrationWarning(context, commandBuffer, renderPass,
 					(int)windowSize.x, (int)windowSize.y);
 		} else {
+			// Render each ordinary stereo or grid view into its own viewport with the matching source
+			// and eye settings.
 			for (auto viewY = 0; viewY < viewsY; viewY++) {
 				for (auto viewX = 0; viewX < viewsX; viewX++) {
 					if (displayHelp || displayAudioPlaceholder) continue;
@@ -3418,7 +3494,7 @@ int Image::draw(Context* context) {
 		}
 
 		viewsX = 1;
-		if (discMenuTexture == nullptr && (context->mode == SBS_Full || context->mode == SBS_Half
+		if ((context->mode == SBS_Full || context->mode == SBS_Half
 			|| context->mode == RGB_Depth) && context->fullscreen) {
 			viewsX = 2;
 		}
@@ -3446,7 +3522,10 @@ int Image::draw(Context* context) {
 			SDL_BindGPUFragmentSamplers(renderPass, 0, &sliderSampleBindings[0], 1);
 
 			if (discMenuTexture != nullptr && !context->displayMenu) {
-				SDL_GPUTextureSamplerBinding discBinding{.texture = discMenuTexture, .sampler = imageSampler};
+				const bool depthView = context->mode == RGB_Depth && view > 0;
+				SDL_GPUTextureSamplerBinding discBinding{
+					.texture = depthView && discMenuDepthTexture ? discMenuDepthTexture : discMenuTexture,
+					.sampler = imageSampler};
 				SDL_BindGPUFragmentSamplers(renderPass, 0, &discBinding, 1);
 				setSpriteUniforms(glm::vec3(context->windowSize * 0.5f, 0.0f),
 					glm::vec3(context->windowSize, 1.0f), glm::vec4(1.0f), 1.0f, 2,
@@ -3760,6 +3839,8 @@ int Image::draw(Context* context) {
 				}
 			}
 
+			// Place bitmap captions in source-image coordinates; text captions use a screen-aligned
+			// baseline and shadow.
 			if (!context->displayMenu && subtitleTexture != nullptr) {
 				bindPipeline(renderPass, spritePipeline);
 				SDL_GPUTextureSamplerBinding subtitleBindings[1] = {{ .texture = subtitleTexture, .sampler = imageSampler }};
@@ -3851,6 +3932,11 @@ int Image::draw(Context* context) {
 			}
 
 			auto cursorPosition = context->mouse;
+			if (discMenuTexture != nullptr && !context->displayMenu && viewsX == 2 && cursorPosition.x >= 0.0f) {
+				const float viewWidth = context->windowSize.x * 0.5f;
+				if (cursorPosition.x >= viewWidth) cursorPosition.x -= viewWidth;
+				cursorPosition.x *= 2.0f;
+			}
 			cursorPosition.y = context->windowSize.y - cursorPosition.y;
 			static glm::vec2 cursorOffset{9.0, -16.0 };
 			iconDataVert.transform = glm::translate(glm::mat4(1.0f),glm::vec3(cursorPosition +
@@ -3881,6 +3967,7 @@ int Image::draw(Context* context) {
 	return 0;
 }
 
+// Translate source layout and display calibration into lenticular interlacer uniforms.
 void Image::updateInterlacerUniforms(Context* context, int width, int height, NativeDisplayConfig& config) {
 	if (!config.cubeViC1 && context->imageType == Light_Field_LKG && context->gridSize.x > 0.0f &&
 		context->gridSize.y > 0.0f) {
@@ -3940,6 +4027,7 @@ void Image::updateInterlacerUniforms(Context* context, int width, int height, Na
 	interlacerDataFrag.testPattern = testPatternMode;
 }
 
+// Show a temporary native-output notice when the display is using default calibration.
 void Image::drawNativeCalibrationWarning(Context* context, SDL_GPUCommandBuffer* commandBuffer,
 	SDL_GPURenderPass* renderPass, int width, int height, const NativeDisplayConfig& config) {
 	if (!nativeOutputEnabled || !config.usingDefaultCalibration ||
@@ -3994,6 +4082,7 @@ void Image::drawNativeCalibrationWarning(Context* context, SDL_GPUCommandBuffer*
 	drawSprite(commandBuffer, renderPass);
 }
 
+// Render each additional native output window using its own calibration.
 int Image::drawNativeOutput(Context* context) {
 	if (!context) return 0;
 	int result = 0;
@@ -4006,6 +4095,7 @@ int Image::drawNativeOutput(Context* context) {
 	return result;
 }
 
+// Present the current source on one native display with its calibrated interlacing or mono fallback.
 int Image::drawNativeOutput(Context* context, NativeOutput& output, NativeDisplayConfig& config) {
 	if (!nativeOutputEnabled || !nativeOutputSourceReady || context == nullptr ||
 		output.window == nullptr ||
@@ -4125,6 +4215,7 @@ int Image::drawNativeOutput(Context* context, NativeOutput& output, NativeDispla
 	return 0;
 }
 
+// Wait for outstanding GPU work and release rendering resources, fonts, and windows.
 void Image::quit(Context* context){
 	if (context->device != nullptr) SDL_WaitForGPUIdle(context->device);
 	setNativeOutputActive(context, false);

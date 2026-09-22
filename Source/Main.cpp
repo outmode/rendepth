@@ -139,6 +139,7 @@ struct VideoDepthBlendState {
 	double presentationTime = -1.0;
 	bool active = false;
 
+	// Discard the depth blend and its timing when changing playback generations.
 	void clear() {
 		displayed.clear();
 		source.clear();
@@ -170,6 +171,7 @@ static void checkMouseState();
 static bool shouldShowCustomCursor();
 static void refreshDisplay3D(StereoFormat type);
 
+// Release the current album artwork and reset the audio-only visualization.
 static void clearAudioAlbumArt() {
 	SDL_DestroySurface(audioAlbumArt);
 	audioAlbumArt = nullptr;
@@ -178,10 +180,12 @@ static void clearAudioAlbumArt() {
 	Image::audioWaveform = {};
 }
 
+// Check whether the playback backend recognizes this video or disc source.
 static bool isSupportedVideo(const std::string& path) {
 	return VideoPlayer::supported(std::filesystem::path(path));
 }
 
+// Recognize supported audio files by their case-insensitive extension.
 static bool isSupportedAudio(const std::string& path) {
 	auto extension = std::filesystem::path(path).extension().string();
 	std::transform(extension.begin(), extension.end(), extension.begin(),
@@ -191,6 +195,7 @@ static bool isSupportedAudio(const std::string& path) {
 		extension == ".opus" || extension == ".wav";
 }
 
+// Normalize a string for case-insensitive file and metadata comparisons.
 static std::string stringLower(std::string s) {
 	std::transform(s.begin(), s.end(), s.begin(),
 		[](unsigned char c){ return std::tolower(c); });
@@ -201,6 +206,7 @@ static const std::vector<std::string> supportedExts { ".jpeg", ".jpg", ".jpe",
 	".jfif", ".jif", ".jps", ".png", ".pns", ".tga", ".bmp", ".dib", ".tif",
 	".tiff", ".ico", ".cur", ".qoi", ".avif", ".avifs", ".jxl", ".webp"
 };
+// Check the image extension against the formats offered by the application.
 bool isSupportedImage(const std::string& path) {
 	auto filePath = std::filesystem::path(path);
 	auto fileExt = stringLower(filePath.extension().string());
@@ -210,6 +216,7 @@ bool isSupportedImage(const std::string& path) {
 	return false;
 }
 
+// Identify sources handled by the audio/video player.
 static bool isSupportedMedia(const std::string& path) {
 	return isSupportedVideo(path) || isSupportedAudio(path);
 }
@@ -221,6 +228,7 @@ enum class MediaType {
 	Unknown
 };
 
+// Classify a path so browsing stays within the current kind of media.
 static MediaType getMediaType(const std::string& path) {
 	if (isSupportedAudio(path)) return MediaType::Audio;
 	if (isSupportedVideo(path)) return MediaType::Video;
@@ -342,6 +350,7 @@ Style style;
 std::vector<FileInfo> fileList{};
 static std::vector<std::string> deferredMediaFiles{};
 auto fileIndex = 0;
+// Translate a playback failure into a user-facing message and clear the failed source's UI state.
 static void failVideoLoad(const std::string& error, const char* fallbackText) {
 	blurayMediaActive = false;
 	if (!error.empty()) {
@@ -425,6 +434,8 @@ static void failVideoLoad(const std::string& error, const char* fallbackText) {
 	checkMouseState();
 }
 
+// Discard queued presentation data after a source change or seek, optionally holding audio until video
+// catches up.
 static void resetVideoPlaybackBuffer(bool holdAudio, bool clearDepth) {
 	bufferedVideoFrames.clear();
 	bufferedVideoDepthFrames.clear();
@@ -443,6 +454,7 @@ static void resetVideoPlaybackBuffer(bool holdAudio, bool clearDepth) {
 	if (holdAudio && videoPlayer.ready()) videoPlayer.setAudioBuffering(true);
 }
 
+// Upload a frame for display and complete any pending source transition once its replacement is ready.
 static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool preview) {
 	if (frame == nullptr) return;
 	lastVideoFrame = frame;
@@ -506,6 +518,7 @@ static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool pre
 	}
 }
 
+// Feed captured frames to depth inference and present them through the live playback buffer.
 static void serviceScreenCapture() {
 	if (!activeScreenCapture) return;
 	if (browserCapture && !screenCapture.running()) {
@@ -530,6 +543,7 @@ static void serviceScreenCapture() {
 	}
 }
 
+// Advance playback, synchronize buffered color and depth, and refresh the timeline and subtitles.
 static void serviceVideo() {
 	if (!activeVideo) return;
 	if (videoPlayer.audioOnly()) {
@@ -692,6 +706,7 @@ static int rapidBrowseClicks = 0;
 static bool rapidBrowseMode = false;
 static bool rapidBrowseRestore3D = false;
 static double lastRapidBrowseNavigation = 0.0;
+// Choose the navigation delay appropriate to the current 2D or 3D presentation.
 static double getMinimumSwitchTime() {
 	return display3D ? minimumSwitchTime3D : minimumSwitchTime2D;
 }
@@ -732,10 +747,12 @@ static glm::vec2 refreshWindowSize();
 static void setMaximize(bool maximize = true);
 static void toggleMaximized();
 static void showCustomCursor(bool show);
+// Return elapsed application time in seconds for animation and scheduling.
 static double getTimeNow() {
 	return (double)SDL_GetTicks() / 1000.0;
 }
 
+// Locate and run the platform's shader compilation script before reloading GPU pipelines.
 static bool compileShadersForReload() {
 	const std::filesystem::path executableDirectory = SDL_GetBasePath();
 	std::filesystem::path shaderDirectory;
@@ -779,6 +796,7 @@ static bool compileShadersForReload() {
 	return true;
 }
 
+// Format a byte count as a compact file-size label.
 static std::string formatFileSize(std::uintmax_t size) {
 	const char* units[] = {"B", "KB", "MB", "GB", "TB"};
 	int unitIndex = 0;
@@ -794,6 +812,7 @@ static void callDepthGen(int imageIndex, bool speculative = false,
 	SDL_Surface* inputSurface = nullptr);
 static void waitForDepthThread();
 
+// Find the previous file of the same media type, wrapping around the browsing list.
 int previousFileIndex() {
 	if (fileList.empty() || fileIndex < 0) return -1;
 	const auto currentType = getMediaType(fileList[fileIndex].link);
@@ -805,6 +824,7 @@ int previousFileIndex() {
 	return fileIndex;
 }
 
+// Find the next file of the same media type, wrapping around the browsing list.
 int nextFileIndex() {
 	if (fileList.empty() || fileIndex < 0) return -1;
 	const auto currentType = getMediaType(fileList[fileIndex].link);
@@ -821,6 +841,7 @@ static Icon& getIcon(IconType type);
 static void setDisplay3D(bool display);
 static int loadImage(void* ptr = nullptr);
 
+// Clear the navigation burst state so normal preloading and depth conversion can resume.
 static void resetRapidBrowseState() {
 	rapidBrowseClicks = 0;
 	rapidBrowseMode = false;
@@ -828,6 +849,7 @@ static void resetRapidBrowseState() {
 	lastRapidBrowseNavigation = 0.0;
 }
 
+// Invalidate pending conversion and preload results so rapid browsing can respond immediately.
 static void cancelPendingWorkForRapidBrowse() {
 	activeDepthGeneration = ++nextDepthGeneration;
 	nativeDepthEstimator.cancel();
@@ -845,6 +867,7 @@ static void cancelPendingWorkForRapidBrowse() {
 	preloadNavigationReady = false;
 }
 
+// Navigate backward, using disc pages or a playback skip when those controls apply.
 void gotoPreviousImage(bool seekActiveVideo = true) {
 	if (discTitleMenu.visible()) { discTitleMenu.pageBy(-1); return; }
 	if (activeScreenCapture) return;
@@ -908,6 +931,7 @@ void gotoPreviousImage(bool seekActiveVideo = true) {
 	switchedImage = true;
 }
 
+// Navigate forward, using disc pages or a playback skip when those controls apply.
 void gotoNextImage(bool seekActiveVideo = true) {
 	if (discTitleMenu.visible()) { discTitleMenu.pageBy(1); return; }
 	if (activeScreenCapture) return;
@@ -971,10 +995,12 @@ void gotoNextImage(bool seekActiveVideo = true) {
 	switchedImage = true;
 }
 
+// Distinguish prepacked stereo views from plain color and color-plus-depth sources.
 bool isStereoImage(StereoFormat format) {
 	return !(format == Color_Only || format == Color_Plus_Depth || format == Unknown_Format);
 }
 
+// Try to choose a fresh mono image for random browsing, with a bounded number of attempts.
 int getRandImageIndex() {
 	auto randIndex = randImage(randGen);
 	auto randAttempts = 64;
@@ -985,6 +1011,7 @@ int getRandImageIndex() {
 	return randIndex;
 }
 
+// Schedule a random image transition, reusing preloads or starting depth conversion as needed.
 void gotoRandomImage() {
 	if (fileList.empty()) return;
 
@@ -1045,6 +1072,7 @@ void gotoRandomImage() {
 	switchedImage = true;
 }
 
+// Stop the slideshow and leave its special depth-zoom presentation mode.
 static void cancelSlideshow() {
 	if (preferredStereoMode == Depth_Zoom) {
 		preferredStereoMode = defaultStereoMode;
@@ -1110,6 +1138,7 @@ static glm::vec4 topRightControlsBottomRight() {
 	return { 0.0, positionEdge * 3.0 + style.getInfo(scale), 1.0, 0.0 };
 }
 
+// Recalculate shared button sizes and hover areas after the UI scale changes.
 static void updateButtonCanvasSizes() {
 	sizeStandard = { style.getIconRadius(Style::getCurrentScale()), style.getIconRadius(Style::getCurrentScale()) };
 	positionEdge = style.getIconRadius(Style::getCurrentScale()) + style.getIconGutter(Style::getCurrentScale());
@@ -1461,6 +1490,7 @@ Icon IconBatch = {
 	false
 };
 
+// Allow disc track selection only while the selected title is the active, fully loaded source.
 static bool canShowTrackSelection() {
 	return activeVideo && !activeScreenCapture && !discTitleMenu.visible() &&
 		!context.displayMenu && !context.loading && selectedDiscTitle >= 0 &&
@@ -1603,6 +1633,7 @@ static constexpr const char* secondaryInferenceButtonLabel = secondaryInferenceL
 static constexpr const char* secondaryPackLabel = "ROCm";
 static constexpr const char* combinedPackLabel = "CUDA, ROCm";
 #endif
+// Map the settings menu choice to the corresponding inference backend.
 static DepthEstimator::Provider inferenceProviderForOption(int option) {
 	return option == 1 ? DepthEstimator::Provider::CUDA :
 		option == 2 ? secondaryInferenceProvider : DepthEstimator::Provider::CPU;
@@ -1700,6 +1731,7 @@ static std::array stereoModes = {
 	Horizontal, Vertical, Checkerboard, Free_View_Grid, Lenticular, Mono };
 // All interactive Pro entry points use the same locally persisted activation.
 static constexpr const char* proUpgradeMessage = "Upgrade to Pro to Unlock Feature";
+// Check the saved Pro activation and show the upgrade prompt when a feature is locked.
 static bool requirePro() {
 	if (Licensing::Service::isLicensed()) return true;
 	context.displayMenu = false;
@@ -1712,6 +1744,7 @@ static bool requirePro() {
 	return false;
 }
 
+// Apply the selected stereo output format and start or stop depth conversion as required.
 static void changeStereo(int option) {
 	// Output format selection is free; only generating video depth needs Pro.
 	const bool monoVideo = (activeVideo && !videoPlayer.audioOnly() && !fileList.empty() &&
@@ -1759,6 +1792,7 @@ static void changeStereo(int option) {
 				startVideoDepth();
 			}
 		} else if (!activeScreenCapture && fileList[fileIndex].type == Color_Only && !isConverting) {
+			keep3DForDepthReload = display3D && context.imageType == Color_Plus_Depth;
 			callDepthGen(fileIndex);
 		}
 	}
@@ -1773,6 +1807,7 @@ static std::array exportFormats = {
 static std::array exportTags = { "anaglyph",  "rgbd", "sbs", "sbs_half_width",
 	"free_view", "free_view_lrl", "qs" };
 static const std::string& getExportDisplayName();
+// Select the export layout and its matching filename tag.
 static void changeExport(int option) {
 	option = std::clamp(option, 0, static_cast<int>(exportFormats.size()) - 1);
 	exportFormat = exportFormats[option];
@@ -1780,6 +1815,7 @@ static void changeExport(int option) {
 	checkMouseState();
 }
 
+// Find the user-facing label for the current export format.
 static const std::string& getExportDisplayName() {
 	const auto format = std::find(exportFormats.begin(), exportFormats.end(), exportFormat);
 	if (format != exportFormats.end()) {
@@ -1789,6 +1825,7 @@ static const std::string& getExportDisplayName() {
 	return ChoiceExport.options.front();
 }
 
+// Strip recognized format tags before constructing a new media filename.
 static std::string removeFileTags(const std::string& fileName) {
 	std::string tagPattern = "(";
 	for (auto& tag : tagType) {
@@ -1801,6 +1838,7 @@ static std::string removeFileTags(const std::string& fileName) {
 	return std::regex_replace(fileName, pattern, "");
 }
 
+// Rename a source with the requested stereo tag and reload its file metadata.
 static bool addStereoTag(const std::string& link, const std::string& tag) {
 	std::string cleanLink = removeFileTags(link);
 	auto dotPos = cleanLink.find_last_of('.');
@@ -1817,6 +1855,8 @@ static bool addStereoTag(const std::string& link, const std::string& tag) {
 
 static std::array importTags = { Side_By_Side_Full, Side_By_Side_Half,
 	Top_And_Bottom_Full, Top_And_Bottom_Half, Color_Only, Color_Anaglyph };
+// Change how untagged sources are interpreted and reload the current media while preserving playback
+// position.
 static void changeImport(int option, bool init) {
 	Core::defaultImportFormat = importTags[option];
 	if (!init && Core::defaultImportFormat == Color_Only) {
@@ -1847,6 +1887,7 @@ static void changeImport(int option, bool init) {
 
 static std::array eyesFormats = {
 	Left_Right, Right_Left };
+// Apply the selected left/right eye ordering.
 static void changeEyes(int option) {
 	eyesFormat = eyesFormats[option];
 	swapLeftRight = eyesFormat == Right_Left;
@@ -1854,6 +1895,7 @@ static void changeEyes(int option) {
 
 static void endPreload(bool success);
 static auto depthRegenerated = false;
+// Join the depth worker while servicing its GPU requests to avoid blocking it on the render thread.
 static void waitForDepthThread() {
 	if (depthGenThread != nullptr) {
 		while (depthGenAlive.load(std::memory_order_acquire)) {
@@ -1865,6 +1907,7 @@ static void waitForDepthThread() {
 	}
 }
 
+// Cancel outstanding depth work and restore original source metadata for regeneration.
 static void resetDepthGeneration() {
 	// Invalidate any completion that may already be queued by the worker. The
 	// current conversion is still joined below, but its result must not restore
@@ -1887,6 +1930,8 @@ static void resetDepthGeneration() {
 }
 
 static std::array<std::string, 3> depthQuality = { "0", "1", "2" };
+// Menu selections can be pending while the current inference work continues.
+static int appliedDepthModelOption = 0;
 static std::array<std::string, 3> depthSizes = { "560", "644", "714" };
 static std::array<std::string, 3> depthModelFiles = {
 	"DA2-SMALL-560.onnx",
@@ -1902,6 +1947,7 @@ static std::array<std::string, 3> videoDepthModelFiles = {
 static std::array<int, 3> videoDepthProcessSizes = { 280, 336, 392 };
 static constexpr std::array<double, 3> videoDepthRates = { 20.0, 15.0, 12.0 };
 
+// Choose a usable presentation mode while video depth is unavailable.
 static void setVideoDepthFallbackMode() {
 	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
 		preferredStereoMode == Anaglyph_Accurate || preferredStereoMode == Anaglyph_Vivid ||
@@ -1911,6 +1957,7 @@ static void setVideoDepthFallbackMode() {
 		setStereoMode(Native);
 }
 
+// Stop live depth inference and clear its playback state, optionally retaining the displayed texture.
 static void stopVideoDepth(bool disable3D, bool clearTexture) {
 	liveVideoBuffer.clear();
 	videoPlayer.setInferenceSize(0);
@@ -1939,6 +1986,7 @@ static void stopVideoDepth(bool disable3D, bool clearTexture) {
 	}
 }
 
+// Start depth inference for an eligible mono video or capture source using the selected model.
 static bool startVideoDepth(bool preserveTexture) {
 	if ((!activeVideo && !activeScreenCapture) ||
 		(activeVideo && (!videoPlayer.ready() || fileList.empty()))) return false;
@@ -1960,7 +2008,7 @@ static bool startVideoDepth(bool preserveTexture) {
 		return false;
 	}
 	stopVideoDepth(false, !preserveTexture);
-	const int modelOption = std::clamp(menuSelection[ChoiceModel.label], 0,
+	const int modelOption = std::clamp(appliedDepthModelOption, 0,
 		static_cast<int>(videoDepthModelFiles.size()) - 1);
 	VideoDepthProcessor::Config config;
 	config.modelDirectory = modelDirectory.empty()
@@ -1999,6 +2047,7 @@ static bool startVideoDepth(bool preserveTexture) {
 	return true;
 }
 
+// Interpolate the displayed depth map toward the newest result over a short transition.
 static void sampleVideoDepthBlend(double now) {
 	if (!videoDepthBlend.active) return;
 	constexpr double blendDuration = 0.05;
@@ -2033,6 +2082,8 @@ static bool propagateVideoDepthMotion(VideoDepthBlendState& state,
 	return true;
 }
 
+// Collect depth results, match them to playback, and update the displayed map without accepting stale
+// generations.
 static void serviceVideoDepth() {
 	if (!activeVideo && !activeScreenCapture) return;
 	if (activeVideo && (fileList.empty() || fileList[fileIndex].type != Color_Only)) {
@@ -2163,6 +2214,7 @@ static void serviceVideoDepth() {
 	if (!deferVideoFileTransition) context.imageType = Color_Plus_Depth;
 }
 
+// Apply the depth quality preset and arrange for affected inference sessions to reload.
 static void changeModel(int option, bool init) {
 	if (!init && (activeVideo || activeScreenCapture)) {
 		videoDepthRestartPending = display3D &&
@@ -2178,9 +2230,11 @@ static void changeModel(int option, bool init) {
 		nativeDepthEstimatorLoaded = false;
 		nativeDepthEstimatorError.clear();
 	}
+	appliedDepthModelOption = option;
 }
 
 static std::array<std::string, 3> upscaleResolutions = { "1920", "2560", "3840" };
+// Apply the output resolution and refresh the relevant image or playback buffers.
 static void changeResolution(int option, bool init) {
 	upscaleResolution = upscaleResolutions[option];
 	if (!init) {
@@ -2192,11 +2246,13 @@ static void changeResolution(int option, bool init) {
 }
 
 static std::array backgroundStyles = { Blur, Solid, Light, Dark };
+// Select the background treatment used around the media.
 static void changeBackground(int option) {
 	context.backgroundStyle = backgroundStyles[option];
 }
 
 static std::array sortOrders = { Alpha_Ascending, Alpha_Descending, Date_Descending, Date_Ascending };
+// Change browsing order and rebuild the current file list when applying an interactive change.
 static void changeSorting(int option, bool init) {
 	sortOrder = sortOrders[option];
 	if (!init && !fileList.empty()) {
@@ -2206,6 +2262,7 @@ static void changeSorting(int option, bool init) {
 }
 
 static std::array<float, 4> slideshowWaitTimes = { 8.0, 10.0, 12.0, 14.0 };
+// Select the interval between slideshow images.
 static void changeSlideshow(int option) {
 	slideshowWaitTime = slideshowWaitTimes[option];
 }
@@ -2237,10 +2294,12 @@ static std::unordered_map<std::string, std::function<void(int)>> menuCallback = 
 };
 
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+// Identify runtime status and action rows that should not become persistent settings.
 static bool transientInferenceSetting(const std::string& label) {
 	return label == ChoiceRuntimePacks.label || label == ChoiceRuntimeTools.label;
 }
 
+// Refresh runtime-pack availability without overwriting the user's saved engine preference.
 static void refreshInferenceSettings() {
 	const bool cuda = InferenceRuntime::installed(DepthEstimator::Provider::CUDA);
 	const bool secondary = InferenceRuntime::installed(secondaryInferenceProvider);
@@ -2261,6 +2320,7 @@ static void refreshInferenceSettings() {
 	}
 }
 
+// Persist an explicit inference-engine choice and indicate whether it needs an application restart.
 static void changeInference(int option) {
 	menuSelection[ChoiceInference.label] = std::clamp(option, 0, 2);
 	if (firstInit) return;
@@ -2276,6 +2336,7 @@ static void changeInference(int option) {
 	displayTipTime = getTimeNow();
 }
 
+// Handle runtime-management actions such as opening the pack folder or choosing an inference engine.
 static void runtimeTools(int option) {
 	menuSelection[ChoiceRuntimeTools.label] = -1;
 	if (firstInit) return;
@@ -2337,16 +2398,19 @@ static double currentStereoDepth = sliderStart * 0.5 + 0.25;
 static double currentStereoOffset = (1.0 - sliderStart) / 50.0;
 static double currentGridAngle = sliderStart;
 
+// Convert the slider thumb position to a clamped fraction of its track.
 static double getSliderPercent(const Icon& icon) {
 	if (icon.slider.size.x <= 0.0f) return 0.0;
 	return glm::clamp(icon.slider.position.x / icon.slider.size.x + 0.5, 0.0, 1.0);
 }
 
+// Place a slider thumb at a clamped fraction of its track.
 static void setSliderPercent(Icon& icon, double percent) {
 	icon.slider.position.x = icon.slider.size.x *
 		static_cast<float>(glm::clamp(percent, 0.0, 1.0) - 0.5);
 }
 
+// Render an information label and restart its visibility timer.
 static void showInfoTip(const std::string& text) {
 	currentInfoLabel = text;
 	Core::drawText(&context, currentInfoLabel, Image::infoFont, Image::infoTexture,
@@ -2356,6 +2420,7 @@ static void showInfoTip(const std::string& text) {
 	displayInfoTime = getTimeNow();
 }
 
+// Describe the timeline position, duration, and chapter or audio-CD track for the seek tooltip.
 static std::string formatVideoTimecode(const Icon& timeline) {
 	const double duration = std::max(0.0, videoPlayer.duration());
 	const double position = glm::clamp(
@@ -2377,6 +2442,7 @@ static std::string formatVideoTimecode(const Icon& timeline) {
 	return timecode;
 }
 
+// Replace malformed UTF-8 and characters missing from the info font with a fallback glyph.
 static std::string filterInfoFontText(const std::string& text) {
 	if (Image::infoFont == nullptr) return text;
 	std::string filtered;
@@ -2432,6 +2498,7 @@ static float videoTrackButtonWidth = 0.0f;
 static float videoControlGap = 0.0f;
 static double currentVideoVolume = 1.0;
 
+// Measure the combined timeline, volume, and track controls including their spacing.
 static float videoControlWidth() {
 	const auto sliderThumbDiameter = style.getIconSlider(Style::getCurrentScale()) * 2.0f;
 	return videoTimelineWidth + videoVolumeWidth + videoTrackButtonWidth * 2.0f +
@@ -2439,10 +2506,12 @@ static float videoControlWidth() {
 		videoControlGap * 3.0f;
 }
 
+// Position a control within the centered playback-control group.
 static float videoControlCenter(float precedingWidth, float controlWidth) {
 	return precedingWidth + controlWidth * 0.5f - videoControlWidth() * 0.5f;
 }
 
+// Convert chapter start times into normalized timeline markers.
 static void updateChapterMarkers() {
 	context.chapterMarkers.clear();
 	if (activeVideo && videoPlayer.ready() && videoPlayer.hasChapters() && videoPlayer.duration() > 0.0) {
@@ -2456,6 +2525,7 @@ static void updateChapterMarkers() {
 	}
 }
 
+// Snap a nearby timeline position to a chapter marker for easier navigation.
 static double getSnappedSeekPercent(double rawPercent) {
 	if (!activeVideo || !videoPlayer.hasChapters() || videoPlayer.duration() <= 0.0) {
 		return rawPercent;
@@ -2483,6 +2553,7 @@ static double getSnappedSeekPercent(double rawPercent) {
 	return bestSnapPercent;
 }
 
+// Translate timeline dragging into a playback preview or deferred disc seek.
 static void seekVideoFromSlider() {
 	if (!activeVideo || currentSlider == nullptr) return;
 	double percent = getSliderPercent(*currentSlider);
@@ -2510,6 +2581,7 @@ static void seekVideoFromSlider() {
 	seekVideo(target, false);
 }
 
+// Seek playback and reset presentation buffers so frames from the old position cannot leak through.
 static void seekVideo(double seconds, bool fastPreview) {
 	const bool preserveDepthPresentation = activeVideo && display3D &&
 		videoDepthProcessor.running() && videoDepthFrameLoaded;
@@ -2531,20 +2603,24 @@ static void seekVideo(double seconds, bool fastPreview) {
 	videoPlayer.seek(seconds, fastPreview);
 }
 
+// Skip by a relative time offset when a seekable video is active.
 static bool skipVideoBy(double seconds) {
 	if (!activeVideo) return false;
 	if (videoPlayer.ready()) seekVideo(videoPlayer.position() + seconds);
 	return true;
 }
 
+// Apply the strength slider's current value to the depth effect.
 static void updateStrengthSlider() {
 	currentStereoStrength = getSliderPercent(*currentSlider) * 0.8 + 0.1;
 }
 
+// Apply the depth slider's current value to the scene depth.
 static void updateDepthSlider() {
 	currentStereoDepth = getSliderPercent(*currentSlider) * 0.5 + 0.25;
 }
 
+// Apply the offset slider's current value to the stereo offset.
 static void updateOffsetSlider() {
 	currentStereoOffset = (1.0 - getSliderPercent(*currentSlider)) / 50.0;
 	currentGridAngle = getSliderPercent(*currentSlider);
@@ -2708,6 +2784,7 @@ static Icon IconVideoCaption = {
 	}, []() { videoPlayer.cycleSubtitleTrack(); }, 1.0, false, false
 };
 
+// Advance to the next chapter and align the UI with the new playback position.
 static void jumpNextChapter() {
 	if (!activeVideo || !videoPlayer.hasChapters()) return;
 	const int count = videoPlayer.chapterCount();
@@ -2719,6 +2796,7 @@ static void jumpNextChapter() {
 	}
 }
 
+// Navigate to the previous chapter and align the UI with the new playback position.
 static void jumpPreviousChapter() {
 	if (!activeVideo || !videoPlayer.hasChapters()) return;
 	const int count = videoPlayer.chapterCount();
@@ -2737,6 +2815,7 @@ static std::vector appIcons = { IconLoading, IconMinimize, IconFullscreen, IconO
 	IconVideoAudio, IconVideoCaption, IconHelp, IconClose };
 // IconScreenCapture is intentionally omitted for launch; keep its implementation for later.
 
+// Finish or cancel slider scrubbing, restore playback, and release mouse capture.
 static void finishSliderDrag(bool commitSeek) {
 	const bool volumeSliderChanged = currentSlider != nullptr &&
 		currentSlider->type == IconType::VideoVolume;
@@ -2772,12 +2851,14 @@ static void finishSliderDrag(bool commitSeek) {
 	SDL_CaptureMouse(false);
 }
 
+// Show the play or pause action for the current media or slideshow state.
 static void refreshPlayIcon() {
 	// Video/audio playback and photo slideshows share this button.
 	const bool playing = activeVideo ? videoPlayer.playing() : isPlayingSlideshow;
 	getIcon(IconType::Play).image = playing ? IconType::Pause : IconType::Play;
 }
 
+// Show or hide playback controls and end any drag that is no longer visible.
 static void setVideoControlsVisible(bool visible) {
 	videoControlsVisible = activeVideo && visible;
 	refreshPlayIcon();
@@ -2799,6 +2880,7 @@ static void setVideoControlsVisible(bool visible) {
 	}
 }
 
+// Lay out playback controls for the current window and update timeline, volume, and chapter positions.
 static void updateVideoSlider() {
 	if (!activeVideo) return;
 	auto& timeline = getIcon(IconType::VideoSeek);
@@ -2852,6 +2934,7 @@ static const SDL_DialogFileFilter filters[] = {
 	{ "Just Audio", audioFilterExtensions }
 };
 
+// Filter the file chooser result and queue supported media for loading on the main loop.
 static void SDLCALL openFileCallback(void* userdata, const char* const* filelist, int filter) {
 	if (!filelist) {
 		doingFileOp = false;
@@ -2876,6 +2959,7 @@ static void SDLCALL openFileCallback(void* userdata, const char* const* filelist
 	doingFileOp = false;
 }
 
+// Store the selected folder or a cancellation marker for the main loop to consume.
 static void SDLCALL openFolderCallback(void* userdata, const char* const* filelist, int filter) {
 	if (!filelist || !*filelist) {
 		*static_cast<std::string*>(userdata) = "ERROR";
@@ -2884,17 +2968,20 @@ static void SDLCALL openFolderCallback(void* userdata, const char* const* fileli
 	}
 }
 
+// Open the media chooser with the application's supported file filters.
 static void openFile() {
 	doingFileOp = true;
 	auto filterNum = sizeof(filters) / sizeof(filters[0]);
 	MediaOpenDialog::open(openFileCallback, context.window, filters, filterNum);
 }
 
+// Open the folder chooser for a directory-based operation.
 static void openFolder() {
 	doingFileOp = true;
 	SDL_ShowOpenFolderDialog(openFolderCallback, &openFolderResult, context.window, nullptr, false);
 }
 
+// Encode a frame timestamp as a filename-safe tag with millisecond precision.
 static std::string formatVideoTimeTag(double presentationTime) {
 	if (!std::isfinite(presentationTime) || presentationTime < 0.0) return {};
 
@@ -2908,6 +2995,7 @@ static std::string formatVideoTimeTag(double presentationTime) {
 		seconds, milliseconds);
 }
 
+// Render and save the current media in the selected export format, then show the result.
 static void saveFile() {
 	doingFileOp = true;
 	// The save callback can run between video-frame updates. Refresh the GPU
@@ -2999,6 +3087,7 @@ static void saveFile() {
 	displayTipTime = getTimeNow();
 }
 
+// Save a batch-rendered surface with the chosen stereo or quilt filename tags.
 static bool saveExportSurface(SDL_Surface* data, const std::filesystem::path& sourcePath,
 		const std::filesystem::path& exportDir) {
 	if (data == nullptr) return false;
@@ -3030,6 +3119,7 @@ static bool saveExportSurface(SDL_Surface* data, const std::filesystem::path& so
 	return false;
 }
 
+// Export the next completed batch item and report when the batch has finished.
 static void processBatchExport() {
 	if (!batchExportActive || context.loading || batchExportIndex >= batchInputPaths.size()) {
 		if (batchExportActive && batchExportIndex >= batchInputPaths.size()) {
@@ -3081,6 +3171,7 @@ static void processBatchExport() {
 	SDL_ReleaseGPUTexture(context.device, batchTexture);
 }
 
+// Find an application control by type, falling back to the first control if absent.
 static Icon& getIcon(IconType type) {
 	for (auto& icon : appIcons) {
 		if (icon.type == type) return icon;
@@ -3092,6 +3183,7 @@ std::filesystem::path optionsPath =  "Settings.json";
 std::filesystem::path optionsAbsPath = homePath / optionsPath;
 static std::string optionsFilePath = optionsAbsPath.string();
 
+// Persist application preferences through a locked settings transaction.
 void saveOptions() {
 	std::string saveError;
 	SettingsFile transaction(optionsFilePath, saveError);
@@ -3181,6 +3273,7 @@ void saveOptions() {
 #endif
 }
 
+// Restore recognized preferences from JSON while retaining defaults for missing or invalid entries.
 void loadOptions() {
 	rapidjson::Document document;
 	char dataBuffer[65536];
@@ -3262,6 +3355,7 @@ void loadOptions() {
 
 }
 
+// Update the stereo button to reflect the current presentation and available toggle action.
 static void updateStereoIcon() {
 	auto& icon = getIcon(IconType::Stereo_3D);
 	icon.image = display3D ? IconType::Stereo_2D : IconType::Stereo_3D;
@@ -3269,6 +3363,7 @@ static void updateStereoIcon() {
 	if (preferredStereoMode == Mono) icon.image = display3D ? IconType::Mono_SD : IconType::Mono_SR;
 }
 
+// Show or hide stereo adjustments and coordinate their visibility with playback controls.
 static void setShowStereoSettings(bool show) {
 	showingStereoSettings = show;
 	auto& icon = getIcon(IconType::Settings);
@@ -3276,13 +3371,43 @@ static void setShowStereoSettings(bool show) {
 	if (activeVideo) setVideoControlsVisible(!show && !context.displayMenu);
 }
 
+// Toggle the stereo-adjustment panel.
 static void toggleStereoSettings() {
 	setShowStereoSettings(!showingStereoSettings);
 }
 
 static bool pendingDepthModelReload = false;
+static std::unordered_map<std::string, int> pendingOptionOriginals;
 
+// Identify settings whose expensive reloads should wait until the options menu closes.
+static bool deferredOption(const std::string& label) {
+	return label == ChoiceModel.label ||
+		label == ChoiceResolution.label || label == ChoiceSorting.label ||
+		label == ChoiceTags.label;
+}
+
+// Apply only deferred settings that changed once the options menu is closed.
+static void applyDeferredOptions() {
+	if (context.displayMenu || pendingOptionOriginals.empty()) return;
+	auto originals = std::move(pendingOptionOriginals);
+	pendingOptionOriginals.clear();
+	const auto selections = menuSelection;
+	// Display mode changes apply immediately using the currently loaded depth.
+	// Only settings that invalidate or reload the source are deferred here.
+	for (const auto* choice : { &ChoiceModel, &ChoiceResolution, &ChoiceSorting,
+		&ChoiceTags }) {
+		const auto original = originals.find(choice->label);
+		const int selected = selections.at(choice->label);
+		if (original == originals.end() || original->second == selected) continue;
+		menuCallback[choice->label](selected);
+	}
+	if (videoDepthRestartPending || depthRegenerated) pendingDepthModelReload = true;
+}
+
+// Restart affected depth work when deferred settings can safely take effect.
 static void serviceDeferredDepthReload() {
+	if (context.displayMenu) return;
+	applyDeferredOptions();
 	if (!pendingDepthModelReload) return;
 	if (context.loading || doingPreload) return;
 	pendingDepthModelReload = false;
@@ -3318,6 +3443,7 @@ static void serviceDeferredDepthReload() {
 	}
 }
 
+// Toggle the options menu, applying deferred changes and saving preferences when it closes.
 static void toggleOptions() {
 	context.displayMenu = !context.displayMenu;
 	if (activeVideo) setVideoControlsVisible(!context.displayMenu);
@@ -3325,6 +3451,7 @@ static void toggleOptions() {
 	icon.image = context.displayMenu ? IconType::Close : IconType::Options;
 	setShowStereoSettings(showingStereoSettings && !context.displayMenu);
 	if (!context.displayMenu) {
+		applyDeferredOptions();
 		if (videoDepthRestartPending || depthRegenerated) {
 			pendingDepthModelReload = true;
 			if (videoDepthRestartPending && (activeVideo || activeScreenCapture) && display3D) {
@@ -3346,6 +3473,7 @@ static void toggleOptions() {
 	}
 }
 
+// Synchronize the application's 3D state with rendering and stereo controls.
 static void setDisplay3D(bool display) {
 	display3D = display;
 	context.display3D = display;
@@ -3353,6 +3481,7 @@ static void setDisplay3D(bool display) {
 	setShowStereoSettings(showingStereoSettings && display3D);
 }
 
+// Resolve the requested presentation against the loaded source format and output display.
 static void refreshDisplay3D(StereoFormat type) {
 	if (preferredStereoMode == Lenticular) {
 		const bool isLenticular2View = (Image::nativeDisplayConfig.viewCount == 2);
@@ -3400,6 +3529,7 @@ static void refreshDisplay3D(StereoFormat type) {
 	}
 }
 
+// Apply the active render mode and recalculate image sizing.
 static void setStereoMode(ViewMode mode) {
 	currentStereoMode = mode;
 	context.mode = currentStereoMode;
@@ -3407,6 +3537,7 @@ static void setStereoMode(ViewMode mode) {
 	Image::updateSize(&context);
 }
 
+// Remember the desired stereo mode and refresh presentation for the currently loaded source.
 static void setPreferredStereo(ViewMode mode, bool saveMode) {
 	if (mode != Mono && std::find(stereoModes.begin(), stereoModes.end(), mode) != stereoModes.end())
 		lastUsedStereoMode = mode;
@@ -3435,6 +3566,7 @@ static void setPreferredStereo(ViewMode mode, bool saveMode) {
 	}
 }
 
+// Compare names using numeric digit runs, optionally ignoring letter case.
 static int naturalCompare(const std::string& a, const std::string& b, bool foldCase) {
 	size_t i = 0, j = 0;
 	while (i < a.size() && j < b.size()) {
@@ -3482,28 +3614,34 @@ static int naturalCompare(const std::string& a, const std::string& b, bool foldC
 	return 0;
 }
 
+// Order names naturally, using case-sensitive comparison to break otherwise equal names.
 bool naturalLess(const std::string& a, const std::string& b) {
 	const auto foldedResult = naturalCompare(a, b, true);
 	if (foldedResult != 0) return foldedResult < 0;
 	return naturalCompare(a, b, false) < 0;
 }
 
+// Sort file entries by natural filename order.
 bool nameAscending(const FileInfo& f1, const FileInfo& f2) {
 	return naturalLess(f1.name, f2.name);
 }
 
+// Sort file entries by reverse natural filename order.
 bool nameDescending(const FileInfo& f1, const FileInfo& f2) {
 	return naturalLess(f2.name, f1.name);
 }
 
+// Sort file entries from oldest to newest modification time.
 bool timeAscending(const FileInfo& f1, const FileInfo& f2) {
 	return f1.modified < f2.modified;
 }
 
+// Sort file entries from newest to oldest modification time.
 bool timeDescending(const FileInfo& f1, const FileInfo& f2) {
 	return f2.modified < f1.modified;
 }
 
+// Refresh pixel dimensions and the scale used to translate mouse coordinates.
 static glm::vec2 refreshWindowSize() {
 	int windowWidth, windowHeight;
 	SDL_GetWindowSizeInPixels(context.window, &windowWidth, &windowHeight);
@@ -3519,6 +3657,7 @@ static glm::vec2 refreshWindowSize() {
 	return windowSize;
 }
 
+// Refresh the window's logical dimensions independently of its pixel density.
 static glm::vec2 refreshWindowSizeBase() {
 	int windowWidth, windowHeight;
 	SDL_GetWindowSize(context.window, &windowWidth, &windowHeight);
@@ -3527,6 +3666,7 @@ static glm::vec2 refreshWindowSizeBase() {
 	return windowSizeBase;
 }
 
+// Reconcile fullscreen state with UI icons, image sizing, and stereo presentation.
 static void updateFullscreenState() {
 	isFullscreen = (SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) != 0;
 	auto& icon = getIcon(IconType::Fullscreen);
@@ -3541,6 +3681,7 @@ static void updateFullscreenState() {
 		refreshDisplay3D(context.imageType);
 }
 
+// Choose the display mode and synchronize the window before updating fullscreen-dependent state.
 static void setFullscreen(bool fullscreen = true) {
 	if (fullscreen && context.window != nullptr) {
 		SDL_DisplayID displayID = SDL_GetDisplayForWindow(context.window);
@@ -3556,10 +3697,12 @@ static void setFullscreen(bool fullscreen = true) {
 	showCustomCursor(true);
 }
 
+// Switch between windowed and fullscreen presentation.
 static void toggleFullscreen() {
 	setFullscreen((SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) == 0);
 }
 
+// End capture and playback activity and return the application to its empty display state.
 static void stopCapture() {
 	blurayMediaActive = false;
 	browserBridge.endSession();
@@ -3630,6 +3773,7 @@ static void stopCapture() {
 
 static std::string openBrowserImage(const BrowserBridge::Request& request);
 
+// Accept a browser image or stream request and configure its mono or stereo presentation.
 static std::string beginBrowserCapture(const BrowserBridge::Request& request) {
 	if (isConverting || doingFileOp || context.loading)
 		return "Rendepth is loading or converting media. Try again when it is ready.";
@@ -3659,6 +3803,7 @@ static std::string beginBrowserCapture(const BrowserBridge::Request& request) {
 	return {};
 }
 
+// Toggle desktop capture using the available platform backend.
 static void toggleScreenCapture() {
 #if defined(__linux__)
 	if (activeScreenCapture) {
@@ -3687,6 +3832,7 @@ static void toggleScreenCapture() {
 #endif
 }
 
+// Toggle 3D presentation, preparing or reusing depth when the current source needs it.
 void toggleStereo() {
 	if (discTitleMenu.visible()) return;
 	if (!display3D &&
@@ -3818,6 +3964,7 @@ static void selectStereoPresentation(int state) {
 	saveOptions();
 }
 
+// Start or stop slideshow timing, preloading, and its associated depth animation.
 static void setSlideshow(bool slide) {
 	isPlayingSlideshow = slide;
 	auto& icon = getIcon(IconType::Play);
@@ -3866,6 +4013,7 @@ static void setSlideshow(bool slide) {
 	updateStereoIcon();
 }
 
+// Toggle playback for video/audio, or the slideshow for still images.
 static void toggleSlideshow() {
 	if (discTitleMenu.visible()) return;
 	if (activeScreenCapture) return;
@@ -3877,6 +4025,7 @@ static void toggleSlideshow() {
 	setSlideshow(!isPlayingSlideshow);
 }
 
+// Maximize or restore the window and reset the image view to fit it.
 static void setMaximize(bool maximize) {
 	if (maximize) {
 		SDL_MaximizeWindow(context.window);
@@ -3894,6 +4043,7 @@ static void setMaximize(bool maximize) {
 	Image::updateSize(&context);
 }
 
+// Toggle maximization, leaving fullscreen first when necessary.
 static void toggleMaximized() {
 	if (!isFullscreen) {
 		isMaximized = !isMaximized;
@@ -3903,6 +4053,7 @@ static void toggleMaximized() {
 	}
 }
 
+// Add a supported source to the browsing list with its metadata and import format.
 static void pushFileInfo(const std::filesystem::path& filePath) {
 	std::string fileName = filePath.string();
 	if (isSupportedImage(fileName) || isSupportedMedia(fileName)) {
@@ -3935,6 +4086,7 @@ static void pushFileInfo(const std::filesystem::path& filePath) {
 	}
 }
 
+// Build and sort the browsing list from selected paths or neighboring files.
 static void parseFileList(const std::vector<std::string>& filesToLoad) {
 	resetRapidBrowseState();
 	if (doingPreload) endPreload(true);
@@ -3988,11 +4140,13 @@ static void parseFileList(const std::vector<std::string>& filesToLoad) {
 	preloadDir = 1;
 }
 
+// Transfer a completed preload into its file entry, releasing any older surface.
 void preloadComplete(SDL_Surface* preloadData, FileInfo& preloadFile) {
 	SDL_DestroySurface(preloadFile.preload);
 	preloadFile.preload = preloadData;
 }
 
+// Start an asynchronous image preload for the likely next navigation target.
 void preloadImage(int overrideId = -1) {
 	auto nextId = nextFileIndex();
 	auto prevId = previousFileIndex();
@@ -4013,6 +4167,7 @@ void preloadImage(int overrideId = -1) {
 	if (preloadThread == nullptr) endPreload(false);
 }
 
+// Join the preload worker and either retain its surface or discard the cancelled result.
 static void endPreload(bool success) {
 	if (preloadThread == nullptr) {
 		doingPreload = false;
@@ -4055,6 +4210,7 @@ static void endPreload(bool success) {
 	doingPreload = false;
 }
 
+// Rebuild fonts, menus, and button geometry for the current display scale.
 static void updateDisplayScale() {
 	Style::calculateScale(context.virtualSize / context.displayScale);
 	Image::initFonts(&context);
@@ -4069,6 +4225,7 @@ static void updateDisplayScale() {
 static auto grabMargin = 32.0;
 static auto resizeMargin = 12.0;
 static auto windowDraggable = false;
+// Identify draggable and resizable regions of the custom window frame.
 static SDL_HitTestResult windowHitCallback(SDL_Window* window,
 	const SDL_Point* area, void *data) {
 	auto context = (Context*)data;
@@ -4113,6 +4270,7 @@ static SDL_HitTestResult windowHitCallback(SDL_Window* window,
 	return SDL_HITTEST_NORMAL;
 }
 static bool displayedProLicense = false;
+// Refresh license-dependent menu labels and rebuild their textures when requested.
 static void refreshLicenseMenu(bool rebuild) {
     const bool licensed = Licensing::Service::isLicensed();
     if (licensed == displayedProLicense) return;
@@ -4134,6 +4292,7 @@ static void refreshLicenseMenu(bool rebuild) {
     }
 }
 
+// Initialize application services, the SDL window and GPU, preferences, and the initial media source.
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	Licensing::Service::initialize();
 	refreshLicenseMenu(false);
@@ -4277,6 +4436,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 static auto visibilitySpeed = 9.0;
 static auto visibilitySwitchMinimum = 0.75;
 
+// Create a neutral image for audio tracks that have no displayable artwork.
 static SDL_Surface* createAudioPlaceholder() {
 	constexpr int placeholderSize = 512;
 	auto* surface = SDL_CreateSurface(placeholderSize, placeholderSize,
@@ -4287,6 +4447,7 @@ static SDL_Surface* createAudioPlaceholder() {
 	return surface;
 }
 
+// Load the generated RGB-D version of the current audio artwork.
 static int loadAudioDepthImage() {
 	if (!activeVideo || !videoPlayer.audioOnly() || fileList.empty()) return 1;
 	auto& audioFile = fileList[fileIndex];
@@ -4302,6 +4463,7 @@ static int loadAudioDepthImage() {
 	return 0;
 }
 
+// Load the selected image, audio, video, or disc title and initialize the matching presentation state.
 static int loadImage(void* ptr) {
 	if (fileList.empty() || fileIndex < 0 || fileIndex >= static_cast<int>(fileList.size())) return 1;
 	const std::filesystem::path mediaPath = fileList[fileIndex].link;
@@ -4310,6 +4472,7 @@ static int loadImage(void* ptr) {
 		blurayMediaActive = false;
 		discTitleMenu.close();
 		Image::discMenuTexture = nullptr;
+		Image::discMenuDepthTexture = nullptr;
 		Image::updateDiscBackground(&context, nullptr);
 		failVideoLoad({}, proUpgradeMessage);
 		return 1;
@@ -4331,7 +4494,7 @@ static int loadImage(void* ptr) {
 		setVideoControlsVisible(false);
 		setShowStereoSettings(false);
 		setDisplay3D(false);
-		setStereoMode(Native);
+		refreshDisplay3D(Color_Only);
 		context.displayMenu = false;
 		getIcon(IconType::Options).image = IconType::Options;
 		Core::drawText(&context, "Reading Disc...", Image::helpFont,
@@ -4403,7 +4566,12 @@ static int loadImage(void* ptr) {
 		// Video controls and stereo settings occupy the same UI area.
 		// Close the stereo panel before showing controls for the new video.
 		setShowStereoSettings(false);
-		const bool preserveMonoVideo3D = Licensing::Service::isLicensed() && display3D &&
+		// Disc browsing clears display3D for its flat UI. Starting a mono title
+		// in Color + Depth still needs inference, including automatic playback.
+		const bool discDepthRequested = preferredStereoMode == RGB_Depth &&
+			(discType == DiscSource::Type::Dvd || discType == DiscSource::Type::Bluray);
+		const bool preserveMonoVideo3D = Licensing::Service::isLicensed() &&
+			(display3D || discDepthRequested) &&
 			fileList[fileIndex].type == Color_Only;
 		// Keep the current 3D presentation visible while the replacement video
 		// initializes. This applies to both source-stereo and inferred-depth video.
@@ -4510,11 +4678,13 @@ static int loadImage(void* ptr) {
 	return result;
 }
 
+// Queue a media selection for the main loop to load when current work permits it.
 static void deferMediaLoad(const std::vector<std::string>& files) {
 	if (files.empty()) return;
 	deferredMediaFiles = files;
 }
 
+// Apply a pending media selection after loading and conversion activity has settled.
 static void serviceDeferredMediaLoad() {
 	if (deferredMediaFiles.empty() || isConverting || doingPreload || context.loading)
 		return;
@@ -4522,6 +4692,7 @@ static void serviceDeferredMediaLoad() {
 	auto files = std::move(deferredMediaFiles);
 	discTitleMenu.close();
 	Image::discMenuTexture = nullptr;
+	Image::discMenuDepthTexture = nullptr;
 	discTrackSelectionRequested = false;
 	if (Image::discBackgroundTexture) Image::updateDiscBackground(&context, nullptr);
 	selectedDiscTitle = -1;
@@ -4534,6 +4705,7 @@ static void serviceDeferredMediaLoad() {
 
 static std::filesystem::path runtimeDepthDirectory();
 
+// Copy a browser image into application-owned storage and open it with the requested source format.
 static std::string openBrowserImage(const BrowserBridge::Request& request) {
 	// Own the source before acknowledging the one-shot native host. The image
 	// and its depth input must survive closing the tab or disconnecting Firefox.
@@ -4557,6 +4729,7 @@ static std::string openBrowserImage(const BrowserBridge::Request& request) {
 	stopCapture();
 	discTitleMenu.close();
 	Image::discMenuTexture = nullptr;
+	Image::discMenuDepthTexture = nullptr;
 	if (Image::discBackgroundTexture) Image::updateDiscBackground(&context, nullptr);
 	selectedDiscTitle = -1;
 	discTrackSelectionRequested = false;
@@ -4575,6 +4748,7 @@ static std::string openBrowserImage(const BrowserBridge::Request& request) {
 	return {};
 }
 
+// Service asynchronous work, advance playback and UI animations, and render the next application frame.
 SDL_AppResult SDL_AppIterate(void* appstate) {
 	MediaOpenDialog::poll();
 	Licensing::Service::poll();
@@ -4584,6 +4758,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		if (blurayMediaActive) {
 			discTitleMenu.close();
 			Image::discMenuTexture = nullptr;
+			Image::discMenuDepthTexture = nullptr;
 			Image::updateDiscBackground(&context, nullptr);
 			selectedDiscPath.clear();
 			selectedDiscTitle = -1;
@@ -4617,6 +4792,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	}
 	if (const auto error = discTitleMenu.takeError(); !error.empty()) {
 		Image::discMenuTexture = nullptr;
+		Image::discMenuDepthTexture = nullptr;
 		Image::updateDiscBackground(&context, nullptr);
 		failVideoLoad(error, "Problem Reading Disc");
 	}
@@ -4630,10 +4806,11 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		Image::displayHelp = false;
 		Image::displayTip = false;
 		setDisplay3D(false);
-		setStereoMode(Native);
+		refreshDisplay3D(Color_Only);
 		doneLoadingImage = true;
 	}
 	Image::discMenuTexture = discTitleMenu.texture();
+	Image::discMenuDepthTexture = discTitleMenu.depthTexture();
 	static std::shared_ptr<SDL_Surface> discBackgroundPreview;
 	static bool discBrowserWasVisible = false;
 	if (discTitleMenu.visible()) {
@@ -4676,6 +4853,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	context.deltaTime = timeNow - lastTime;
 	lastTime = timeNow;
 
+	// Smooth frame timing before driving fades and other UI interpolation.
 	deltaTimes[deltaIndex] = context.deltaTime;
 	deltaIndex = (deltaIndex + 1) % deltaCount;
 
@@ -4689,6 +4867,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	Image::infoCurrentVisibility = Utils::tween(Image::infoCurrentVisibility,
 		Image::infoTargetVisibility, visibilitySpeed * deltaAverage);
 
+	// Promote a finished preload before processing navigation and depth completions for this frame.
 	if (preloadNavigationReady && pendingPreloadNavigation >= 0) {
 		const int loadedIndex = pendingPreloadNavigation;
 		preloadNavigationReady = false;
@@ -4796,6 +4975,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		endPreload(true);
 	}
 
+	// Resume depth conversion only after the navigation burst has been idle long enough.
 	if (rapidBrowseMode && lastRapidBrowseNavigation > 0.0 &&
 		timeNow - lastRapidBrowseNavigation >= rapidBrowseIdleTime) {
 		const bool restore3D = rapidBrowseRestore3D;
@@ -4835,6 +5015,8 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 
 	static auto zoomSpeed = 16.0;
 
+	// Consume accumulated wheel movement, then ease zoom and constrain panning to the visible image
+	// bounds.
 	if (wheelSpeed != 0) {
 		static auto zoomFactor = 1.11;
 		if (wheelSpeed > 0)
@@ -4947,6 +5129,8 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 
 	serviceDeferredDepthReload();
 
+	// Handle the folder chooser result after rendering so its disc or batch operation can start from
+	// the main loop.
 	if (doingFileOp && !openFolderResult.empty()) {
 		if (openFolderResult == "ERROR") {
 			doingFileOp = false;
@@ -5007,6 +5191,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		depthGenerationError = false;
 	}
 
+	// Once batch inference finishes, enumerate its input images for incremental GPU export.
 	if (batchDepthGeneration && !depthGenAlive) {
 		waitForDepthThread();
 		batchDepthGeneration = false;
@@ -5035,17 +5220,20 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	return SDL_APP_CONTINUE;
 }
 
+// Test whether a point lies strictly inside a rectangular UI region.
 bool withinArea(glm::vec2 point, glm::vec2 topLeft, glm::vec2 bottomRight) {
 	return point.x > topLeft.x && point.x < bottomRight.x &&
 		point.y > topLeft.y && point.y < bottomRight.y;
 }
 
+// Convert aligned canvas coordinates to window pixels using the current display scale.
 glm::vec2 getCoordinates(glm::vec4 positionAlignment, glm::vec2 aspectScale = glm::vec2(1.0)) {
 	auto position = glm::vec2(positionAlignment.x, positionAlignment.y);
 	auto alignment = glm::vec2(positionAlignment.z, positionAlignment.w);
 	return position * aspectScale * context.displayScale + alignment * windowSize;
 }
 
+// Hit-test the slider track with extra vertical tolerance for easier dragging.
 static bool isInsideSliderTrack(const Icon& icon, const glm::vec2& aspectScale) {
 	if (icon.mode != IconMode::Slider || icon.slider.size.x <= 0.0f) return false;
 	const auto canvas = icon.canvas();
@@ -5060,6 +5248,7 @@ static bool isInsideSliderTrack(const Icon& icon, const glm::vec2& aspectScale) 
 		context.mouse.y < center.y + size.y * 0.5f;
 }
 
+// Map the mouse position to a clamped fraction of the slider track.
 static double getSliderPercentAtMouse(const Icon& icon, const glm::vec2& aspectScale) {
 	const auto canvas = icon.canvas();
 	const auto center = getCoordinates(glm::vec4(canvas.position, canvas.alignment), aspectScale);
@@ -5068,10 +5257,11 @@ static double getSliderPercentAtMouse(const Icon& icon, const glm::vec2& aspectS
 		(context.mouse.x - (center.x - width * 0.5f)) / width, 0.0f, 1.0f) : 0.0;
 }
 
+// Update control availability, hover states, and menu hit tests for the current mouse position.
 void checkMouseState() {
 	isIconCaptured = false;
 	auto aspectScale = glm::vec2(1.0);
-	if (preferredStereoMode == SBS_Full && isFullscreen && !discTitleMenu.visible())
+	if (preferredStereoMode == SBS_Full && isFullscreen)
 		aspectScale = glm::vec2(2.0, 1.0);
 	const bool currentSourceHasDepth = activeScreenCapture
 		? videoDepthFrameLoaded || videoDepthProcessor.running()
@@ -5264,6 +5454,7 @@ void checkMouseState() {
 	}
 }
 
+// Hide overlay controls and optionally suppress the custom or system cursor.
 void hideUI(bool hideCustomMouse, bool hideRealMouse) {
 	isIconCaptured = false;
 	for (auto& icon : appIcons) {
@@ -5282,6 +5473,7 @@ void hideUI(bool hideCustomMouse, bool hideRealMouse) {
 	}
 }
 
+// Determine whether fullscreen presentation should use the rendered cursor.
 static bool shouldShowCustomCursor() {
 	// SBS and RGBD split the UI only in fullscreen (see Image::draw).
 	// A saved stereo preference alone must not replace the windowed OS cursor.
@@ -5289,6 +5481,7 @@ static bool shouldShowCustomCursor() {
 		(SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) != 0;
 }
 
+// Switch cursor visibility between the application overlay and the operating system.
 static void showCustomCursor(bool show) {
 	if (shouldShowCustomCursor() && show && SDL_GetMouseFocus() == context.window) {
 		if (mouseMoveDelay < 0)
@@ -5326,6 +5519,7 @@ struct NativeGpuUpscaleRequest {
 	bool complete = false;
 };
 
+// Run GPU resizing on the render thread, queuing and waiting when called by a background worker.
 static SDL_Surface* upscaleNativeSurfaceOnRenderThread(SDL_Surface* source,
 		int width, int height, const SDL_Surface* guide = nullptr) {
 	if (source == nullptr) return nullptr;
@@ -5351,6 +5545,7 @@ static SDL_Surface* upscaleNativeSurfaceOnRenderThread(SDL_Surface* source,
 	return request.result;
 }
 
+// Execute a pending worker-requested GPU operation and wake its waiting caller.
 static void serviceNativeGpuUpscale() {
 	NativeGpuUpscaleRequest* request = nullptr;
 	{
@@ -5372,6 +5567,7 @@ static void serviceNativeGpuUpscale() {
 	nativeGpuUpscaleCondition.notify_all();
 }
 
+// Sample a clamped surface pixel as normalized RGB for depth refinement.
 static glm::vec3 sampleNativeRgb(const SDL_Surface* surface, int x, int y) {
 	if (surface == nullptr || surface->w <= 0 || surface->h <= 0)
 		return glm::vec3(0.0f);
@@ -5510,6 +5706,7 @@ static SDL_Surface* makeNativeDepthSurfaceForOutput(const DepthEstimator::Result
 	return result;
 }
 
+// Choose aspect-preserving output dimensions from the resolution preset and UHD limit.
 static glm::ivec2 getNativeDepthSize(int sourceWidth, int sourceHeight) {
 	if (sourceWidth <= 0 || sourceHeight <= 0) return { 0, 0 };
 
@@ -5532,6 +5729,7 @@ static glm::ivec2 getNativeDepthSize(int sourceWidth, int sourceHeight) {
 	};
 }
 
+// Pack resized color and depth side by side into an RGB-D surface.
 static SDL_Surface* makeNativeRgbdSurface(const SDL_Surface* color,
 		const SDL_Surface* depth, int width, int height) {
 	SDL_Surface* output = SDL_CreateSurface(width * 2, height, SDL_PIXELFORMAT_RGBA32);
@@ -5557,11 +5755,13 @@ static SDL_Surface* makeNativeRgbdSurface(const SDL_Surface* color,
 	return output;
 }
 
+// Choose the persistent export path for a source's generated RGB-D image.
 static std::filesystem::path nativeDepthOutputPath(const std::filesystem::path& input) {
 	return input.parent_path() / exportFolderName /
 		(input.stem().string() + "_rgbd.jpg");
 }
 
+// Encode an RGBA surface as QOI, removing row padding before writing it.
 static bool saveQoiSurface(const SDL_Surface* surface,
 	const std::filesystem::path& outputPath) {
 	if (surface == nullptr || surface->format != SDL_PIXELFORMAT_RGBA32) return false;
@@ -5599,6 +5799,7 @@ static bool saveQoiSurface(const SDL_Surface* surface,
 	return output != nullptr && written == static_cast<size_t>(encodedSize) && closed;
 }
 
+// Save an intermediate RGB-D image using the selected lossless or JPEG encoding.
 static bool saveTemporaryRgbdSurface(SDL_Surface* surface,
 	const std::filesystem::path& outputPath) {
 	if (surface == nullptr) return false;
@@ -5608,6 +5809,7 @@ static bool saveTemporaryRgbdSurface(SDL_Surface* surface,
 	return IMG_SaveJPG(surface, outputPath.string().c_str(), 90);
 }
 
+// Remove application runtime directories older than one day.
 static void cleanupStaleRuntimeDepthDirectories(
 	const std::filesystem::path& runtimeRoot) {
 	std::error_code error;
@@ -5635,6 +5837,7 @@ static void cleanupStaleRuntimeDepthDirectories(
 	}
 }
 
+// Create and reuse a session-specific directory for generated media.
 static std::filesystem::path runtimeDepthDirectory() {
 	static const auto directory = [] {
 		std::filesystem::path baseDirectory;
@@ -5669,12 +5872,14 @@ static std::filesystem::path runtimeDepthDirectory() {
 	return directory;
 }
 
+// Choose the session-local RGB-D filename using the selected intermediate encoding.
 static std::filesystem::path runtimeDepthOutputPath(const std::filesystem::path& input) {
 	const auto directory = runtimeDepthDirectory();
 	return directory.empty() ? std::filesystem::path{} :
 		directory / (input.stem().string() + "_rgbd" + (losslessDepthmaps ? ".qoi" : ".jpg"));
 }
 
+// Enable four-times super resolution only for small source images.
 static int nativeSuperResolutionScale(const SDL_Surface* color) {
 	if (color == nullptr) return 0;
 	const int longestSide = std::max(color->w, color->h);
@@ -5682,6 +5887,7 @@ static int nativeSuperResolutionScale(const SDL_Surface* color) {
 	return 0;
 }
 
+// Try model-based enlargement of eligible still images, retaining the original if inference fails.
 static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
 	StereoFormat sourceType) {
 	if (color == nullptr || sourceType == Color_Plus_Depth) return color;
@@ -5725,6 +5931,7 @@ static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
 	return result;
 }
 
+// Resize color to the output preset on the GPU, retaining the source on failure.
 static SDL_Surface* upscaleNativeColorSurface(SDL_Surface* color) {
 	if (color == nullptr) return color;
 	const auto outputSize = getNativeDepthSize(color->w, color->h);
@@ -5739,6 +5946,7 @@ static SDL_Surface* upscaleNativeColorSurface(SDL_Surface* color) {
 	return result;
 }
 
+// Prepare eligible color images with optional super resolution followed by output resizing.
 static SDL_Surface* prepareNativeColorSurface(SDL_Surface* color,
 	StereoFormat sourceType) {
 	if (color == nullptr || sourceType == Color_Plus_Depth) return color;
@@ -5746,6 +5954,8 @@ static SDL_Surface* prepareNativeColorSurface(SDL_Surface* color,
 	return upscaleNativeColorSurface(color);
 }
 
+// Build an upscaled display frame when full-resolution RGBA data is available and the source permits
+// it.
 static std::shared_ptr<VideoFrame> prepareVideoFrameForDisplay(
 	const std::shared_ptr<VideoFrame>& frame) {
 	if (!activeVideo || frame == nullptr || fileList.empty() ||
@@ -5789,6 +5999,8 @@ static std::shared_ptr<VideoFrame> prepareVideoFrameForDisplay(
 	return result;
 }
 
+// Generate depth on the worker thread, prepare RGB-D output, and queue successful results for the main
+// loop.
 static int nativeDepthRun(void* ptr) {
 	auto request = static_cast<NativeDepthRequest*>(ptr);
 	const auto inputPath = request->input;
@@ -5799,7 +6011,7 @@ static int nativeDepthRun(void* ptr) {
 	delete request;
 
 	const auto modelOption = std::clamp(
-		menuSelection[ChoiceModel.label], 0, static_cast<int>(depthModelFiles.size()) - 1);
+		appliedDepthModelOption, 0, static_cast<int>(depthModelFiles.size()) - 1);
 	if (!nativeDepthEstimatorLoaded) {
 		DepthEstimator::Config config;
 		const auto modelDirectoryPath = modelDirectory.empty()
@@ -5919,11 +6131,13 @@ static int nativeDepthRun(void* ptr) {
 	return 0;
 }
 
+// Publish a completed depth conversion for generation-checked handling on the main thread.
 static void conversionCompleted(const char* path, int imageId, std::uint64_t generation) {
 	std::lock_guard lock(depthCompletionMutex);
 	depthCompletions.push_back({path, imageId, generation});
 }
 
+// Consume completed conversions and promote only results belonging to the current request.
 static void serviceDepthCompletions() {
 	std::deque<NativeDepthCompletion> completions;
 	{
@@ -5980,6 +6194,7 @@ static void serviceDepthCompletions() {
 	}
 }
 
+// Replace any previous depth job and launch one worker with ownership of the supplied input surface.
 static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int imageId,
 	SDL_Surface* inputSurface) {
 	if (depthGenAlive.load(std::memory_order_acquire)) {
@@ -6012,6 +6227,7 @@ static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int 
 	return 0;
 }
 
+// Request depth for a file, promoting matching speculative work when it becomes the current image.
 static void callDepthGen(int imageIndex, bool speculative, SDL_Surface* inputSurface) {
 	if (!speculative) {
 		// A preloaded image can be promoted to the current image while its
@@ -6035,6 +6251,7 @@ static void callDepthGen(int imageIndex, bool speculative, SDL_Surface* inputSur
 	}
 }
 
+// Dispatch window, keyboard, mouse, and drop events to the appropriate application controls.
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 	if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
 	if (event->type == SDL_EVENT_DISPLAY_ADDED || event->type == SDL_EVENT_DISPLAY_REMOVED) {
@@ -6062,6 +6279,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		if (discTitleMenu.handleEvent(*event, context.window)) {
 			if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) leftClickConsumedByUI = true;
 			Image::discMenuTexture = discTitleMenu.texture();
+			Image::discMenuDepthTexture = discTitleMenu.depthTexture();
 			return SDL_APP_CONTINUE;
 		}
 	}
@@ -6350,8 +6568,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 					if (choice.readOnly || !choice.active) continue;
 					auto optionIndex = (*context.menuRollover)[choice.label];
 					if (optionIndex >= 0) {
+						const bool defer = deferredOption(choice.label);
+						if (defer)
+							pendingOptionOriginals.try_emplace(choice.label,
+								(*context.menuSelection)[choice.label]);
 						(*context.menuSelection)[choice.label] = optionIndex;
-						(*context.menuCallback)[choice.label](optionIndex);
+						if (!defer) (*context.menuCallback)[choice.label](optionIndex);
 					}
 				}
 			}
@@ -6479,11 +6701,13 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 	return SDL_APP_CONTINUE;
 }
 
+// Stop workers and services, save preferences, and release session media and graphics resources.
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
 	Licensing::Service::close();
 	MediaOpenDialog::close();
 	discTitleMenu.shutdown(&context);
 	Image::discMenuTexture = nullptr;
+	Image::discMenuDepthTexture = nullptr;
 	browserBridge.stop();
 	stopVideoDepth();
 	screenCapture.stop();

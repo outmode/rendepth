@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+// Enlarge depth pixels through a temporary GPU blit and read them back for export.
 static bool gpuUpscaleDepth(const std::vector<Uint32>& sourcePixels,
 	int sourceWidth, int sourceHeight, int outputWidth, int outputHeight,
 	std::vector<Uint32>& outputPixels) {
@@ -90,6 +91,7 @@ static bool gpuUpscaleDepth(const std::vector<Uint32>& sourcePixels,
 	return success;
 }
 
+// Evaluate the Catmull-Rom kernel used by the CPU depth resampler.
 static float catmullRomWeight(float distance) {
 	const float x = std::abs(distance);
 	if (x <= 1.0f) return 1.5f * x * x * x - 2.5f * x * x + 1.0f;
@@ -97,6 +99,7 @@ static float catmullRomWeight(float distance) {
 	return 0.0f;
 }
 
+// Sample a depth map with clamped Catmull-Rom interpolation.
 static float sampleCatmullRomDepth(const std::vector<float>& source,
 		int sourceWidth, int sourceHeight, float x, float y) {
 	const int baseX = static_cast<int>(std::floor(x));
@@ -121,6 +124,8 @@ static float sampleCatmullRomDepth(const std::vector<float>& source,
 		? valueSum / totalWeight : 0.0f;
 }
 
+// Run a depth model on an input image and save its output using the requested provider and upscaling
+// path.
 int main(int argc, char** argv) {
 	if (argc < 4) {
 		std::cerr << "Usage: DepthTest <model.onnx> <input-image> <output-depth.png> "

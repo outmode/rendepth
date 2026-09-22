@@ -52,15 +52,18 @@ struct Scan {
     bool autoPlayMainFeature = false;
     std::optional<int> automaticSelection;
 };
+// Format a title duration as minutes and seconds, adding hours when needed.
 std::string durationText(double seconds) {
     const int total = static_cast<int>(std::max(0.0, seconds));
     return total >= 3600 ? std::format("{}:{:02}:{:02}", total / 3600, total / 60 % 60, total % 60)
         : std::format("{}:{:02}", total / 60, total % 60);
 }
+// Combine duration and chapter count into a compact title-card label.
 std::string chapterText(const Title& title) {
     return std::format("{} / {} {}", durationText(title.duration), title.chapters,
         title.chapters == 1 ? "Chapter" : "Chapters");
 }
+// Mark a clearly dominant feature-length title as a likely main feature when the metadata permits it.
 void suggestMainFeature(std::vector<Title>& titles, bool allowDurationGuess) {
     // A dominant, feature-length title is a useful hint, not an authored name.
     // Avoid guessing on episodic discs or discs with multiple similar-length cuts.
@@ -74,6 +77,7 @@ void suggestMainFeature(std::vector<Title>& titles, bool allowDurationGuess) {
     }
 }
 #ifdef RENDEPTH_ENABLE_FFMPEG
+// Read the selected playlist's title and audio metadata for the disc menu.
 void readTitleMetadata(AVFormatContext* format, int stream, Title& title) {
     // Stream/container tags refer to this selected playlist. Blu-ray menu-title
     // numbers are a different namespace and must not be matched to playlist IDs.
@@ -99,6 +103,7 @@ struct PreviewInput {
     AVCodecContext* codec = nullptr;
     AVFrame* frame = av_frame_alloc();
     AVPacket* packet = av_packet_alloc();
+    // Release all FFmpeg resources owned by a thumbnail probe.
     ~PreviewInput() {
         av_packet_free(&packet);
         av_frame_free(&frame);
@@ -110,8 +115,11 @@ struct PreviewInput {
 struct PreviewDeadline {
     Scan* scan;
     std::chrono::steady_clock::time_point end;
+    // Stop preview decoding when the scan is cancelled or its time budget expires.
     bool stopped() const { return scan->cancel || std::chrono::steady_clock::now() > end; }
 };
+// Decode a representative title thumbnail within a deadline, preferring a visible frame over a dark
+// opening.
 template<class Reader>
 Surface thumbnail(Reader& reader, Title& title, Scan& scan, const char* demuxer) {
     std::string error;
@@ -193,6 +201,7 @@ Surface thumbnail(Reader& reader, Title& title, Scan& scan, const char* demuxer)
 }
 #endif
 
+// Scan disc titles on a worker and publish metadata and previews incrementally for the menu.
 template<class Reader>
 void scanDisc(Reader& reader, const std::filesystem::path& path, const std::shared_ptr<Scan>& scan, const char* demuxer) {
     std::string error;
@@ -283,16 +292,20 @@ struct DiscTitleMenu::Impl {
     std::vector<Worker> workers;
     std::shared_ptr<Scan> scan;
     SDL_GPUTexture* texture = nullptr;
+    SDL_GPUTexture* depthTexture = nullptr;
     TTF_Font* fallbackFont = nullptr;
     bool checkedFallbackFont = false;
     bool active = false, visible = false, dirty = true;
     int width = 0, height = 0, page = 0, focus = 0, columns = 3, perPage = 6;
+    int views = 1;
     int hovered = -1;
     unsigned revision = 0;
     std::optional<int> pending;
     BackgroundStyle backgroundStyle = Dark;
     std::vector<SDL_Rect> cards;
+    // Request cancellation of the current disc scan.
     void stop() { if (scan) scan->cancel = true; }
+    // Join completed scan workers without waiting for scans that are still active.
     void reap() {
         for (auto it = workers.begin(); it != workers.end();) {
             if (it->scan->done) { it->thread.join(); it = workers.erase(it); }
@@ -300,11 +313,14 @@ struct DiscTitleMenu::Impl {
         }
     }
 };
+// Allocate the menu's private scan, layout, and rendering state.
 DiscTitleMenu::DiscTitleMenu() : impl(std::make_unique<Impl>()) {}
+// Cancel and join every remaining scan worker before destroying menu state.
 DiscTitleMenu::~DiscTitleMenu() {
     for (auto& worker : impl->workers) worker.scan->cancel = true;
     for (auto& worker : impl->workers) worker.thread.join();
 }
+// Begin a background scan for a newly opened disc and reset menu navigation.
 void DiscTitleMenu::open(const std::filesystem::path& path, bool autoPlayMainFeature) {
     close();
     impl->reap();
@@ -323,7 +339,9 @@ void DiscTitleMenu::open(const std::filesystem::path& path, bool autoPlayMainFea
         scan->done = true;
     })});
 }
+// Hide the menu and cancel its current scan and pending selection.
 void DiscTitleMenu::close() { impl->stop(); impl->active = false; impl->visible = false; impl->pending.reset(); }
+// Join scan workers and release menu textures and fallback fonts before renderer shutdown.
 void DiscTitleMenu::shutdown(Context* context) {
     close();
     for (auto& worker : impl->workers) worker.scan->cancel = true;
@@ -331,10 +349,14 @@ void DiscTitleMenu::shutdown(Context* context) {
     impl->workers.clear(); impl->scan.reset();
     if (impl->texture) SDL_ReleaseGPUTexture(context->device, impl->texture);
     impl->texture = nullptr;
+    if (impl->depthTexture) SDL_ReleaseGPUTexture(context->device, impl->depthTexture);
+    impl->depthTexture = nullptr;
     if (impl->fallbackFont) TTF_CloseFont(impl->fallbackFont);
     impl->fallbackFont = nullptr;
 }
+// Report whether the menu has a visible rendered page.
 bool DiscTitleMenu::visible() const { return impl->visible; }
+// Return a scan failure and close the failed menu.
 std::string DiscTitleMenu::takeError() {
     if (!impl->active) return {};
     std::string error;
@@ -345,6 +367,7 @@ std::string DiscTitleMenu::takeError() {
     if (!error.empty()) close();
     return error;
 }
+// Move between title pages with wraparound and reset focus for the new page.
 void DiscTitleMenu::pageBy(int delta) {
     if (!visible() || impl->pending) return;
     std::lock_guard lock(impl->scan->mutex);
@@ -354,11 +377,13 @@ void DiscTitleMenu::pageBy(int delta) {
     impl->hovered = -1;
     impl->dirty = true;
 }
+// Report whether the visible menu contains more than one page of titles.
 bool DiscTitleMenu::hasPages() const {
     if (!visible()) return false;
     std::lock_guard lock(impl->scan->mutex);
     return impl->scan->titles.size() > static_cast<size_t>(impl->perPage);
 }
+// Choose a stable disc backdrop from the main-feature candidate or longest title.
 std::shared_ptr<SDL_Surface> DiscTitleMenu::backgroundPreview() const {
     if (!visible()) return {};
     std::lock_guard lock(impl->scan->mutex);
@@ -371,7 +396,11 @@ std::shared_ptr<SDL_Surface> DiscTitleMenu::backgroundPreview() const {
     });
     return (feature != titles.end() ? *feature : titles.front()).preview;
 }
+// Expose the visible menu's color texture to the main renderer.
 SDL_GPUTexture* DiscTitleMenu::texture() const { return impl->visible ? impl->texture : nullptr; }
+// Expose the visible menu's depth texture for stereo presentation.
+SDL_GPUTexture* DiscTitleMenu::depthTexture() const { return impl->visible ? impl->depthTexture : nullptr; }
+// Describe the hovered title's duration, chapters, and available audio tracks.
 std::string DiscTitleMenu::hoveredMetadata() const {
     if (!visible() || impl->hovered < 0) return {};
     std::lock_guard lock(impl->scan->mutex);
@@ -390,6 +419,7 @@ std::string DiscTitleMenu::hoveredMetadata() const {
         details += " / " + title.label;
     return details;
 }
+// Consume a manual or automatic title selection after the disc scan has completed.
 std::optional<int> DiscTitleMenu::takeSelection() {
     if (!impl->active || !impl->scan || !impl->scan->done) return {};
     if (!impl->pending && impl->scan->autoPlayMainFeature) {
@@ -402,6 +432,7 @@ std::optional<int> DiscTitleMenu::takeSelection() {
     return result;
 }
 
+// Handle title-menu pointer and keyboard navigation and selection.
 bool DiscTitleMenu::handleEvent(const SDL_Event& e, SDL_Window* window) {
     if (!visible()) return false;
     const bool pointer = e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP;
@@ -435,7 +466,9 @@ bool DiscTitleMenu::handleEvent(const SDL_Event& e, SDL_Window* window) {
         int w, h; SDL_GetWindowSize(window, &w, &h);
         float x = e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.x : e.button.x;
         float y = e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.y : e.button.y;
-        SDL_Point p{static_cast<int>(x * impl->width / std::max(1, w)), static_cast<int>(y * impl->height / std::max(1, h))};
+        const float viewWidth = std::max(1, w) / static_cast<float>(impl->views);
+        if (x >= viewWidth && impl->views == 2) x -= viewWidth;
+        SDL_Point p{static_cast<int>(x * impl->width / viewWidth), static_cast<int>(y * impl->height / std::max(1, h))};
         int hover = -1;
         for (size_t i = 0; i < impl->cards.size(); ++i) if (SDL_PointInRect(&p, &impl->cards[i])) hover = static_cast<int>(i);
         if (impl->hovered != hover) { impl->hovered = hover; impl->dirty = true; }
@@ -447,6 +480,7 @@ bool DiscTitleMenu::handleEvent(const SDL_Event& e, SDL_Window* window) {
     return false;
 }
 
+// Rebuild title cards and their color/depth textures when scan results or layout state change.
 void DiscTitleMenu::update(Context* context, TTF_Font* font) {
     impl->reap();
     if (!impl->active || !font) return;
@@ -468,8 +502,12 @@ void DiscTitleMenu::update(Context* context, TTF_Font* font) {
             if (impl->fallbackFont) break;
         }
     }
-    // Compose at logical window resolution; the GPU scales this for high DPI.
+    // Full SBS uses an undistorted canvas per eye. Half SBS/RGBD retain
+    // the full-width canvas, matching the rest of the compressed split UI.
     int w, h; SDL_GetWindowSize(context->window, &w, &h);
+    impl->views = context->fullscreen && (context->mode == SBS_Full ||
+        context->mode == SBS_Half || context->mode == RGB_Depth) ? 2 : 1;
+    if (context->fullscreen && context->mode == SBS_Full) w /= 2;
     w = std::max(1, w); h = std::max(1, h);
     std::vector<Title> titles;
     std::string name;
@@ -485,7 +523,10 @@ void DiscTitleMenu::update(Context* context, TTF_Font* font) {
     impl->width = w; impl->height = h; impl->dirty = false;
     impl->backgroundStyle = context->backgroundStyle;
     Surface canvas(SDL_CreateSurface(w, h, SDL_PIXELFORMAT_RGBA32), SDL_DestroySurface);
-    if (!canvas) return;
+    Surface depthCanvas(SDL_CreateSurface(w, h, SDL_PIXELFORMAT_RGBA32), SDL_DestroySurface);
+    if (!canvas || !depthCanvas) return;
+    // Match the options UI: 0.5 background, 0.75 blocks and 1.0 highlight.
+    SDL_FillSurfaceRect(depthCanvas.get(), nullptr, SDL_MapSurfaceRGBA(depthCanvas.get(), 128, 128, 128, 255));
     Style style;
     auto theme = [&](Style::Color color) { auto c = style.getColor(color, Style::Alpha::Solid); return SDL_Color{Uint8(c.r*255), Uint8(c.g*255), Uint8(c.b*255), 255}; };
     const auto pink = theme(Style::Color::Pink), white = theme(Style::Color::White), gray = theme(Style::Color::Gray);
@@ -497,7 +538,8 @@ void DiscTitleMenu::update(Context* context, TTF_Font* font) {
     auto fill = [&](SDL_Rect rect, SDL_Color color) { SDL_FillSurfaceRect(canvas.get(), &rect, SDL_MapSurfaceRGBA(canvas.get(), color.r, color.g, color.b, color.a)); };
     // Transparent content lets the main renderer supply the user's background.
     fill({0,0,w,h}, {0,0,0,0});
-    auto text = [&](const std::string& value, int x, int y, int size, SDL_Color color, int maxWidth) {
+    auto text = [&](const std::string& value, int x, int y, int size, SDL_Color color, int maxWidth,
+                    SDL_Surface* target = nullptr) {
         auto* textFont = TTF_CopyFont(font);
         if (!textFont) return;
         TTF_SetFontSize(textFont, size);
@@ -523,11 +565,10 @@ void DiscTitleMenu::update(Context* context, TTF_Font* font) {
         TTF_CloseFont(textFont);
         if (!rendered) return;
         SDL_Rect source{0,0,std::max(0, std::min(maxWidth, rendered->w)),rendered->h};
-        SDL_Rect dest{x,y,source.w,source.h}; SDL_BlitSurface(rendered.get(), &source, canvas.get(), &dest);
+        SDL_Rect dest{x,y,source.w,source.h}; SDL_BlitSurface(rendered.get(), &source, target ? target : canvas.get(), &dest);
     };
     const int margin = std::min(std::max(24, w / 5), 112), gap = 18;
     const int contentW = std::max(1, std::min(1200, w - margin * 2)), left = (w - contentW) / 2;
-    text(name.empty() ? "Blu-ray / DVD" : name, left, 78, 28, heading, contentW);
     impl->columns = w >= 1120 ? 3 : w >= 680 ? 2 : 1;
     const int cardW = (contentW - gap*(impl->columns-1)) / impl->columns;
     // Fit up to three rows while keeping thumbnails and metadata readable.
@@ -537,15 +578,28 @@ void DiscTitleMenu::update(Context* context, TTF_Font* font) {
     impl->perPage = rows * impl->columns;
     const int pages = std::max(1, (static_cast<int>(titles.size()) + impl->perPage-1) / impl->perPage);
     impl->page = std::clamp(impl->focus / impl->perPage, 0, pages-1);
+    const int visibleCards = std::min(impl->perPage,
+        static_cast<int>(titles.size()) - impl->page * impl->perPage);
+    const int visibleRows = (visibleCards + impl->columns - 1) / impl->columns;
+    // Center the heading, page status and populated card rows as one group.
+    // Empty slots on a short page must not push the visible content upward.
+    const int contentH = 73 + visibleRows * cardH + (visibleRows - 1) * gap + 2;
+    const int top = std::max(0, (h - contentH) / 2);
+    text(name.empty() ? "Blu-ray / DVD" : name, left, top, 28, heading, contentW);
+    text(name.empty() ? "Blu-ray / DVD" : name, left, top, 28, {255,255,255,255}, contentW, depthCanvas.get());
     impl->cards.clear();
     for (int n = 0; n < impl->perPage; ++n) {
         int index = impl->page * impl->perPage + n;
         if (index >= static_cast<int>(titles.size())) break;
         const auto& title = titles[index];
-        SDL_Rect card{left+(n%impl->columns)*(cardW+gap), 151+(n/impl->columns)*(cardH+gap),cardW,cardH};
+        SDL_Rect card{left+(n%impl->columns)*(cardW+gap), top+73+(n/impl->columns)*(cardH+gap),cardW,cardH};
         impl->cards.push_back(card);
         bool selected = impl->hovered == n || (impl->hovered < 0 && impl->focus == index);
         fill({card.x-2,card.y-2,card.w+4,card.h+4}, selected ? pink : light ? gray : SDL_Color{72,72,72,255});
+        const Uint8 depth = selected ? 255 : 191;
+        const SDL_Rect depthCard{card.x-2, card.y-2, card.w+4, card.h+4};
+        SDL_FillSurfaceRect(depthCanvas.get(), &depthCard,
+            SDL_MapSurfaceRGBA(depthCanvas.get(), depth, depth, depth, 255));
         const bool hovered = impl->hovered == n;
         fill(card, hovered ? pink : cardBackground);
         SDL_Rect picture{card.x,card.y,card.w,imageH};
@@ -564,8 +618,11 @@ void DiscTitleMenu::update(Context* context, TTF_Font* font) {
         text(chapterText(title),card.x+16,card.y+imageH+36,15,hovered ? white : caption,card.w-32);
     }
     const std::string pageStatus = impl->pending ? "Opening selected title..." : std::format("{} titles   /   Page {} of {}",titles.size(),impl->page+1,pages);
-    text(pageStatus,left,114,16,pink,contentW);
-    if (Core::uploadTexture(context, canvas.get(), &impl->texture, "Disc title browser") == 0)
+    text(pageStatus,left,top+36,16,pink,contentW);
+    text(pageStatus,left,top+36,16,{255,255,255,255},contentW,depthCanvas.get());
+    const bool colorUploaded = Core::uploadTexture(context, canvas.get(), &impl->texture, "Disc title browser") == 0;
+    const bool depthUploaded = Core::uploadTexture(context, depthCanvas.get(), &impl->depthTexture, "Disc title browser depth") == 0;
+    if (colorUploaded && depthUploaded)
         impl->visible = true;
     else
         impl->dirty = true;

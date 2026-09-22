@@ -12,6 +12,7 @@
 namespace Licensing {
 namespace {
 constexpr size_t responseLimit = 65536;
+// Percent-encode a form value before sending it to the licensing API.
 std::string encode(const std::string& input) {
     static constexpr char hex[] = "0123456789ABCDEF";
     std::string out;
@@ -22,9 +23,11 @@ std::string encode(const std::string& input) {
     }
     return out;
 }
+// Send a bounded licensing API request through the platform HTTP backend.
 HttpResponse post(std::string_view endpoint, const std::string& form) {
     HttpResponse result;
 #ifdef _WIN32
+    // Close each Windows HTTP handle automatically when the request scope ends.
     struct Handle { HINTERNET value; ~Handle() { if (value) WinHttpCloseHandle(value); } };
     Handle session{WinHttpOpen(L"Rendepth/3.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)};
@@ -88,6 +91,7 @@ HttpResponse post(std::string_view endpoint, const std::string& form) {
 #endif
     return result;
 }
+// Read a bounded JSON string without accepting embedded null characters.
 std::string string(const rapidjson::Value& object, const char* name) {
     if (!object.IsObject() || !object.HasMember(name) || !object[name].IsString()) return {};
     const auto& value = object[name];
@@ -95,9 +99,12 @@ std::string string(const rapidjson::Value& object, const char* name) {
     if (text.size() > 4096 || text.find('\0') != std::string::npos) return {};
     return text;
 }
+// Read an unsigned identifier from a licensing response, defaulting to zero when absent or invalid.
 std::uint64_t id(const rapidjson::Value& object, const char* name) {
     return object.IsObject() && object.HasMember(name) && object[name].IsUint64() ? object[name].GetUint64() : 0;
 }
+// Translate HTTP and JSON results into activation status and validate perpetual-license response
+// fields.
 Result parse(const HttpResponse& response, bool activation) {
     if (!response.status) return {Status::NetworkError,
         "Could not contact the licensing service. Check your connection. If activation was interrupted, contact support before repeated attempts."};
@@ -132,10 +139,13 @@ Result parse(const HttpResponse& response, bool activation) {
     return result;
 }
 }
+// Use an injected transport for tests or the real HTTP transport by default.
 LemonSqueezyClient::LemonSqueezyClient(Transport transport) : transport_(transport ? std::move(transport) : post) {}
+// Submit a license key for activation and interpret the service response.
 Result LemonSqueezyClient::activate(const std::string& key) {
     return parse(transport_("/v1/licenses/activate", "license_key=" + encode(key) + "&instance_name=" + encode("Rendepth")), true);
 }
+// Release the activation instance described by the saved license record.
 Result LemonSqueezyClient::deactivate(const Record& record) {
     return parse(transport_("/v1/licenses/deactivate", "license_key=" + encode(record.key) + "&instance_id=" + encode(record.instanceId)), false);
 }

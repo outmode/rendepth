@@ -15,12 +15,15 @@
 #include <thread>
 
 static SDL_Surface* snapshot = nullptr;
+// Capture uploaded menu pixels as a CPU snapshot for inspection without a GPU renderer.
 int Core::uploadTexture(Context*, SDL_Surface* surface, SDL_GPUTexture**, const std::string&) {
     SDL_DestroySurface(snapshot);
     snapshot = SDL_DuplicateSurface(surface);
     return snapshot ? 0 : -1;
 }
+// Provide a no-op surface orientation dependency for this menu/playback test.
 SDL_Surface* Core::orientSurface(SDL_Surface* surface, const std::string&) { return surface; }
+// Wait for a decoded frame at or beyond the requested time, stopping on error or timeout.
 static bool waitForFrame(VideoPlayer& player, double minimum = 0.0) {
     const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(20);
     while (std::chrono::steady_clock::now() < end) {
@@ -31,6 +34,8 @@ static bool waitForFrame(VideoPlayer& player, double minimum = 0.0) {
     }
     return false;
 }
+// Exercise disc title scanning, menu interaction, title selection, and playback against a supplied disc
+// source.
 int main(int argc, char** argv) {
     if (argc < 2) { std::cerr << "Usage: DiscTitleMenuTest <Blu-ray source> [preview.png]\n"; return 1; }
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
@@ -56,6 +61,45 @@ int main(int argc, char** argv) {
         menu.shutdown(&context);
         TTF_CloseFont(font); SDL_DestroyWindow(context.window); TTF_Quit(); SDL_Quit();
         std::cout << "PASS: disc scan stays hidden and reports failure once\n";
+        return 0;
+    }
+    if (argc > 2 && std::string(argv[2]) == "--layout-only") {
+        menu.open(argv[1]);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (!menu.visible() && std::chrono::steady_clock::now() < deadline) {
+            menu.update(&context, font);
+            if (auto error = menu.takeError(); !error.empty()) { std::cerr << error << '\n'; return 28; }
+            SDL_Delay(10);
+        }
+        if (!menu.visible()) return 29;
+        for (const auto mode : {SBS_Full, SBS_Half, RGB_Depth}) {
+            context.mode = mode;
+            for (bool fullscreen : {false, true}) {
+                context.fullscreen = fullscreen;
+                menu.update(&context, font);
+                const int expectedWidth = fullscreen && mode == SBS_Full ? 640 : 1280;
+                if (!snapshot || snapshot->w != expectedWidth || snapshot->h != 800) return 30;
+                SDL_Event motion{};
+                motion.type = SDL_EVENT_MOUSE_MOTION;
+                motion.motion.x = fullscreen ? 160 : 320;
+                std::string first;
+                for (int y = 0; y < snapshot->h && first.empty(); y += 10) {
+                    motion.motion.y = static_cast<float>(y);
+                    menu.handleEvent(motion, context.window);
+                    first = menu.hoveredMetadata();
+                }
+                if (first.empty()) return 31;
+                if (fullscreen) {
+                    motion.motion.x = 800;
+                    menu.handleEvent(motion, context.window);
+                    if (menu.hoveredMetadata() != first) return 32;
+                }
+            }
+        }
+        menu.shutdown(&context);
+        SDL_DestroySurface(snapshot); snapshot = nullptr;
+        TTF_CloseFont(font); SDL_DestroyWindow(context.window); TTF_Quit(); SDL_Quit();
+        std::cout << "PASS: disc menu canvas and pointer mapping in windowed/fullscreen SBS Full, SBS Half and RGBD\n";
         return 0;
     }
     std::vector<BlurayTitle> titles;

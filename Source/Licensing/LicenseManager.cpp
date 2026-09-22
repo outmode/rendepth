@@ -2,9 +2,13 @@
 #include <algorithm>
 #include <cctype>
 namespace Licensing {
+// Combine product configuration, local license storage, and the licensing transport.
 LicenseManager::LicenseManager(Config config, std::filesystem::path path, Transport transport)
     : config_(std::move(config)), storage_(std::move(path)), client_(std::move(transport)) {}
+// Load the locally persisted activation state for offline use.
 Result LicenseManager::load() const { return storage_.load(); }
+// Validate and activate a key under the storage lock, rolling back the server slot if persistence
+// fails.
 Result LicenseManager::activate(std::string key) {
     if (!config_.configured()) return {Status::NotConfigured, "Pro activation is not available in this build yet."};
     auto first = key.find_first_not_of(" \t\r\n"), last = key.find_last_not_of(" \t\r\n");
@@ -38,6 +42,7 @@ Result LicenseManager::activate(std::string key) {
     result.message = "Rendepth Pro is activated. This computer can now use its license offline indefinitely.";
     return result;
 }
+// Release the server activation and remove its local record only after successful deactivation.
 Result LicenseManager::deactivate() {
     if (storage_.path().empty()) return {Status::StorageError, "The license storage folder is unavailable."};
     std::string error;

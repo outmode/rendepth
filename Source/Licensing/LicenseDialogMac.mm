@@ -6,6 +6,7 @@ NSTextField *keyField, *statusField;
 NSButton *activateButton, *deactivateButton;
 Licensing::DialogState current;
 Licensing::DialogAction callback;
+// Convert UTF-8 application text to a Cocoa string.
 NSString* ns(const std::string& text) { return [NSString stringWithUTF8String:text.c_str()]; }
 }
 @interface RendepthLicenseActions : NSObject <NSWindowDelegate>
@@ -15,9 +16,11 @@ NSString* ns(const std::string& text) { return [NSString stringWithUTF8String:te
 - (void)support:(id)sender;
 @end
 @implementation RendepthLicenseActions
+// Submit the entered key when activation is configured and no operation is pending.
 - (void)activate:(id)sender {
     if (!current.busy && current.canActivate && callback) callback(false, [[keyField stringValue] UTF8String]);
 }
+// Confirm deactivation before sending it to the licensing service.
 - (void)deactivate:(id)sender {
     if (current.busy || !callback) return;
     NSAlert* alert = [[NSAlert alloc] init];
@@ -26,7 +29,9 @@ NSString* ns(const std::string& text) { return [NSString stringWithUTF8String:te
     [alert addButtonWithTitle:@"Cancel"]; [alert addButtonWithTitle:@"Deactivate"];
     if ([alert runModal] == NSAlertSecondButtonReturn) callback(true, {});
 }
+// Open the configured purchase page in the default browser.
 - (void)buy:(id)sender { if (!current.purchaseUrl.empty()) SDL_OpenURL(current.purchaseUrl.c_str()); }
+// Open the support link and display a fallback message if launching fails.
 - (void)support:(id)sender {
     const auto& url = current.supportUrl;
     if (!url.empty() && !SDL_OpenURL(url.c_str())) {
@@ -34,10 +39,12 @@ NSString* ns(const std::string& text) { return [NSString stringWithUTF8String:te
             "Could not open your email app. Please email " + url.substr(7) : std::string("Could not open your browser."));
     }
 }
+// Hide the license window on close so it can be reused later.
 - (BOOL)windowShouldClose:(NSWindow*)sender { [sender orderOut:nil]; return NO; }
 @end
 namespace Licensing::NativeDialog {
 namespace { RendepthLicenseActions* actions; }
+// Refresh Cocoa status and controls for the current activation and busy state.
 void update(const DialogState& state) {
     current = state;
     if (!licenseWindow) return;
@@ -47,6 +54,7 @@ void update(const DialogState& state) {
     deactivateButton.enabled = !state.busy;
     if (state.licensed) keyField.stringValue = @"";
 }
+// Create or focus the Cocoa license window and connect its controls to service actions.
 void open(SDL_Window* parent, const DialogState& state, DialogAction action) {
     callback = std::move(action);
     if (licenseWindow) { update(state); [licenseWindow makeKeyAndOrderFront:nil]; return; }
@@ -84,6 +92,7 @@ void open(SDL_Window* parent, const DialogState& state, DialogAction action) {
     update(state); [licenseWindow center]; [licenseWindow makeKeyAndOrderFront:nil];
 }
 void poll() {} // SDL services the Cocoa event loop on the main thread.
+// Detach and release the license window and its action handler.
 void close() {
     [licenseWindow.parentWindow removeChildWindow:licenseWindow];
     [licenseWindow close]; licenseWindow = nil; actions = nil; callback = {};

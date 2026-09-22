@@ -12,6 +12,7 @@
 static bool interruptBeforeCommit = false;
 static int interruptSignal = -1;
 extern "C" int __real_fsync(int fd);
+// Pause a test save before its commit so interruption and lock recovery can be exercised.
 extern "C" int __wrap_fsync(int fd) {
     if (interruptBeforeCommit) {
         assert(::write(interruptSignal, "x", 1) == 1);
@@ -19,6 +20,7 @@ extern "C" int __wrap_fsync(int fd) {
     }
     return __real_fsync(fd);
 }
+// Read saved settings and assert that the file contains a complete JSON object.
 static rapidjson::Document read(const std::filesystem::path& path) {
     std::ifstream file(path);
     const std::string text((std::istreambuf_iterator<char>(file)), {});
@@ -27,6 +29,7 @@ static rapidjson::Document read(const std::filesystem::path& path) {
     assert(!document.HasParseError() && document.IsObject());
     return document;
 }
+// Save an engine preference through the same locked merge logic used by the application.
 static void save(const std::filesystem::path& path, int choice, bool explicitChange) {
     std::string error;
     SettingsFile transaction(path, error);
@@ -35,10 +38,12 @@ static void save(const std::filesystem::path& path, int choice, bool explicitCha
     const int engine = AIEngineSettings::forSave(choice, explicitChange, previous);
     assert(transaction.write("{\"AI Engine\":" + std::to_string(engine) + "}", error));
 }
+// Wait for a child process and require a successful exit.
 static void waitSuccess(pid_t pid) {
     int status = 0;
     assert(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
+// Verify concurrent settings saves, atomic reads, interrupted writes, and lock recovery.
 int main() {
     const auto root = std::filesystem::temp_directory_path() / ("rendepth-settings-test-" + std::to_string(getpid()));
     const auto path = root / "Settings.json";

@@ -27,16 +27,19 @@ struct SuperResolution::State {
 #endif
 };
 
+// Release the model session when the upscaler is destroyed.
 SuperResolution::~SuperResolution() {
 	unload();
 }
 
+// Unload the super-resolution model and clear its provider label.
 void SuperResolution::unload() {
 	delete state;
 	state = nullptr;
 	activeProvider = "Unavailable";
 }
 
+// Load the upscaling model and validate its tensor layout and execution provider.
 bool SuperResolution::load(const Config& config, std::string& error) {
 	unload();
 	error.clear();
@@ -117,10 +120,12 @@ bool SuperResolution::load(const Config& config, std::string& error) {
 #endif
 }
 
+// Return the label for the execution provider actually in use.
 const std::string& SuperResolution::providerName() const {
 	return activeProvider;
 }
 
+// Convert image pixels to model input and return the inferred enlarged image as an RGBA surface.
 SDL_Surface* SuperResolution::predict(const SDL_Surface* image, std::string& error) const {
 #ifndef RENDEPTH_ENABLE_ONNX_RUNTIME
 	(void)image;

@@ -4,7 +4,9 @@
 #include <stdexcept>
 #include <string_view>
 using namespace Licensing;
+// Fail the UI test with a readable diagnostic when a required condition is missing.
 static void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
+// Find the license entry or a labeled button recursively within the GTK widget tree.
 static GtkWidget* find(GtkWidget* widget, const char* label = nullptr) {
     if ((!label && GTK_IS_ENTRY(widget)) || (label && GTK_IS_BUTTON(widget) &&
         std::string_view(gtk_button_get_label(GTK_BUTTON(widget))) == label)) return widget;
@@ -14,6 +16,7 @@ static GtkWidget* find(GtkWidget* widget, const char* label = nullptr) {
     for (auto* child = children; child && !result; child = child->next) result = find(GTK_WIDGET(child->data), label);
     g_list_free(children); return result;
 }
+// Find the open license window among GTK's top-level windows.
 static GtkWidget* window() {
     auto* windows = gtk_window_list_toplevels(); GtkWidget* result = nullptr;
     for (auto* it = windows; it; it = it->next) {
@@ -22,6 +25,8 @@ static GtkWidget* window() {
     }
     g_list_free(windows); return result;
 }
+// Exercise native license controls, busy state, confirmation, and reopening without real activation
+// requests.
 int main() {
     try {
         require(gtk_init_check(nullptr, nullptr), "GTK display unavailable");

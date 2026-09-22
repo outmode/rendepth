@@ -11,6 +11,7 @@ extern "C" {
 #include <libavutil/mem.h>
 }
 #endif
+// Verify virtual WAV reads, seeking, mixed-mode track gaps, and disc-source identification.
 int main() {
     int reads = 0;
     AudioCdStream stream;

@@ -8,6 +8,7 @@ namespace {
 GtkWidget *window = nullptr, *entry = nullptr, *status = nullptr, *activate = nullptr, *deactivate = nullptr;
 DialogState current;
 DialogAction callback;
+// Open a purchase or support link and show an actionable error if launching fails.
 void launch(const std::string& url) {
     if (!url.empty() && !SDL_OpenURL(url.c_str())) {
         const auto error = url.starts_with("mailto:") ? "Could not open your email app. Please email " + url.substr(7) :
@@ -15,6 +16,7 @@ void launch(const std::string& url) {
         gtk_label_set_text(GTK_LABEL(status), error.c_str());
     }
 }
+// Confirm deactivation with the user before dispatching the license operation.
 void deactivateClicked() {
     auto* confirm = gtk_message_dialog_new(GTK_WINDOW(window), GTK_DIALOG_MODAL,
         GTK_MESSAGE_QUESTION, GTK_BUTTONS_OK_CANCEL,
@@ -26,6 +28,7 @@ void deactivateClicked() {
     if (answer == GTK_RESPONSE_OK && callback) callback(true, {});
 }
 }
+// Refresh license status and control visibility, disabling actions while work is pending.
 void update(const DialogState& state) {
     current = state;
     if (!window) return;
@@ -38,6 +41,7 @@ void update(const DialogState& state) {
     gtk_widget_set_sensitive(deactivate, !state.busy);
     if (state.licensed) gtk_entry_set_text(GTK_ENTRY(entry), "");
 }
+// Create or focus the GTK license window and connect its actions to the service callback.
 void open(SDL_Window* parent, const DialogState& state, DialogAction action) {
     callback = std::move(action);
     if (window) { update(state); gtk_window_present(GTK_WINDOW(window)); return; }
@@ -104,6 +108,8 @@ void open(SDL_Window* parent, const DialogState& state, DialogAction action) {
     update(state);
     if (!state.licensed) gtk_widget_grab_focus(entry);
 }
+// Pump a bounded number of GTK events without blocking the SDL main loop.
 void poll() { if (window) for (int i = 0; i < 32 && gtk_events_pending(); ++i) gtk_main_iteration_do(false); }
+// Destroy the license window and release its action callback.
 void close() { if (window) gtk_widget_destroy(window); callback = {}; }
 }

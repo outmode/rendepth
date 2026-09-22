@@ -27,6 +27,7 @@ struct RequestResult {
 	GError* error = nullptr;
 };
 
+// Collect a successful portal reply and finish the test's waiting loop.
 void requestResponse(GDBusConnection*, const gchar*, const gchar*, const gchar*,
 	const gchar*, GVariant* parameters, gpointer userData) {
 	auto* result = static_cast<RequestResult*>(userData);
@@ -38,6 +39,7 @@ void requestResponse(GDBusConnection*, const gchar*, const gchar*, const gchar*,
 	g_main_loop_quit(result->loop);
 }
 
+// Wait for the response signal belonging to one portal request.
 GVariant* waitForRequest(GDBusConnection* connection, const char* requestPath) {
 	RequestResult result;
 	result.loop = g_main_loop_new(nullptr, FALSE);
@@ -54,6 +56,7 @@ GVariant* waitForRequest(GDBusConnection* connection, const char* requestPath) {
 	return result.results;
 }
 
+// Invoke a portal method and follow its request object to the asynchronous response.
 GVariant* callRequest(GDBusConnection* connection, GDBusProxy* proxy,
 	const char* method, GVariant* parameters) {
 	GError* error = nullptr;
@@ -71,6 +74,7 @@ GVariant* callRequest(GDBusConnection* connection, GDBusProxy* proxy,
 	return waitForRequest(connection, path.c_str());
 }
 
+// Build portal options with a unique request handle token.
 GVariantBuilder* optionsBuilder(const char* token) {
 	auto* options = g_variant_builder_new(G_VARIANT_TYPE_VARDICT);
 	g_variant_builder_add(options, "{sv}", "handle_token", g_variant_new_string(token));
@@ -79,6 +83,7 @@ GVariantBuilder* optionsBuilder(const char* token) {
 
 } // namespace
 
+// Exercise desktop-portal source selection and PipeWire frame capture in a standalone test.
 int main(int argc, char** argv) {
 	(void)argc;
 	(void)argv;

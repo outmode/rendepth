@@ -5,6 +5,7 @@
 #include <iostream>
 #include <cstring>
 
+// Check MVC playlist detection against valid, truncated, and unsupported binary fixtures.
 int main() {
     std::array<uint8_t, 80> data{};
     data[0] = 'M'; data[1] = 'P'; data[2] = 'L'; data[3] = 'S';

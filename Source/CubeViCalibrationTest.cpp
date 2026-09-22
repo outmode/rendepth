@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <string>
 
+// Check CubeVi calibration parsing, optical validation, display identification, and optional local
+// integration.
 int main(int argc, char** argv) {
     int failures = 0;
     auto check = [&](bool condition, const char* message) {

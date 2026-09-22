@@ -27,6 +27,8 @@
 #include <regex>
 
 namespace {
+	// Read JPEG EXIF orientation from a bounded header scan, defaulting to normal orientation when
+	// absent.
 	int readExifOrientation(const std::string& path) {
 		FILE* file = fopen(path.c_str(), "rb");
 		if (file == nullptr) return 1;
@@ -86,6 +88,7 @@ namespace {
 		return 1;
 	}
 
+	// Recognize a quilt filename tag and optionally extract its columns, rows, and view aspect ratio.
 	bool parseQuiltTag(const std::string& file, glm::vec3* grid) {
 		static const std::regex quiltPattern(
 			R"((?:_|\(|\s)qs([0-9]+)x([0-9]+)a([0-9]+(?:\.[0-9]+)?))",
@@ -107,12 +110,15 @@ namespace {
 	}
 }
 
+// Release the main window and GPU device after rendering resources have been freed.
 void Core::quit(Context* context) {
 	SDL_ReleaseWindowFromGPUDevice(context->device, context->window);
 	SDL_DestroyWindow(context->window);
 	SDL_DestroyGPUDevice(context->device);
 }
 
+// Load the compiled shader format supported by the active GPU backend and declare its resource
+// bindings.
 SDL_GPUShader* Core::loadShader(SDL_GPUDevice* device, const std::string& shaderFilename, Uint32 samplerCount,
 	Uint32 uniformBufferCount, Uint32 storageBufferCount, Uint32 storageTextureCount) {
 	SDL_GPUShaderStage stage;
@@ -206,6 +212,7 @@ SDL_GPUShader* Core::loadShader(SDL_GPUDevice* device, const std::string& shader
 	return shader;
 }
 
+// Create a mipmapped RGBA texture, upload its pixels, and wait for the transfer to finish.
 int Core::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTexture** gpuTexture,
 		const std::string& textureName) {
 	auto mipLevels = (Uint32)std::floor(log2(std::max(imageData->w, imageData->h))) + 1;
@@ -274,6 +281,7 @@ int Core::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTexture
 	return 0;
 }
 
+// Apply embedded rotation or EXIF orientation to a surface, replacing it when a transform is needed.
 SDL_Surface* Core::orientSurface(SDL_Surface* surface, const std::string& filepath) {
 	if (surface == nullptr) return nullptr;
 
@@ -315,6 +323,7 @@ SDL_Surface* Core::orientSurface(SDL_Surface* surface, const std::string& filepa
 	return surface;
 }
 
+// Load an image, apply orientation, and normalize its pixel format for rendering.
 SDL_Surface* Core::loadImageDirect(const std::string& imageFilename) {
 	SDL_Surface* surface = IMG_Load(imageFilename.c_str());
 	if (surface == nullptr) return nullptr;
@@ -332,6 +341,7 @@ SDL_Surface* Core::loadImageDirect(const std::string& imageFilename) {
 	return surface;
 }
 
+// Load a surface on the worker and publish completion with release ordering.
 int Core::loadImageThread(void* ptr) {
 	auto data = static_cast<AsyncData*>(ptr);
 	SDL_DestroySurface(data->surface);
@@ -340,17 +350,20 @@ int Core::loadImageThread(void* ptr) {
 	return data->fileIndex;
 }
 
+// Launch the image-loading worker using the caller's shared request state.
 SDL_Thread* Core::loadImageAsync(AsyncData& asyncData) {
 	SDL_Thread* thread = SDL_CreateThread(Core::loadImageThread, "LoadImageThread", &asyncData);
 	return thread;
 }
 
+// Measure text width for label fitting and return it in the sizing vector.
 glm::vec2 Core::getTextSize(TTF_Font* font, const std::string& text) {
 	int width = 0, height = 0;
 	TTF_GetStringSize(font, text.c_str(), strlen(text.c_str()), &width, &height);
 	return {width, width };
 }
 
+// Build a filename and dimensions label, truncating at UTF-8 boundaries to fit the available width.
 std::string Core::getFileText(const FileInfo& imageInfo, glm::vec2 imageSize,
 		TTF_Font* font, float maxWidth) {
 	const auto details = " [" + std::to_string((int)imageSize.x) + "x" +
@@ -380,6 +393,7 @@ std::string Core::getFileText(const FileInfo& imageInfo, glm::vec2 imageSize,
 	return text.substr(0, boundaries[low]) + ending;
 }
 
+// Infer the source layout from recognized stereo or quilt filename tags.
 StereoFormat Core::getImageType(const std::string& file) {
 	if (parseQuiltTag(file, nullptr)) return Light_Field_LKG;
 	StereoFormat result = Unknown_Format;
@@ -392,12 +406,14 @@ StereoFormat Core::getImageType(const std::string& file) {
 	return result;
 }
 
+// Extract quilt grid dimensions and view aspect ratio, defaulting to a single view.
 glm::vec3 Core::getGridInfo(const std::string& file) {
 	auto result = glm::vec3(1, 1, 1);
 	parseQuiltTag(file, &result);
 	return result;
 }
 
+// Rasterize a UI label and replace its GPU texture and displayed size.
 void Core::drawText(Context* context, const std::string& text, TTF_Font* font,
 		SDL_GPUTexture*& texture, glm::vec2& size, const std::string& name) {
 	auto shownText = text;
@@ -431,6 +447,7 @@ void Core::drawText(Context* context, const std::string& text, TTF_Font* font,
 	SDL_DestroySurface(rgbaHelpData);
 }
 
+// Find the user's home directory from the platform's environment variable.
 std::filesystem::path Core::getHomeDirectory() {
 #ifdef _WIN32
 	const char* homeDir = std::getenv("USERPROFILE");

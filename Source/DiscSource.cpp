@@ -6,10 +6,12 @@
 
 namespace DiscSource {
 namespace {
+// Normalize disc paths and extensions for case-insensitive identification.
 std::string lower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return char(std::tolower(c)); });
     return value;
 }
+// Recognize extracted Blu-ray and DVD directory layouts, including selected metadata files.
 Type directoryType(std::filesystem::path path) {
     std::error_code ec;
     const auto name = lower(path.filename().string());
@@ -24,10 +26,12 @@ Type directoryType(std::filesystem::path path) {
     return Type::None;
 }
 }
+// Identify paths worth probing as disc folders, ISO images, or optical drives.
 bool candidate(const std::filesystem::path& path) {
     return directoryType(path) != Type::None || lower(path.extension().string()) == ".iso" ||
         !AudioCdReader::devicePath(path).empty();
 }
+// Determine the disc type by inspecting its directory layout or probing the available disc backends.
 Type detect(const std::filesystem::path& path) {
     if (const auto type = directoryType(path); type != Type::None) return type;
     const auto device = AudioCdReader::devicePath(path);

@@ -25,6 +25,7 @@ public:
     bool handleEvent(const SDL_Event& event, SDL_Window* window);
     void update(Context* context, TTF_Font* font);
     SDL_GPUTexture* texture() const;
+    SDL_GPUTexture* depthTexture() const;
     std::optional<int> takeSelection();
     std::string takeError();
 private:

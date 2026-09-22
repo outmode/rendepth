@@ -39,16 +39,19 @@ struct DepthEstimator::State {
 	Config config;
 };
 
+// Release the loaded depth model when the estimator is destroyed.
 DepthEstimator::~DepthEstimator() {
 	unload();
 }
 
+// Destroy the inference session and clear the active-provider label.
 void DepthEstimator::unload() {
 	delete state;
 	state = nullptr;
 	activeProvider = "Unavailable";
 }
 
+// Load and validate a depth model with the requested execution provider and session options.
 bool DepthEstimator::load(const Config& config, std::string& error) {
 	unload();
 	error.clear();
@@ -163,20 +166,24 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 #endif
 }
 
+// Report whether a usable depth inference session is loaded.
 bool DepthEstimator::ready() const {
 	return state != nullptr;
 }
 
+// Request termination of the current ONNX Runtime inference call.
 void DepthEstimator::cancel() {
 #ifdef RENDEPTH_ENABLE_ONNX_RUNTIME
 	if (state != nullptr) state->runOptions.SetTerminate();
 #endif
 }
 
+// Return the label for the execution provider actually in use.
 const std::string& DepthEstimator::providerName() const {
 	return activeProvider;
 }
 
+// Prepare image tensors, run depth inference, and convert model output into a validated depth result.
 DepthEstimator::Result DepthEstimator::predict(const SDL_Surface* image, std::string& error) {
 	Result result;
 #ifndef RENDEPTH_ENABLE_ONNX_RUNTIME
@@ -220,6 +227,8 @@ DepthEstimator::Result DepthEstimator::predict(const SDL_Surface* image, std::st
 		const Uint32 maximum = (1u << bits) - 1u;
 		return static_cast<float>(value) / static_cast<float>(maximum);
 	};
+	// Letterbox the source without distorting its aspect ratio; padding uses the model means so it
+	// normalizes to zero.
 	const float scale = std::min(static_cast<float>(processWidth) / image->w,
 		static_cast<float>(processHeight) / image->h);
 	const int contentWidth = std::max(1, static_cast<int>(std::lround(image->w * scale)));
@@ -279,6 +288,7 @@ DepthEstimator::Result DepthEstimator::predict(const SDL_Surface* image, std::st
 			}
 
 			const size_t offset = static_cast<size_t>(y * processWidth + x);
+			// Normalize RGB channels and pack them in the channel order declared by the model.
 			const float normalizedRed = (red - 0.485f) / 0.229f;
 			const float normalizedGreen = (green - 0.456f) / 0.224f;
 			const float normalizedBlue = (blue - 0.406f) / 0.225f;

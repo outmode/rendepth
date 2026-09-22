@@ -24,6 +24,7 @@ extern "C" {
 }
 #endif
 
+// Expose the selected audio tracks as one virtual WAV stream with chapter offsets at track boundaries.
 bool AudioCdStream::open(const std::vector<Track>& tracks, ReadSector readSector) {
     *this = AudioCdStream{};
     if (tracks.empty() || !readSector) return false;
@@ -50,6 +51,7 @@ bool AudioCdStream::open(const std::vector<Track>& tracks, ReadSector readSector
     return true;
 }
 
+// Serve bytes from the WAV header or mapped audio sectors, skipping gaps between tracks.
 int AudioCdStream::read(uint8_t* bytes, int size) {
     int copied = 0;
     while (copied < size && position_ < dataSize_ + 44) {
@@ -78,6 +80,7 @@ int AudioCdStream::read(uint8_t* bytes, int size) {
     }
     return copied;
 }
+// Seek within the virtual WAV stream or report its size for FFmpeg.
 int64_t AudioCdStream::seek(int64_t offset, int whence) {
     // FFmpeg's AVSEEK_SIZE and AVSEEK_FORCE; kept usable in non-FFmpeg tests.
     if (whence == 0x10000) return dataSize_ + 44;
@@ -89,7 +92,9 @@ int64_t AudioCdStream::seek(int64_t offset, int whence) {
     if (offset < -base || offset > dataSize_ + 44 - base) return -1;
     return position_ = base + offset;
 }
+// Return the combined audio-track duration in seconds.
 double AudioCdStream::duration() const { return double(dataSize_) / 176400.0; }
+// Wrap the virtual WAV stream in FFmpeg read and seek callbacks.
 AVIOContext* AudioCdStream::createAVIOContext() {
 #ifdef RENDEPTH_ENABLE_FFMPEG
     auto* buffer = static_cast<uint8_t*>(av_malloc(32768));
@@ -111,12 +116,15 @@ AVIOContext* AudioCdStream::createAVIOContext() {
 struct AudioCdReader::Device {
 #ifdef __linux__
     int fd = -1;
+    // Close the optical-drive descriptor when its device wrapper is released.
     ~Device() { if (fd >= 0) ::close(fd); }
 #elif defined(_WIN32)
     HANDLE handle = INVALID_HANDLE_VALUE;
+    // Close the Windows optical-drive handle when its device wrapper is released.
     ~Device() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
 #endif
     std::vector<AudioCdStream::Track> tracks;
+    // Open the optical drive and collect playable audio tracks from its table of contents.
     bool open(const std::filesystem::path& path) {
 #ifdef __linux__
         fd = ::open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
@@ -154,6 +162,7 @@ struct AudioCdReader::Device {
     }
     std::array<uint8_t, 16 * 2352> readAhead{};
     int readAheadStart = -1, readAheadCount = 0;
+    // Read an audio sector through a small read-ahead cache bounded by the current track.
     bool read(int sector, uint8_t* bytes) {
         if (sector >= readAheadStart && sector < readAheadStart + readAheadCount) {
             std::memcpy(bytes, readAhead.data() + (sector - readAheadStart) * 2352, 2352);
@@ -188,8 +197,11 @@ struct AudioCdReader::Device {
         return true;
     }
 };
+// Construct an unopened audio-CD reader.
 AudioCdReader::AudioCdReader() = default;
+// Release the owned drive and stream state when the reader is destroyed.
 AudioCdReader::~AudioCdReader() = default;
+// Resolve a supported drive path or audio-CD URI to its underlying optical device.
 std::filesystem::path AudioCdReader::devicePath(const std::filesystem::path& path) {
     const auto value = path.string();
 #ifdef __linux__
@@ -229,10 +241,12 @@ std::filesystem::path AudioCdReader::devicePath(const std::filesystem::path& pat
 #endif
     return {};
 }
+// Probe whether the selected optical drive contains readable audio tracks.
 bool AudioCdReader::isAudioCd(const std::filesystem::path& path) {
     auto device = devicePath(path);
     return !device.empty() && Device{}.open(device);
 }
+// Open an audio CD and connect its physical sector reader to the virtual WAV stream.
 bool AudioCdReader::open(const std::filesystem::path& path, std::string& error) {
     device_ = std::make_unique<Device>();
     auto device = devicePath(path);

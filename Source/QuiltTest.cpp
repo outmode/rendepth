@@ -69,6 +69,7 @@ namespace {
 		bool slantPitchCorrection = true;
 	};
 
+	// Read a calibration number from a direct or nested value field.
 	bool readNumber(const rapidjson::Value& object, const char* name, float& result) {
 		if (!object.IsObject() || !object.HasMember(name)) return false;
 		const auto& entry = object[name];
@@ -83,6 +84,7 @@ namespace {
 		return false;
 	}
 
+	// Interpret a numeric calibration field as a boolean flag.
 	bool readBool(const rapidjson::Value& object, const char* name, bool& result) {
 		float value = 0.0f;
 		if (!readNumber(object, name, value)) return false;
@@ -90,6 +92,8 @@ namespace {
 		return true;
 	}
 
+	// Find an explicit calibration override or the calibration stored on a mounted Looking Glass
+	// device.
 	std::filesystem::path findCalibration() {
 		if (const char* requested = std::getenv("RENDEPTH_NATIVE_CALIBRATION"))
 			return requested;
@@ -110,6 +114,7 @@ namespace {
 		return {};
 	}
 
+	// Load calibration for the visual test while retaining fallback settings if it is unavailable.
 	bool loadCalibration(Calibration& calibration) {
 		const auto path = findCalibration();
 		if (path.empty()) {
@@ -147,12 +152,14 @@ namespace {
 		return true;
 	}
 
+	// Normalize display names for case-insensitive matching.
 	std::string lower(std::string value) {
 		std::transform(value.begin(), value.end(), value.begin(),
 			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 		return value;
 	}
 
+	// Find the requested display or an automatically recognized Looking Glass device.
 	SDL_DisplayID findDisplay() {
 		const char* requested = std::getenv("RENDEPTH_NATIVE_DISPLAY");
 		int count = 0;
@@ -175,6 +182,7 @@ namespace {
 		return result;
 	}
 
+	// Load the test shader format supported by the active GPU backend.
 	SDL_GPUShader* loadShader(SDL_GPUDevice* device, const char* filename,
 		SDL_GPUShaderStage stage, Uint32 uniformBuffers) {
 		const SDL_GPUShaderFormat formats = SDL_GetGPUShaderFormats(device);
@@ -229,12 +237,14 @@ namespace {
 		return shader;
 	}
 
+	// Log the selected test pattern and phase origin for calibration comparisons.
 	void logPattern(const App& app) {
 		SDL_Log("QuiltTest pattern %d/%d: %s; phase origin %d",
 			app.uniforms.pattern + 1, PatternCount,
 			PatternNames[app.uniforms.pattern], app.uniforms.phaseOrigin);
 	}
 
+	// Convert optical calibration into shader phase increments and orientation flags.
 	void updateCalibrationUniforms(App& app) {
 		float phaseX = app.calibration.pitch / app.calibration.dpi;
 		if (app.slantPitchCorrection)
@@ -251,6 +261,7 @@ namespace {
 		app.uniforms.expectedHeight = app.calibration.screenHeight;
 	}
 
+	// Create the graphics pipeline used to draw calibration patterns.
 	bool createPipeline(App& app) {
 		SDL_GPUShader* vertexShader = loadShader(app.device, "QuiltTest.vert",
 			SDL_GPU_SHADERSTAGE_VERTEX, 0);
@@ -286,6 +297,7 @@ namespace {
 		return true;
 	}
 
+	// Draw the selected calibration pattern into the display swapchain.
 	bool render(App& app) {
 		SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(app.device);
 		if (commandBuffer == nullptr) return false;
@@ -347,6 +359,7 @@ namespace {
 	}
 }
 
+// Initialize the test display, calibration, GPU pipeline, and interactive controls.
 SDL_AppResult SDL_AppInit(void** appstate, int, char**) {
 	SDL_SetAppMetadata("Rendepth QuiltTest", "1.0", "com.outmode.rendepth.quilttest");
 	SDL_SetHint(SDL_HINT_VIDEO_WAYLAND_SCALE_TO_DISPLAY, "0");
@@ -412,6 +425,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int, char**) {
 	return SDL_APP_CONTINUE;
 }
 
+// Handle keyboard changes to patterns, phase origin, view ordering, and pitch correction.
 SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
 	auto& app = *static_cast<App*>(appstate);
 	if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
@@ -446,11 +460,13 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
 	return SDL_APP_CONTINUE;
 }
 
+// Render the next calibration-test frame and propagate rendering failures.
 SDL_AppResult SDL_AppIterate(void* appstate) {
 	auto& app = *static_cast<App*>(appstate);
 	return render(app) ? SDL_APP_CONTINUE : SDL_APP_FAILURE;
 }
 
+// Wait for GPU work and release the test pipeline, display window, and application state.
 void SDL_AppQuit(void* appstate, SDL_AppResult) {
 	auto* app = static_cast<App*>(appstate);
 	if (app == nullptr) return;
