@@ -32,7 +32,7 @@ const context = {URL, AbortController,
     const id = 'retry-' + ++nextTimer; retries.set(id, fn); return id;
   },
   clearTimeout(id) {retries.delete(id);clearTimeout(id);}, Date: {now: () => now},
-  openWebImage: async (...args) => {images.push(args);}, browser: {
+  openWebImage: async (...args) => {images.push(args);}, rendepthBrowser: {
   storage: {local: {get: async () => saved, set: async value => Object.assign(saved, value)}},
   permissions: {request: async () => {++permissionRequests;return true;},
     contains: async () => granted, remove: async () => {granted = false;return true;}},
@@ -149,7 +149,7 @@ console.log('Background: preferences, context menu, navigation/resume, stale por
 
 // Permission completion must save without any popup continuation or message.
 let finishPermission;
-context.browser.permissions.request = () => new Promise(resolve => {finishPermission = resolve;});
+context.rendepthBrowser.permissions.request = () => new Promise(resolve => {finishPermission = resolve;});
 void context.setAutoReconnect('https://example.org', true);
 assert.equal(typeof finishPermission, 'function', 'Request must start synchronously in the user gesture');
 assert.equal(saved.autoReconnectOrigins.length, 0);
@@ -162,7 +162,7 @@ console.log('Delayed permission: background saves opt-in without a surviving pop
 
 
 let requestedOrigin, resolveImagePermission;
-context.browser.permissions.request = permission => {
+context.rendepthBrowser.permissions.request = permission => {
   requestedOrigin = permission.origins[0];
   return new Promise(resolve => {resolveImagePermission = resolve;});
 };
@@ -224,15 +224,33 @@ await receive({action: 'stop'});
 await open();
 const raceContent = attach();raceContent.emit({action: 'start', format: '2d'});
 raceContent.emit({action: 'capture-blocked'});
-const originalQuery = context.browser.tabs.query;
+const originalQuery = context.rendepthBrowser.tabs.query;
 let finishQuery;
-context.browser.tabs.query = () => new Promise(resolve => {finishQuery = resolve;});
+context.rendepthBrowser.tabs.query = () => new Promise(resolve => {finishQuery = resolve;});
 const pendingRetry = runRetry();
 const beforeStaleRetry = executed.length;
 updated(7, {status: 'loading'}, {url: tabURL});
 finishQuery([{id: 7, url: tabURL}]);
 await pendingRetry;
 assert.equal(executed.length, beforeStaleRetry, 'Navigation cancels a retry already awaiting tab lookup');
-context.browser.tabs.query = originalQuery;
+context.rendepthBrowser.tabs.query = originalQuery;
 await receive({action: 'stop'});
 console.log('Recovery: three-second retry, long ads, native reuse, Stop, origin bounds and stale retry cancellation passed.');
+
+// MV3 can restart between opening an image and reopening the popup.
+const restartTime = now;
+for (const [stored, expected] of [
+  [{status: 'Image opened in Rendepth.'}, 'Choose a playing video.'],
+  [{status: 'Image sent to Rendepth.', statusExpiresAt: now - 1}, 'Choose a playing video.'],
+  [{status: 'Image sent to Rendepth.', statusExpiresAt: now + 5000}, 'Image sent to Rendepth.']
+]) {
+  now = restartTime;
+  const coldContext = {...context, rendepthBrowser: {...context.rendepthBrowser,
+    storage: {...context.rendepthBrowser.storage,
+      session: {get: async () => stored, set: async value => Object.assign(stored, value)}}}};
+  vm.runInNewContext(script, coldContext);
+  assert.equal((await receive({action: 'status'})).status, expected);
+  now += 5001;
+  assert.equal((await receive({action: 'status'})).status, 'Choose a playing video.');
+}
+console.log('Photo status: expiry survives worker restart and clears legacy confirmations.');

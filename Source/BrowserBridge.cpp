@@ -82,10 +82,14 @@ void BrowserBridge::poll(const std::function<std::string(const Request&)>& handl
 		if (!document.HasParseError() && document.IsObject() &&
 			document.HasMember("directory") && document["directory"].IsString() &&
 			document.HasMember("format") && document["format"].IsString() &&
-			document.HasMember("swap") && document["swap"].IsBool()) {
+			document.HasMember("swap") && document["swap"].IsBool() &&
+			(!document.HasMember("image") || document["image"].IsBool())) {
 			Request request;
 			request.directory.assign(document["directory"].GetString(), document["directory"].GetStringLength());
 			const std::string format(document["format"].GetString(), document["format"].GetStringLength());
+			if (document.HasMember("image")) {
+				request.image = document["image"].GetBool();
+			}
 			struct stat info{};
 			std::error_code ec;
 			const auto path = std::filesystem::path(request.directory);
@@ -94,14 +98,14 @@ void BrowserBridge::poll(const std::function<std::string(const Request&)>& handl
 				path.filename().string().starts_with("rendepth-firefox-") &&
 				lstat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode) &&
 				info.st_uid == getuid() && !(info.st_mode & 0077) &&
-				std::filesystem::is_regular_file(path / "offer.sdp", ec)) {
+				std::filesystem::is_regular_file(path / (request.image ? "image.png" : "offer.sdp"), ec)) {
 				request.half = format == "sbs-half";
 				request.mono = format == "2d";
 				request.swap = document["swap"].GetBool();
 				error = handler(request);
 				if (error.empty()) {
 					if (session != path) endSession();
-					session = path;
+					if (!request.image) session = path;
 				}
 			}
 		}

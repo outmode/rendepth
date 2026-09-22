@@ -1,11 +1,21 @@
 /* Copyright (c) 2026 Outmode; SPDX-License-Identifier: MIT */
-let session = null, nextSession = 0;
+let session = null, nextSession = Date.now();
 let imageTransfer = null;
 let status = "Choose a playing video.";
 let statusExpiresAt = 0;
 let limitSource = false;
+let statusVersion = 0;
+const statusReady = rendepthBrowser.storage.session?.get(['status', 'statusExpiresAt']).then(saved => {
+  if (!statusVersion && typeof saved.status === 'string') {
+    statusExpiresAt = Number(saved.statusExpiresAt) || 0;
+    if (saved.status === 'Image opened in Rendepth.' ||
+        (statusExpiresAt && Date.now() >= statusExpiresAt)) {
+      setStatus('Choose a playing video.');
+    } else status = saved.status;
+  }
+});
 const autoReconnectOrigins = new Set();
-const preferencesReady = browser.storage.local.get(["limitSource", "autoReconnectOrigins"]).then(saved => {
+const preferencesReady = rendepthBrowser.storage.local.get(["limitSource", "autoReconnectOrigins"]).then(saved => {
   limitSource = saved.limitSource === true;
   for (const origin of Array.isArray(saved.autoReconnectOrigins) ? saved.autoReconnectOrigins : [])
     if (typeof origin === "string") autoReconnectOrigins.add(origin);
@@ -13,10 +23,13 @@ const preferencesReady = browser.storage.local.get(["limitSource", "autoReconnec
 
 function setStatus(text, error = false, duration = 0) {
   statusExpiresAt = duration ? Date.now() + duration : 0;
+  ++statusVersion;
   status = text;
-  browser.browserAction.setBadgeText({text: error ? "!" : session ? "⏻" : ""});
-  browser.browserAction.setBadgeBackgroundColor({color: error ? "#b3261e" : "#fe1c68"});
-  browser.browserAction.setBadgeTextColor({color: "#ffffff"});
+  void rendepthBrowser.storage.session?.set({status: session
+    ? 'Video connection ended. Open a playing video to reconnect.' : text, statusExpiresAt});
+  rendepthBrowser.browserAction.setBadgeText({text: error ? "!" : session ? "⏻" : ""});
+  rendepthBrowser.browserAction.setBadgeBackgroundColor({color: error ? "#b3261e" : "#fe1c68"});
+  rendepthBrowser.browserAction.setBadgeTextColor({color: "#ffffff"});
 }
 
 function stop(text = "Stopped.") {
@@ -26,7 +39,7 @@ function stop(text = "Stopped.") {
   session = null;
   if (previous) {
     clearTimeout(previous.retryTimer);
-    browser.tabs.sendMessage(previous.tabId, {action: "cancel", sessionId: previous.id},
+    rendepthBrowser.tabs.sendMessage(previous.tabId, {action: "cancel", sessionId: previous.id},
       {frameId: previous.frameId}).catch(() => {});
     previous.content?.disconnect();
     previous.native?.disconnect();
@@ -60,7 +73,7 @@ function retryCapture(current) {
     current.retryTimer = null;
     if (session !== current || generation !== current.generation || retryVersion !== current.retryVersion) return;
     try {
-      const tabs = await browser.tabs.query({});
+      const tabs = await rendepthBrowser.tabs.query({});
       const tab = tabs.find(tab => tab.id === current.tabId);
       if (session !== current || generation !== current.generation || retryVersion !== current.retryVersion) return;
       // Recovery belongs to this site's capture, never an unrelated destination.
@@ -80,11 +93,11 @@ async function inject(current, resume, targetElementId = null) {
   const generation = current.generation;
   current.resuming = true;
   try {
-    await browser.tabs.executeScript(current.tabId, {file: "quality.js", frameId: current.frameId});
+    await rendepthBrowser.tabs.executeScript(current.tabId, {file: "quality.js", frameId: current.frameId});
     if (session !== current || generation !== current.generation) return;
-    await browser.tabs.executeScript(current.tabId, {file: "capture.js", frameId: current.frameId});
+    await rendepthBrowser.tabs.executeScript(current.tabId, {file: "capture.js", frameId: current.frameId});
     if (session !== current || generation !== current.generation) return;
-    const reply = await browser.tabs.sendMessage(current.tabId,
+    const reply = await rendepthBrowser.tabs.sendMessage(current.tabId,
       {action: resume ? "resume" : "start", sessionId: current.id, generation,
         targetElementId, ...current.options}, {frameId: current.frameId});
     if (session !== current || generation !== current.generation) return;
@@ -121,11 +134,14 @@ async function start(tabId, frameId, targetElementId, format, scaleHalf = true, 
     navigating: false, resuming: false, nativeStarted: false};
   session = current;
   setStatus("Connecting to Rendepth…");
+  // A native port keeps the MV3 worker alive, including while paused or
+  // waiting for a replacement document. The host launches the viewer on SDP.
+  connectNative(current);
   await inject(current, false, targetElementId);
 }
 
 function connectNative(current) {
-  const native = browser.runtime.connectNative("com.outmode.rendepth");
+  const native = rendepthBrowser.runtime.connectNative("com.outmode.rendepth");
   current.native = native;
   native.onMessage.addListener(message => {
     if (session !== current) return;
@@ -145,14 +161,15 @@ function connectNative(current) {
   });
 }
 
-browser.runtime.onConnect.addListener(content => {
+rendepthBrowser.runtime.onConnect.addListener(content => {
   if (content.name !== "rendepth-video" || !content.sender.tab) return;
   let current;
   content.onMessage.addListener(message => {
     if (message.action === "hello") {
       const candidate = session;
       if (!candidate || candidate.id !== message.sessionId ||
-          candidate.generation !== message.generation || candidate.tabId !== content.sender.tab.id) {
+          candidate.generation !== message.generation || candidate.tabId !== content.sender.tab.id ||
+          candidate.frameId !== (content.sender.frameId ?? 0)) {
         content.disconnect(); return;
       }
       current = candidate;
@@ -173,9 +190,11 @@ browser.runtime.onConnect.addListener(content => {
     } else if (message.action === "quality") {
       current.qualityNotice = typeof message.text === "string" ? message.text.slice(0, 400) : "";
     } else if (message.action === "waiting") {
-      setStatus("Waiting for the next video on this page…");
+      setStatus(message.reason === "cross-origin"
+        ? "Waiting for the video source to become available for capture…"
+        : "Waiting for the next video on this page…");
     } else if (message.action === "connected") {
-      setStatus("Streaming to Rendepth. Audio and playback stay in Firefox.");
+      setStatus("Streaming to Rendepth. Audio and playback stay in Chrome.");
     } else if (message.action === "start") {
       current.navigating = false;
       current.nativeStarted = true;
@@ -188,10 +207,10 @@ browser.runtime.onConnect.addListener(content => {
   });
 });
 
-browser.tabs.onRemoved.addListener(tabId => {
+rendepthBrowser.tabs.onRemoved.addListener(tabId => {
   if (session?.tabId === tabId) stop("Capture tab closed.");
 });
-browser.tabs.onUpdated.addListener(async (tabId, change, tab) => {
+rendepthBrowser.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   const current = session;
   if (!current || current.tabId !== tabId) return;
   if (change.status === "loading") suspend(current);
@@ -199,7 +218,7 @@ browser.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   const generation = current.generation;
   const allowed = autoReconnectOrigins.has(current.origin) && tab.url &&
     new URL(tab.url).origin === current.origin &&
-    await browser.permissions.contains({origins: [sitePattern(current.origin)]});
+    await rendepthBrowser.permissions.contains({origins: [sitePattern(current.origin)]});
   if (session !== current || generation !== current.generation) return;
   if (!allowed) {
     setStatus("Rendepth is waiting. Use Refresh Video to connect this page.");
@@ -210,11 +229,11 @@ browser.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   void inject(current, true);
 });
 
-browser.menus.create({id: "open", title: "Open in Rendepth", contexts: ["video"]});
+rendepthBrowser.menus.create({id: "open", title: "Open in Rendepth", contexts: ["video"]});
 for (const [id, title] of [["2d", "2D Video"], ["sbs-half", "SBS Half"], ["sbs-full", "SBS Full"]]) {
-  browser.menus.create({id, parentId: "open", title, contexts: ["video"]});
+  rendepthBrowser.menus.create({id, parentId: "open", title, contexts: ["video"]});
 }
-browser.menus.onClicked.addListener((info, tab) => {
+rendepthBrowser.menus.onClicked.addListener((info, tab) => {
   if (info.parentMenuItemId === "open-image") {
     void startImage(info, tab);
     return;
@@ -222,9 +241,9 @@ browser.menus.onClicked.addListener((info, tab) => {
   if (info.parentMenuItemId !== "open") return;
   void start(tab.id, info.frameId ?? 0, info.targetElementId, info.menuItemId, true, info.pageUrl || tab.url);
 });
-browser.menus.create({id: "open-image", title: "Open in Rendepth", contexts: ["image"]});
+rendepthBrowser.menus.create({id: "open-image", title: "Open in Rendepth", contexts: ["image"]});
 for (const [id, title] of [["image-2d", "2D Photo"], ["image-cross-eye", "Cross-Eye"], ["image-parallel", "Parallel"]])
-  browser.menus.create({id, parentId: "open-image", title, contexts: ["image"]});
+  rendepthBrowser.menus.create({id, parentId: "open-image", title, contexts: ["image"]});
 
 async function startImage(info, tab) {
   stop();
@@ -235,7 +254,7 @@ async function startImage(info, tab) {
     const url = new URL(info.srcUrl);
     // Request synchronously from the context-menu gesture.
     const permission = ["http:", "https:"].includes(url.protocol)
-      ? browser.permissions.request({origins: [sitePattern(url.origin)]}) : Promise.resolve(true);
+      ? rendepthBrowser.permissions.request({origins: [sitePattern(url.origin)]}) : Promise.resolve(true);
     setStatus("Opening image in Rendepth…");
     timeout = setTimeout(() => current.abort(), 120000);
     await openWebImage(info, tab, info.menuItemId === "image-2d" ? "2d" : "sbs-full",
@@ -256,24 +275,24 @@ function sitePattern(origin) {
 }
 
 // Called synchronously by the popup's checkbox handler to retain its user gesture.
-// Both the permission promise and the save belong to this persistent page: Firefox
+// Both the permission promise and the save belong to this service worker: Chrome
 // may unload the popup while showing the permission prompt.
 async function setAutoReconnect(siteOrigin, requested) {
   const url = new URL(siteOrigin);
   if (!["http:", "https:"].includes(url.protocol)) return {autoReconnect: false};
   const origin = url.origin;
   const permission = {origins: [sitePattern(origin)]};
-  const granted = requested === true ? await browser.permissions.request(permission) : false;
+  const granted = requested === true ? await rendepthBrowser.permissions.request(permission) : false;
   await preferencesReady;
   if (granted) autoReconnectOrigins.add(origin);
   else autoReconnectOrigins.delete(origin);
-  await browser.storage.local.set({autoReconnectOrigins: [...autoReconnectOrigins]});
+  await rendepthBrowser.storage.local.set({autoReconnectOrigins: [...autoReconnectOrigins]});
   if (!granted) {
-    await browser.permissions.remove(permission);
+    await rendepthBrowser.permissions.remove(permission);
     const current = session;
     if (current?.origin === origin && current.navigating) {
       suspend(current);
-      browser.tabs.sendMessage(current.tabId, {action: "cancel", sessionId: current.id},
+      rendepthBrowser.tabs.sendMessage(current.tabId, {action: "cancel", sessionId: current.id},
         {frameId: current.frameId}).catch(() => {});
       setStatus("Rendepth is waiting. Use Refresh Video to connect this page.");
     }
@@ -281,24 +300,54 @@ async function setAutoReconnect(siteOrigin, requested) {
   return {autoReconnect: granted};
 }
 
-browser.runtime.onMessage.addListener(async message => {
+rendepthBrowser.runtime.onMessage.addListener(async (message, sender) => {
+  if (message.action === 'quality-limit') return requestPageQuality(message, sender);
+  // Do not await before this branch: Chrome carries the popup's click gesture
+  // into this synchronous turn so permissions.request can display its prompt.
+  if (message.action === 'auto-reconnect' && !sender?.tab)
+    return setAutoReconnect(message.origin, message.enabled);
+  if (sender?.tab) return;
   await preferencesReady;
+  await statusReady;
   if (message.action === "site-status") {
     const url = new URL(message.origin);
     if (!["http:", "https:"].includes(url.protocol)) return {autoReconnect: false};
     const origin = url.origin;
     return {autoReconnect: autoReconnectOrigins.has(origin) &&
-      await browser.permissions.contains({origins: [sitePattern(origin)]})};
+      await rendepthBrowser.permissions.contains({origins: [sitePattern(origin)]})};
   }
   if (message.action === "preferences") {
-    await browser.storage.local.set({limitSource: message.limitSource === true});
+    await rendepthBrowser.storage.local.set({limitSource: message.limitSource === true});
     limitSource = message.limitSource === true;
   }
   if (message.action === "stop") stop();
   if (message.action === "open") {
-    const [tab] = await browser.tabs.query({active: true, currentWindow: true});
+    const [tab] = await rendepthBrowser.tabs.query({active: true, currentWindow: true});
     await start(tab.id, 0, null, message.format, message.scaleHalf, tab.url);
   }
   if (statusExpiresAt && Date.now() >= statusExpiresAt) setStatus("Choose a playing video.");
   return {status, active: Boolean(session), limitSource, qualityNotice: session?.qualityNotice || "", options: session?.options};
 });
+
+async function requestPageQuality(message, sender) {
+  const current = session;
+  if (!current?.options.limitSource || sender?.tab?.id !== current.tabId ||
+      (sender.frameId ?? 0) !== current.frameId ||
+      typeof message.token !== 'string' || !/^[a-z0-9-]{1,80}$/.test(message.token)) return {ok: false};
+  const results = await chrome.scripting.executeScript({
+    target: {tabId: current.tabId, frameIds: [current.frameId]}, world: 'MAIN',
+    func: token => {
+      if (!['youtube.com', 'youtube-nocookie.com'].some(domain =>
+        location.hostname === domain || location.hostname.endsWith('.' + domain))) return false;
+      const player = document.querySelector(`[data-rendepth-quality="${token}"]`);
+      if (!player || typeof player.getAvailableQualityLevels !== 'function' ||
+          typeof player.setPlaybackQualityRange !== 'function') return false;
+      const available = player.getAvailableQualityLevels();
+      const quality = ['hd1080', 'hd720', 'large', 'medium', 'small', 'tiny'].find(level => available.includes(level));
+      if (!quality) return false;
+      player.setPlaybackQualityRange(quality, quality);
+      return true;
+    }, args: [message.token]
+  });
+  return {ok: results[0]?.result === true};
+}

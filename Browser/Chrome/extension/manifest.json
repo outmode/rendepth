@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Rendepth Companion",
+  "version": "3.0",
+  "minimum_chrome_version": "120",
+  "description": "Send web photos and videos to the Rendepth desktop app for 3D viewing. Requires Rendepth.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvtHv/13lKFNn1QlIM8SGNDbIx1eX8UHa4/NvRs7rFi3GLNjWKGcsK6YlUrY02rFfhJFmZofb4Zj1yY3482Kxau/Da22Pw8SBsgfr0YGW/NfQuu+pSCDgJ/Vs9a2ccB4RFVQddiaKubiPEqLLKc9Fn9mrKCWHLxNgetwgL/CxJAtASufmHsXi4Id8itmw14shAjTPGUda6d+743JSEgOVG7Zt+KrTgjdFV2EKveFffN6dWHF02eFat2+0rSuwRwtad6CZAAxrGTNMcWo61L0CCCI5YOqXnJ0fP5NDWTBZWqq7O9XeJp3lyZb+vsqCo8RHuqBEgDUdXOGRgRqlcjmJOwIDAQAB",
+  "icons": {
+    "512": "icons/rendepth.png"
+  },
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "nativeMessaging",
+    "storage",
+    "scripting"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "worker.js"
+  },
+  "action": {
+    "default_title": "Open in Rendepth",
+    "default_popup": "popup.html",
+    "default_icon": "icons/rendepth.png"
+  }
+}

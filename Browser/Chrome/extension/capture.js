@@ -20,7 +20,7 @@
   };
   const adWait = () => Object.assign(new Error("Waiting for the main video."), {captureBlocked: true});
 
-  browser.runtime.onMessage.addListener(async message => {
+  rendepthBrowser.runtime.onMessage.addListener(async message => {
     if (message.action === "cancel") {
       if (currentSessionId === message.sessionId) { ++currentRun; stopCurrent(); }
       return {ok: true};
@@ -63,7 +63,7 @@
     let track, sender, capture, refresh, sourceReset, nextFrame;
     let resetVersion = 0, attachedVersion = 0, refreshPending = false;
     let refreshQueue = Promise.resolve();
-    const crossOriginNotice = "Firefox blocked capture of this video’s cross-origin media. Waiting for a capturable video.";
+    const crossOriginNotice = "Chrome blocked capture of this video’s cross-origin media. Waiting for a capturable video.";
     const stop = () => {
       if (stopped) return;
       stopped = true;
@@ -110,7 +110,7 @@
     };
     const videoForTarget = target => {
       if (target instanceof HTMLVideoElement) return isAdVideo(target) ? playingVideo() : target;
-      // Firefox can report a video context while getTargetElement returns a
+      // Chrome can report a video context while getTargetElement returns a
       // player's overlay (for example Vimeo's vp-target). Prefer its nearest
       // container's visible video over an unrelated larger player on the page.
       for (let container = target; container && container !== document.body &&
@@ -137,14 +137,14 @@
       ++resetVersion;
       if (!canvas) {
         capture = source.captureStream || source.mozCaptureStream;
-        if (!capture) throw new Error("This Firefox version does not provide video capture.");
+        if (!capture) throw new Error("This Chrome version does not provide video capture.");
       }
       attachListeners();
       if (canvas) frameCallback = source.requestVideoFrameCallback(nextFrame);
     };
     try {
       source = message.targetElementId != null
-        ? videoForTarget(browser.menus.getTargetElement(message.targetElementId))
+        ? videoForTarget(rendepthBrowser.menus.getTargetElement(message.targetElementId))
         : playingVideo();
       if (!(source instanceof HTMLVideoElement) && [...document.querySelectorAll("video")].some(video =>
           isAdVideo(video) && !video.paused && visibleArea(video) > 0)) throw adWait();
@@ -158,7 +158,7 @@
         canvas = document.createElement("canvas");
         const context = canvas.getContext("2d", {alpha: false});
         if (!context || !source.requestVideoFrameCallback)
-          throw new Error("This Firefox version cannot scale SBS video.");
+          throw new Error("This Chrome version cannot scale SBS video.");
         const paint = () => {
           if (isAdVideo(source)) throw adWait();
           if (source.mediaKeys) throw new Error("This protected video cannot be captured.");
@@ -184,13 +184,13 @@
         frameCallback = source.requestVideoFrameCallback(nextFrame);
       } else {
         capture = source.captureStream || source.mozCaptureStream;
-        if (!capture) throw new Error("This Firefox version does not provide video capture.");
+        if (!capture) throw new Error("This Chrome version does not provide video capture.");
       }
       stream = capture.call(source);
-      // Playback/audio remain in Firefox. Only captured video enters the peer.
+      // Playback/audio remain in Chrome. Only captured video enters the peer.
       for (const track of stream.getAudioTracks()) { stream.removeTrack(track); track.stop(); }
       track = stream.getVideoTracks()[0];
-      if (!track) throw new Error("Firefox did not expose a video track for this source.");
+      if (!track) throw new Error("Chrome did not expose a video track for this source.");
       track.contentHint = "detail";
       window.addEventListener("pagehide", navigate, {once: true});
 
@@ -201,7 +201,7 @@
       const codecs = RTCRtpSender.getCapabilities("video").codecs.filter(codec =>
         codec.mimeType.toLowerCase() === "video/vp8");
       if (!codecs.length || !transceiver.setCodecPreferences)
-        throw new Error("This Firefox version cannot select the VP8 streaming codec. Update Firefox.");
+        throw new Error("This Chrome version cannot select the VP8 streaming codec. Update Chrome.");
       transceiver.setCodecPreferences(codecs);
       sender = transceiver.sender;
       const configure = async () => {
@@ -265,7 +265,7 @@
       sourceReset = () => { ++resetVersion; refresh(); };
       attachListeners();
       if (stopped) return {ok: false, error: "Capture was cancelled."};
-      port = browser.runtime.connect({name: "rendepth-video"});
+      port = rendepthBrowser.runtime.connect({name: "rendepth-video"});
       port.onDisconnect.addListener(stop);
       port.postMessage({action: "hello", sessionId: message.sessionId, generation: message.generation});
       if (typeof MutationObserver !== "undefined") {
@@ -323,7 +323,7 @@
         if (!waiting && source.isConnected && !source.ended && track.muted && source.readyState >= 3 && !source.paused && !source.seeking && attachedVersion === resetVersion) {
           mutedSince ??= performance.now();
           if (performance.now() - mutedSince > 5000) {
-            fail(Object.assign(new Error("Firefox is not exposing video frames. Waiting for an accessible source."), {captureBlocked: true}));
+            fail(Object.assign(new Error("Chrome is not exposing video frames. Waiting for an accessible source."), {captureBlocked: true}));
             return;
           }
         } else { mutedSince = null; }

@@ -3628,9 +3628,12 @@ static void stopCapture() {
 	hideUI();
 }
 
+static std::string openBrowserImage(const BrowserBridge::Request& request);
+
 static std::string beginBrowserCapture(const BrowserBridge::Request& request) {
 	if (isConverting || doingFileOp || context.loading)
 		return "Rendepth is loading or converting media. Try again when it is ready.";
+	if (request.image) return openBrowserImage(request);
 	stopCapture();
 	std::string error;
 	if (!screenCapture.startBrowser(request.directory, error, request.mono)) return error;
@@ -4527,6 +4530,49 @@ static void serviceDeferredMediaLoad() {
 	updateStereoIcon();
 	loadImage(nullptr);
 	checkMouseState();
+}
+
+static std::filesystem::path runtimeDepthDirectory();
+
+static std::string openBrowserImage(const BrowserBridge::Request& request) {
+	// Own the source before acknowledging the one-shot native host. The image
+	// and its depth input must survive closing the tab or disconnecting Firefox.
+	const auto root = runtimeDepthDirectory();
+	if (root.empty()) return "Could not create storage for the browser image.";
+	static unsigned long nextPhoto = 0;
+	const auto directory = root / ("WebPhoto-" + std::to_string(++nextPhoto));
+	const auto path = directory / (request.mono ? "Photo_rgb.png" :
+		request.half ? "Photo_sbs_half_width.png" : "Photo_sbs.png");
+	std::error_code error;
+	std::filesystem::create_directory(directory, error);
+	if (!error) std::filesystem::copy_file(
+		std::filesystem::path(request.directory) / "image.png", path,
+		std::filesystem::copy_options::none, error);
+	if (error) return "Could not save the browser image: " + error.message();
+	auto* surface = Core::loadImageDirect(path.string());
+	if (!surface) {
+		std::filesystem::remove_all(directory, error);
+		return "Could not decode the browser image.";
+	}
+	stopCapture();
+	discTitleMenu.close();
+	Image::discMenuTexture = nullptr;
+	if (Image::discBackgroundTexture) Image::updateDiscBackground(&context, nullptr);
+	selectedDiscTitle = -1;
+	discTrackSelectionRequested = false;
+	parseFileList({path.string()});
+	fileList[fileIndex].preload = surface;
+	menuSelection[ChoiceEyes.label] = request.swap ? 1 : 0;
+	changeEyes(menuSelection[ChoiceEyes.label]);
+	setDisplay3D(true);
+	const auto result = loadImage(nullptr);
+	updateStereoIcon();
+	checkMouseState();
+	if (result != 0) return "Could not display the browser image.";
+	if (SDL_GetWindowFlags(context.window) & SDL_WINDOW_MINIMIZED)
+		SDL_RestoreWindow(context.window);
+	SDL_RaiseWindow(context.window);
+	return {};
 }
 
 SDL_AppResult SDL_AppIterate(void* appstate) {

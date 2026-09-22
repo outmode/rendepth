@@ -83,6 +83,20 @@ int main() {
 		auto invalidRequest = request(second);
 		invalidRequest.replace(invalidRequest.find("sbs-full"), 8, "unknown");
 		require(exchange(invalidRequest).HasMember("error"), "Unknown format was accepted");
+		auto imageRequest = request(first);
+		imageRequest.insert(imageRequest.size() - 1, ",\"image\":true");
+		require(exchange(imageRequest).HasMember("error"), "Missing image was accepted");
+		std::ofstream(first / "image.png").put('x');
+		require(exchange(imageRequest).HasMember("pid") && received.image && !received.mono && !received.half,
+			"SBS image settings did not reach the handler");
+		imageRequest.replace(imageRequest.find("sbs-full"), 8, "sbs-half");
+		require(exchange(imageRequest).HasMember("pid") && received.image && received.half && !received.mono,
+			"Half SBS photo did not retain its aspect-ratio setting");
+		imageRequest.replace(imageRequest.find("sbs-half"), 8, "2d");
+		require(exchange(imageRequest).HasMember("pid") && received.image && received.mono,
+			"2D photo settings did not reach the handler");
+		imageRequest.replace(imageRequest.find("\"image\":true"), 12, "\"image\":123");
+		require(exchange(imageRequest).HasMember("error"), "Invalid image discriminator accepted");
 		bridge.stop();
 		require(std::filesystem::exists(second / "closed") && !std::filesystem::exists(endpoint), "Quit did not clean up bridge");
 		close(client);

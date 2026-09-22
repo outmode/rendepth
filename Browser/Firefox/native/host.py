@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Firefox native signalling host for Linux SBS WebRTC capture.
+"""Firefox native host for Linux image transfer and SBS WebRTC capture.
 
 Only the registered extension can start this host. No TCP listener, URLs,
 commands, or caller-chosen filesystem paths are accepted from the browser.
 """
 import argparse
+import base64
+import binascii
 import errno
 import fcntl
 import json
@@ -21,6 +23,43 @@ import time
 
 MAX_MESSAGE = 128 * 1024
 MAX_SDP = 64 * 1024
+MAX_IMAGE = 32 * 1024 * 1024
+MAX_IMAGE_PIXELS = 32 * 1024 * 1024
+
+
+class ImageTransfer:
+    """Bounded PNG transfer; neither URLs nor file paths cross this protocol."""
+    def __init__(self, message):
+        self.size = message.get("size")
+        self.format = message.get("format")
+        self.swap = message.get("swap", False)
+        if (type(self.size) is not int or not 24 <= self.size <= MAX_IMAGE or
+                self.format not in ("2d", "sbs-half", "sbs-full") or type(self.swap) is not bool):
+            raise ValueError("Invalid image size or format")
+        self.data = bytearray()
+
+    def append(self, message):
+        encoded = message.get("data")
+        if not isinstance(encoded, str) or not 0 < len(encoded) <= 65536:
+            raise ValueError("Invalid image chunk")
+        try:
+            chunk = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as error:
+            raise ValueError("Invalid image encoding") from error
+        if len(self.data) + len(chunk) > self.size:
+            raise ValueError("Image exceeds declared size")
+        self.data.extend(chunk)
+
+    def save(self, directory):
+        if (len(self.data) != self.size or self.data[:16] !=
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"):
+            raise ValueError("Incomplete or invalid PNG image")
+        width, height = struct.unpack(">II", self.data[16:24])
+        if (not width or not height or width > 16384 or height > 16384 or
+                width * height > MAX_IMAGE_PIXELS or
+                (self.format in ("sbs-half", "sbs-full") and (width < 2 or width % 2))):
+            raise ValueError("Unsupported image dimensions")
+        (directory / "image.png").write_bytes(self.data)
 
 
 def read_exact(stream, size):
@@ -106,9 +145,10 @@ def connect_existing(client, registry, request):
     return None
 
 
-def attach(executable, directory, format_name, swap):
+def attach(executable, directory, format_name, swap, image=False):
     registry = runtime_directory()
-    request = json.dumps({"directory": str(directory), "format": format_name, "swap": swap}).encode()
+    request = json.dumps({"directory": str(directory), "format": format_name,
+                          "swap": swap, "image": image}).encode()
     with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
         client.bind(str(directory / "reply.sock"))
         client.settimeout(15)
@@ -161,6 +201,8 @@ def run(executable):
     generation = 0
     navigating = False
     request_id = None
+    image_transfer = None
+    image_deadline = None
     with tempfile.TemporaryDirectory(prefix="rendepth-firefox-") as temporary:
         directory = Path(temporary)
         # A killed native host cannot run TemporaryDirectory cleanup. Let the
@@ -169,6 +211,8 @@ def run(executable):
         heartbeat.touch()
         next_heartbeat = time.monotonic() + 1
         while True:
+            if image_deadline is not None and time.monotonic() > image_deadline:
+                raise ValueError("Image transfer timed out")
             if time.monotonic() >= next_heartbeat:
                 heartbeat.touch()
                 next_heartbeat = time.monotonic() + 1
@@ -197,6 +241,23 @@ def run(executable):
             message = read_message(input_stream)
             if message is None:
                 return
+            action = message.get("action")
+            if action == "image-begin" and not started and image_transfer is None:
+                image_transfer = ImageTransfer(message)
+                image_deadline = time.monotonic() + 60
+                send({"action": "image-ready"})
+                continue
+            if image_transfer is not None:
+                if action == "image-chunk":
+                    image_transfer.append(message)
+                    send({"action": "image-ready"})
+                    continue
+                if action == "image-end":
+                    image_transfer.save(directory)
+                    attach(executable, directory, image_transfer.format, image_transfer.swap, image=True)
+                    send({"action": "image-opened"})
+                    return
+                raise ValueError("Unexpected image message")
             if message.get("action") == "navigate" and started:
                 publish(directory / "state", "waiting")
                 navigating = True

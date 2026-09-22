@@ -87,7 +87,7 @@ async function fixture(format = 'sbs-full', width = 1920, height = 1080, scaleHa
     document: {querySelectorAll: () => videos, createElement: () => canvas}, window: testWindow,
     performance: {now: () => now}, setTimeout, clearTimeout,
     setInterval(fn) {interval = fn;return 1;}, clearInterval() {interval = null;},
-    browser: {menus: {getTargetElement: () => target}, runtime: {onMessage: {addListener(fn) {start = fn;}}, connect: () => port}}});
+    rendepthBrowser: {menus: {getTargetElement: () => target}, runtime: {onMessage: {addListener(fn) {start = fn;}}, connect: () => port}}});
   if (initialAd) source.adState = '[data-is-ad="true"]';
   if (resume) source.paused = true;
   const pendingStart = start({action: resume ? 'resume' : 'start', format, swap: true, scaleHalf, limitSource,
@@ -285,7 +285,7 @@ for (const action of ['cancel', 'pagehide']) {
   const window = new EventTarget();
   const context = {window, document: {querySelectorAll: () => []},
     setInterval(fn) {interval = fn;return 1;}, clearInterval() {interval = null;},
-    browser: {runtime: {onMessage: {addListener(fn) {listener = fn;}}}}};
+    rendepthBrowser: {runtime: {onMessage: {addListener(fn) {listener = fn;}}}}};
   vm.runInNewContext(script, context);
   const pending = listener({action: 'resume', sessionId: 123});
   if (action === 'cancel') await listener({action: 'cancel', sessionId: 123});

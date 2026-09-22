@@ -1,5 +1,6 @@
 """Protocol and lifecycle tests; no browser or desktop session required."""
 import io
+import base64
 import json
 import os
 import socket
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 
 import host
 
@@ -28,6 +30,59 @@ class Fragmented(io.BytesIO):
 
 
 class ProtocolTest(unittest.TestCase):
+    def test_image_limits_and_validation(self):
+        for size in (True, -1, host.MAX_IMAGE + 1):
+            with self.assertRaises(ValueError):
+                host.ImageTransfer({"size": size, "format": "2d"})
+        with self.assertRaises(ValueError):
+            host.ImageTransfer({"size": 24, "format": "unknown"})
+        with self.assertRaises(ValueError):
+            host.ImageTransfer({"size": 24, "format": "sbs-full", "swap": "true"})
+        image = host.ImageTransfer({"size": 24, "format": "sbs-full"})
+        with self.assertRaises(ValueError):
+            image.append({"data": "not base64!"})
+        with self.assertRaises(ValueError):
+            image.append({"data": base64.b64encode(b"x" * 25).decode()})
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(ValueError):
+                image.save(Path(temporary))
+            for width, height in ((3, 2), (20000, 2), (8192, 8192), (0, 2)):
+                image.data = bytearray(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + struct.pack(">II", width, height))
+                with self.assertRaises(ValueError):
+                    image.save(Path(temporary))
+
+    def test_image_one_shot_transfer_and_cleanup(self):
+        # A valid PNG fixture, split over messages, must be available throughout
+        # attach and removed only after the app acknowledges ownership.
+        def chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        def png(width):
+            return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, 1, 8, 2, 0, 0, 0)) +
+                    chunk(b"IDAT", zlib.compress(b"\0" + b"\xff\0\0" * width)) + chunk(b"IEND", b""))
+        for format_name, payload, swapped in (("2d", png(1), False), ("sbs-half", png(2), False),
+                                             ("sbs-full", png(2), False), ("sbs-full", png(2), True)):
+            messages = [{"action": "image-begin", "size": len(payload), "format": format_name, "swap": swapped},
+                        {"action": "image-chunk", "data": base64.b64encode(payload[:30]).decode()},
+                        {"action": "image-chunk", "data": base64.b64encode(payload[30:]).decode()},
+                        {"action": "image-end"}]
+            paths = []
+            def attach(executable, directory, format_arg, swap, image=False):
+                self.assertTrue(image)
+                self.assertEqual(format_arg, format_name)
+                self.assertEqual(swap, swapped)
+                self.assertEqual((directory / "image.png").read_bytes(), payload)
+                paths.append(directory)
+                return os.getpid(), None
+            with patch.object(host, "attach", side_effect=attach), \
+                 patch.object(host, "send") as send, \
+                 patch.object(host.sys, "stdin", unittest.mock.Mock(buffer=io.BytesIO(b"".join(map(packet, messages))))), \
+                 patch.object(host.select, "select", return_value=([True], [], [])):
+                host.run(Path("/bin/false"))
+                self.assertEqual(send.call_args.args[0], {"action": "image-opened"})
+                self.assertEqual(send.call_count, 4)
+            self.assertEqual(len(paths), 1)
+            self.assertFalse(paths[0].exists())
+
     def test_fragmented_message(self):
         self.assertEqual(host.read_message(Fragmented(packet({"action": "start"}))), {"action": "start"})
 

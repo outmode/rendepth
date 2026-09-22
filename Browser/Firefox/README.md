@@ -1,4 +1,54 @@
-# Firefox → Rendepth: live 2D and SBS video
+# Rendepth Companion for Firefox
+
+Rendepth Companion sends web photos and videos to the Rendepth desktop app for
+3D viewing. It requires the desktop app; the add-on is not a standalone viewer.
+
+## Version compatibility
+
+The add-on starts at **3.0**, matching the desktop app's **3.0** release family.
+Keep major/minor versions aligned; patch versions can advance independently.
+For example, Companion **3.0.2** and desktop **3.0.4** belong to the same compatible
+release family. Browser/platform minimum versions are separate requirements.
+This is the release-version convention, not a runtime version-enforcement check.
+
+## Web photos (Free and Pro)
+
+Right-click an image and choose **Open in Rendepth → 2D Photo**, **Cross-Eye**, or **Parallel**.
+2D Photo opens the image and starts the existing still-photo depth conversion,
+including on Free. Parallel interprets full-width SBS as left/right (L/R).
+Cross-Eye interprets full-width SBS as right/left (R/L). Both preserve the source
+pixels and skip depth inference.
+Rendepth's existing display and
+eye-swap controls apply.
+
+When you open an HTTP/HTTPS image, the extension requests Firefox's permission
+for the image host before reading or fetching it. Firefox shows its standard
+prompt if access has not already been granted. Declining cancels the image
+opening. This permission covers the host, not just one image. Blob and data
+images do not request host access. There is no separate permission confirmation
+in the extension popup. The extension uses the selected image URL and
+transfers a lossless PNG at its decoded dimensions. There is no video capture
+or VP8 compression. Rendepth keeps its own temporary copy until app exit, so
+closing the page or browser does not remove the photo. Opening a photo replaces
+the active video capture. Existing native-host registration remains valid;
+restart Rendepth and reload the temporary extension after building this version.
+
+Limits: 32 MiB downloaded/PNG data, 32 megapixels, and 16384 pixels per side.
+Both stereo options require an even width. Animated images become a still image. Blob
+images are snapshotted from the selected page element. Sites that reject image
+fetches or require unavailable authentication may require saving the image
+manually. No arbitrary URL or destination path is passed to the native host.
+
+Image checks:
+```sh
+node Browser/Firefox/test_images.mjs
+python3 Browser/Firefox/test_images_browser.py
+python3 -m unittest discover -s Browser/Firefox/native -p 'test_host.py'
+cmake --build cmake-build-debug --target BrowserBridgeTest --parallel 14
+Debug/BrowserBridgeTest
+```
+
+## Live video
 
 This Linux development extension sends **only the active video's track** to a
 running Rendepth window, launching the app if none is available. It uses a direct
@@ -439,8 +489,9 @@ navigation, the viewer stays open; click **Refresh Video** to reconnect. Refresh
 retains the current capture format and can wait for the next video's Play click.
 
 For hands-free resumption on later pages, enable **Automatically reconnect on this
-site** in the popup. Its explanation appears before the opt-in, and only enabling
-this setting requests Firefox's optional site permission. The choice is saved per
+site** in the popup. Its explanation appears before the opt-in, and enabling
+this setting requests Firefox's optional site permission. Opening web images can
+also request access to their image host. The reconnect choice is saved per
 origin and defaults to off, even if site permission was granted by an older build.
 From v0.2.9, the persistent background page handles both the permission request
 and saving the choice, so closing the popup during the permission prompt cannot
@@ -486,3 +537,22 @@ or verify physical light-field output. Run it with:
 cmake --build cmake-build-debug --target BrowserCaptureTest --parallel 14
 python3 Browser/Firefox/test_navigation.py
 ```
+
+## Capture selection during ads
+
+Capture reads explicit ad-state classes/attributes on the selected video and its
+ancestors (including `ad-showing`, `vjs-ad-playing`, `jw-flag-ads`,
+`data-ad-state="playing"`/`"active"`, and `data-is-ad="true"`). A separate
+`video-overlay` is excluded only when paired with a `.video-bg-pic video` content
+player. There is no advertising-domain list or classification based on CDN/CORS.
+
+When the selected player signals an ad, Rendepth retains its last frame while
+capture reconnects/checks readiness every three seconds. This handling does not
+pause, seek, mute, reload, remove, or skip anything in the website's player.
+Stop, tab closure, or leaving the capture's origin cancels recovery. CORS
+failures also use recovery, without treating them as proof of advertising.
+
+Detection is best-effort: unmarked ads and ads stitched into a stream without
+exposed player state cannot reliably be distinguished from the main video.
+
+Player-state reference: [Video.js ad-break state](https://github.com/videojs/videojs-contrib-ads/blob/main/src/adBreak.js).

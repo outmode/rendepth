@@ -11,6 +11,7 @@ class BrowserBridge {
 public:
 	struct Request {
 		std::string directory;
+		bool image = false;
 		bool half = true;
 		bool mono = false;
 		bool swap = false;
