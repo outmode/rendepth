@@ -1,4 +1,5 @@
 #include "AudioCdReader.h"
+#include "AudioCdToc.h"
 #include <algorithm>
 #include <cerrno>
 #include <cctype>
@@ -10,6 +11,12 @@
 #include <linux/cdrom.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#elif defined(__APPLE__)
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <sys/mount.h>
+#include <unistd.h>
+#include <IOKit/storage/IOCDMediaBSDClient.h>
 #elif defined(_WIN32)
 #define NOMINMAX
 #include <windows.h>
@@ -114,7 +121,7 @@ AVIOContext* AudioCdStream::createAVIOContext() {
 }
 
 struct AudioCdReader::Device {
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
     int fd = -1;
     // Close the optical-drive descriptor when its device wrapper is released.
     ~Device() { if (fd >= 0) ::close(fd); }
@@ -143,6 +150,16 @@ struct AudioCdReader::Device {
         for (size_t i = 0; i + 1 < entries.size(); ++i)
             if (!(entries[i].cdte_ctrl & CDROM_DATA_TRACK))
                 tracks.push_back({entries[i].cdte_track, entries[i].cdte_addr.lba, entries[i + 1].cdte_addr.lba});
+#elif defined(__APPLE__)
+        fd = ::open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) return false;
+        std::array<uint8_t, 4 + 100 * 8> toc{};
+        dk_cd_read_toc_t request{};
+        request.format = 0; // Formatted TOC, logical block addresses.
+        request.buffer = toc.data();
+        request.bufferLength = static_cast<uint16_t>(toc.size());
+        if (ioctl(fd, DKIOCCDREADTOC, &request) < 0 || request.bufferLength > toc.size()) return false;
+        tracks = audioCdTracks({toc.data(), request.bufferLength});
 #elif defined(_WIN32)
         handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
             nullptr, OPEN_EXISTING, 0, nullptr);
@@ -182,6 +199,19 @@ struct AudioCdReader::Device {
         request.buf = readAhead.data();
         for (int attempt = 0; attempt < 3; ++attempt)
             if (ioctl(fd, CDROMREADAUDIO, &request) == 0) { success = true; break; }
+#elif defined(__APPLE__)
+        dk_cd_read_t request{};
+        request.offset = uint64_t(sector) * 2352;
+        request.sectorArea = kCDSectorAreaUser;
+        request.sectorType = kCDSectorTypeCDDA;
+        request.buffer = readAhead.data();
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            request.bufferLength = count * 2352;
+            if (ioctl(fd, DKIOCCDREAD, &request) == 0 && request.bufferLength == unsigned(count * 2352)) {
+                success = true;
+                break;
+            }
+        }
 #elif defined(_WIN32)
         RAW_READ_INFO request{};
         request.DiskOffset.QuadPart = int64_t(sector) * 2048;
@@ -223,6 +253,25 @@ std::filesystem::path AudioCdReader::devicePath(const std::filesystem::path& pat
     }
     if (device.starts_with("sr") && device.size() > 2 &&
         device.find_first_not_of("0123456789", 2) == std::string::npos) return "/dev/" + device;
+#elif defined(__APPLE__)
+    // Finder exposes audio CDs through cddafs; resolve a volume or its AIFF
+    // tracks to the raw device so all tracks share one seekable timeline.
+    auto device = path;
+    if (!value.starts_with("/dev/")) {
+        struct statfs volume{};
+        if (statfs(path.c_str(), &volume) != 0 ||
+            (std::strcmp(volume.f_fstypename, "cddafs") != 0 &&
+             std::strcmp(volume.f_fstypename, "udf") != 0 &&
+             std::strcmp(volume.f_fstypename, "cd9660") != 0)) return {};
+        if (std::strcmp(volume.f_fstypename, "cddafs") != 0 &&
+            path.lexically_normal() != std::filesystem::path(volume.f_mntonname)) return {};
+        device = volume.f_mntfromname;
+    }
+    auto name = device.filename().string();
+    if (name.starts_with("rdisk")) name.erase(0, 1);
+    if (device.parent_path() != "/dev" || !name.starts_with("disk") ||
+        name.size() == 4 || name.find_first_not_of("0123456789", 4) != std::string::npos) return {};
+    return "/dev/r" + name;
 #elif defined(_WIN32)
     if (value.size() >= 2 && value[1] == ':') {
         auto extension = path.extension().string();

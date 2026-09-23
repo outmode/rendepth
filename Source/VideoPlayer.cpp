@@ -231,7 +231,7 @@ struct VideoPlayer::Impl {
 	SwrContext* audioResampler = nullptr;
 	int audioStreamIndex = -1;
 	std::atomic<double> audioQueuePosition{0.0};
-	bool audioQueuePositionValid = false;
+	std::atomic<bool> audioQueuePositionValid{false};
 	AVCodecContext* subtitleCodec = nullptr;
 	int subtitleStreamIndex = -1;
 	static constexpr int audioSampleRate = 48000;
@@ -1253,6 +1253,8 @@ struct VideoPlayer::Impl {
 			if (requestedTrack >= 0 && requestedTrack != selectedAudioTrack.load()) {
 				selectedAudioTrack = requestedTrack;
 				std::lock_guard lock(audioState->mutex);
+				audioState->pending.clear();
+				audioState->pendingBytes = 0;
 				if (audioState->output != nullptr) SDL_ClearAudioStream(audioState->output);
 				if (audioCodec != nullptr) avcodec_free_context(&audioCodec);
 				av_frame_free(&audioFrame);
@@ -2004,6 +2006,10 @@ double VideoPlayer::audioPlaybackPosition() const {
 	std::lock_guard lock(impl->audioState->mutex);
 	if (impl->audioSeekPending || impl->audioState->output == nullptr || !impl->audioState->started ||
 		impl->audioState->buffering) return -1.0;
+	// A track change clears the audio queue before the decoder reaches the new
+	// track's samples. Let presentation use its wall clock during that gap;
+	// a frozen audio clock would fill the video queues and block the decoder.
+	if (!impl->audioQueuePositionValid) return -1.0;
 	const int queuedBytes = SDL_GetAudioStreamQueued(impl->audioState->output);
 	if (queuedBytes < 0) return -1.0;
 	double deviceLatency = 0.0;

@@ -1,4 +1,5 @@
 #include "AudioCdReader.h"
+#include "AudioCdToc.h"
 #include "DiscSource.h"
 #include <algorithm>
 #include <cassert>
@@ -13,6 +14,30 @@ extern "C" {
 #endif
 // Verify virtual WAV reads, seeking, mixed-mode track gaps, and disc-source identification.
 int main() {
+    // MMC format-0 TOC: audio, data, audio, then lead-out. Verify that the
+    // macOS reader preserves track boundaries and rejects truncated input.
+    std::array<uint8_t, 36> toc{};
+    toc[1] = 34; toc[2] = 1; toc[3] = 3;
+    auto entry = [&](int index, int track, int control, int sector) {
+        const int offset = 4 + index * 8;
+        toc[offset + 1] = 0x10 | control;
+        toc[offset + 2] = track;
+        for (int byte = 0; byte < 4; ++byte)
+            toc[offset + 4 + byte] = uint8_t(sector >> (24 - 8 * byte));
+    };
+    entry(0, 1, 0, 0); entry(1, 2, 4, 750);
+    entry(2, 3, 0, 1500); entry(3, 0xaa, 0, 2250);
+    const auto tracks = audioCdTracks(toc);
+    assert(tracks.size() == 2 && tracks[0].number == 1 && tracks[0].endSector == 750);
+    assert(tracks[1].number == 3 && tracks[1].firstSector == 1500 && tracks[1].endSector == 2250);
+    assert(audioCdTracks(std::span(toc).first(35)).empty());
+    entry(3, 4, 0, 2250);
+    assert(audioCdTracks(toc).empty());
+    entry(3, 0xaa, 0, 1400);
+    assert(audioCdTracks(toc).empty());
+    entry(3, 0xaa, 0, 2250);
+    toc[3] = 100;
+    assert(audioCdTracks(toc).empty());
     int reads = 0;
     AudioCdStream stream;
     // Audio tracks separated by a data track: the data sectors must be skipped.
@@ -64,6 +89,11 @@ int main() {
     assert(AudioCdReader::devicePath("/run/user/1000/gvfs/cdda:host=sr2/Track 1.wav") == "/dev/sr2");
     assert(AudioCdReader::devicePath("cdda://sr0/../../sda") == "/dev/sr0");
     assert(AudioCdReader::devicePath("cdda://sda/").empty());
+#elif defined(__APPLE__)
+    assert(AudioCdReader::devicePath("/dev/disk2") == "/dev/rdisk2");
+    assert(AudioCdReader::devicePath("/dev/rdisk2") == "/dev/rdisk2");
+    assert(AudioCdReader::devicePath("/dev/disk2s1").empty());
+    assert(AudioCdReader::devicePath("/dev/disk2/../../disk0").empty());
 #endif
     auto root = std::filesystem::temp_directory_path() / ("rendepth-disc-signatures-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(root / "BDMV");

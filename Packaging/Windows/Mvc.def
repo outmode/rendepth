@@ -1,0 +1,15 @@
+LIBRARY rendepth-mvc
+EXPORTS
+    edge264_find_start_code
+    edge264_alloc
+    edge264_flush
+    edge264_free
+    edge264_decode_NAL
+    edge264_get_frame
+    edge264_export_motion
+    edge264_return_frame
+    edge264_release_frame
+    edge264_bump_frames
+    edge264_get_busy_tasks
+    edge264_bump_and_get_busy
+    edge264_is_frame_ready

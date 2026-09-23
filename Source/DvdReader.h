@@ -12,6 +12,10 @@ struct AVIOContext;
 #endif
 
 #ifdef RENDEPTH_ENABLE_DVD
+#if defined(_WIN32) && !defined(NOMINMAX)
+// The MSVC libdvdread header includes windows.h before some callers can.
+#define NOMINMAX
+#endif
 extern "C" {
 #include <dvdread/dvd_reader.h>
 #include <dvdread/ifo_types.h>

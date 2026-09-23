@@ -212,10 +212,18 @@ struct MvcDecoder::Impl {
     // Open and probe a dependent-view clip, align it to the requested timestamp, and start read-ahead.
     bool openClip(int index, int64_t pts, std::string& error) {
         closeFile();
-        const auto path = std::format("BDMV/STREAM/{}.m2ts", clips[index].dependent.clip);
+        // libbluray recognizes streams for decryption using native separators.
+        const auto path = (std::filesystem::path("BDMV") / "STREAM" /
+            std::format("{}.m2ts", clips[index].dependent.clip)).string();
         file = bd_open_file_dec(disc, path.c_str());
         if (!file) { error = "Could not open the MVC dependent-view stream."; return false; }
-        fileSize = file->seek(file, 0, SEEK_END);
+        // libbluray's Windows stdio backend returns zero on successful seek,
+        // while other backends return the new offset. Query the size with tell.
+        if (file->seek(file, 0, SEEK_END) < 0) {
+            error = "Could not seek the MVC dependent-view stream.";
+            return false;
+        }
+        fileSize = file->tell(file);
         if (fileSize <= 0) { error = "MVC dependent-view stream is empty."; return false; }
         position = 0;
         constexpr int bufferSize = 2 * 1024 * 1024;

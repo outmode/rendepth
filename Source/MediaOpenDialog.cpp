@@ -212,7 +212,7 @@ void MediaOpenDialog::open(SDL_DialogFileCallback callback, SDL_Window* parent,
 void MediaOpenDialog::poll() {}
 // Provide the common cleanup interface; the Windows dialog owns its lifetime.
 void MediaOpenDialog::close() {}
-#else
+#elif !defined(__APPLE__)
 // Open the platform's standard SDL file chooser.
 void MediaOpenDialog::open(SDL_DialogFileCallback callback, SDL_Window* parent,
                           const SDL_DialogFileFilter* filters, int count) {

@@ -81,6 +81,25 @@ Dependency versions are pinned by Git submodule commits. The SDL and SyLC pins a
 
 Disc playback
 ------
+DVD, Blu-ray and audio CD playback are built for Windows, macOS and Linux.
+`libbluray` and `libdvdread` development packages are required: configuration
+fails if either is missing instead of producing a player with disabled readers.
+
+- Windows: install `libbluray:x64-windows` and `libdvdread:x64-windows` with
+  vcpkg in the same SDK as FFmpeg. `RENDEPTH_DISC_ROOT` defaults to
+  `RENDEPTH_FFMPEG_ROOT`; a separate SDK must contain `include`, `lib`,
+  `debug/lib`, `bin` and `debug/bin`. Runtime DLLs are copied and packaged.
+- macOS: install `libbluray` and `libdvdread` development packages and expose
+  their prefix through `CMAKE_PREFIX_PATH` or pkg-config. App bundles copy
+  their linked libraries automatically. Audio CDs use the native raw-device
+  reader; select their Finder volume or an audio track in Load Media.
+- Linux: install the distribution's libbluray and libdvdread development
+  packages. Installed packages also require the corresponding runtime libraries.
+
+Blu-ray remains a Pro feature. Protected media still requires decryption support
+and any keys required by the underlying disc libraries; enabling a backend does
+not make every encrypted disc readable.
+
 Opening a Blu-ray or DVD automatically starts the most likely main feature.
 The disc's main-title hint is preferred, with the reader's longest-title choice
 as a fallback. On supported builds, a 3D title with matching duration and chapter
@@ -113,9 +132,15 @@ MVC playback primes one second of decoded video before starting audio and
 allows 1.5 seconds in the presentation queue to bridge optical-drive stalls.
 This uses more memory and adds startup buffering compared with ordinary video.
 
-The source decoder currently builds with GCC/Clang and POSIX threads. MSVC
-builds retain the explicit unsupported-MVC message. The decoder's BSD notice
-is included in the installed THIRD_PARTY_LICENSING document.
+The source decoder builds with GCC/Clang and POSIX threads. Windows MSVC builds
+compile it separately with x64 MinGW GCC into `rendepth-mvc.dll`, with static
+GCC/winpthreads runtime support and an MSVC import library. Set
+`RENDEPTH_MVC_GCC` if GCC is not found in PATH, CLion's bundled MinGW, or the
+standard MSYS2 locations. The application and FFmpeg continue to use MSVC.
+Decoder and runtime notices are included in THIRD_PARTY_LICENSING.
+
+`MvcRuntimeTest` checks the decoder ABI and worker lifecycle without a disc.
+`AudioCdReaderTest` checks PCM streaming, seeking, disc signatures and TOC parsing.
 
 `BlurayPlaylistTest` checks playlist parsing without a disc.
 `DiscReadAheadTest` checks buffered reads, seeks, EOF and I/O errors without a disc.
@@ -131,7 +156,7 @@ OS file cache can hide disc stalls.
 An optional final frame-count argument extends the throughput run beyond its
 default 240 frames, for example `MvcPlaybackTest <disc> 132 1950 frame.yuv 720`.
 Build a test target with
-`cmake --build <build-directory> --target <test-name> --parallel 14`.
+`cmake --build <build-directory> --target <test-name> --parallel 10`.
 
 ### Made by Outmode.
 

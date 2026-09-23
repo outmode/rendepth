@@ -392,6 +392,8 @@ elseif(APPLE)
     enable_language(OBJCXX)
     set_property(TARGET Rendepth PROPERTY OBJCXX_STANDARD 20)
     target_sources(Rendepth PRIVATE Source/Licensing/LicenseDialogMac.mm)
+    target_sources(Rendepth PRIVATE Source/MediaOpenDialogMac.mm)
+    set_source_files_properties(Source/MediaOpenDialogMac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     set_source_files_properties(Source/Licensing/LicenseDialogMac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     target_link_libraries(Rendepth PRIVATE "-framework Cocoa")
 else()
@@ -567,69 +569,7 @@ if(RENDEPTH_ENABLE_FFMPEG)
         add_dependencies(Rendepth RendepthFFmpeg)
     endif()
     target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_FFMPEG)
-    if(RENDEPTH_ENABLE_BLURAY OR RENDEPTH_ENABLE_DVD)
-        set(RENDEPTH_DISC_INCLUDE_DIRS "")
-        set(RENDEPTH_DISC_LIBRARIES "")
-
-        find_package(PkgConfig QUIET)
-        if(RENDEPTH_ENABLE_BLURAY AND PKG_CONFIG_FOUND)
-            pkg_check_modules(RENDEPTH_SYSTEM_LIBBLURAY IMPORTED_GLOBAL libbluray)
-        endif()
-        if(RENDEPTH_ENABLE_DVD AND PKG_CONFIG_FOUND)
-            pkg_check_modules(RENDEPTH_SYSTEM_DVDREAD IMPORTED_GLOBAL dvdread)
-        endif()
-
-        if(RENDEPTH_ENABLE_BLURAY)
-            if(RENDEPTH_SYSTEM_LIBBLURAY_FOUND AND RENDEPTH_SYSTEM_LIBBLURAY_LIBRARIES)
-                list(APPEND RENDEPTH_DISC_INCLUDE_DIRS ${RENDEPTH_SYSTEM_LIBBLURAY_INCLUDE_DIRS})
-                list(APPEND RENDEPTH_DISC_LIBRARIES ${RENDEPTH_SYSTEM_LIBBLURAY_LIBRARIES})
-                set(RENDEPTH_HAVE_BLURAY TRUE)
-            else()
-                # Fallback: bundled development headers plus the versioned
-                # shared object (no unversioned .so symlink on this system).
-                find_library(RENDEPTH_LIBBLURAY_LIB
-                    NAMES libbluray libbluray.so.3
-                    PATHS /lib64 /usr/lib64 /usr/lib)
-                if(RENDEPTH_LIBBLURAY_LIB AND
-                   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/bluray-dvdread-headers/libbluray/bluray.h")
-                    list(APPEND RENDEPTH_DISC_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/bluray-dvdread-headers")
-                    list(APPEND RENDEPTH_DISC_LIBRARIES "${RENDEPTH_LIBBLURAY_LIB}")
-                    set(RENDEPTH_HAVE_BLURAY TRUE)
-                endif()
-            endif()
-        endif()
-
-        if(RENDEPTH_ENABLE_DVD)
-            if(RENDEPTH_SYSTEM_DVDREAD_FOUND AND RENDEPTH_SYSTEM_DVDREAD_LIBRARIES)
-                list(APPEND RENDEPTH_DISC_INCLUDE_DIRS ${RENDEPTH_SYSTEM_DVDREAD_INCLUDE_DIRS})
-                list(APPEND RENDEPTH_DISC_LIBRARIES ${RENDEPTH_SYSTEM_DVDREAD_LIBRARIES})
-                set(RENDEPTH_HAVE_DVD TRUE)
-            else()
-                find_library(RENDEPTH_LIBDVDREAD_LIB
-                    NAMES libdvdread libdvdread.so.8
-                    PATHS /lib64 /usr/lib64 /usr/lib)
-                if(RENDEPTH_LIBDVDREAD_LIB AND
-                   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/bluray-dvdread-headers/dvdread/dvd_reader.h")
-                    list(APPEND RENDEPTH_DISC_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/bluray-dvdread-headers")
-                    list(APPEND RENDEPTH_DISC_LIBRARIES "${RENDEPTH_LIBDVDREAD_LIB}")
-                    set(RENDEPTH_HAVE_DVD TRUE)
-                endif()
-            endif()
-        endif()
-
-        if(RENDEPTH_HAVE_BLURAY)
-            target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_BLURAY)
-        endif()
-        if(RENDEPTH_HAVE_DVD)
-            target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_DVD)
-        endif()
-        if(RENDEPTH_HAVE_BLURAY OR RENDEPTH_HAVE_DVD)
-            target_include_directories(Rendepth PUBLIC ${RENDEPTH_DISC_INCLUDE_DIRS})
-            target_link_libraries(Rendepth PUBLIC ${RENDEPTH_DISC_LIBRARIES})
-        else()
-            message(WARNING "Rendepth: Blu-ray/DVD support disabled: libbluray/libdvdread development files not found.")
-        endif()
-    endif()
+    include(Packaging/Disc.cmake)
     target_link_libraries(Rendepth PUBLIC
         RendepthFFmpeg_avformat RendepthFFmpeg_avcodec
         RendepthFFmpeg_swresample
@@ -650,7 +590,9 @@ endif()
 
 if(RENDEPTH_ENABLE_FFMPEG)
     target_sources(Rendepth PRIVATE Source/MvcDecoder.cpp)
-    if(RENDEPTH_HAVE_BLURAY AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
+    if(WIN32 AND MSVC)
+        include(Packaging/Windows/Mvc.cmake)
+    elseif(RENDEPTH_HAVE_BLURAY AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         if(NOT EXISTS "${CMAKE_SOURCE_DIR}/ThirdParty/SyLC/edge264/src/edge264.c")
             message(FATAL_ERROR "MVC decoder missing. Run: git submodule update --init ThirdParty/SyLC")
         endif()
@@ -875,9 +817,15 @@ elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
 endif()
 
 include(Packaging/Legal.cmake)
+if(APPLE AND RENDEPTH_MAC_BUNDLE)
+    add_custom_command(TARGET Rendepth POST_BUILD
+        COMMAND ${CMAKE_COMMAND} "-DRENDEPTH_BUNDLE=$<TARGET_BUNDLE_DIR:Rendepth>"
+            -P "${CMAKE_SOURCE_DIR}/Packaging/Mac/FixupBundle.cmake")
+endif()
 include(GNUInstallDirs)
 install(TARGETS Rendepth
-        RUNTIME DESTINATION libexec/rendepth/Binary)
+        RUNTIME DESTINATION libexec/rendepth/Binary
+        BUNDLE DESTINATION .)
 install(TARGETS SDL3-shared SDL3_image-shared SDL3_ttf-shared glm
         RUNTIME DESTINATION libexec/rendepth/Library
         LIBRARY DESTINATION libexec/rendepth/Library
@@ -972,7 +920,7 @@ set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 # runtime setup. These are the Debian-family libraries used by the Linux
 # executable itself; alternatives cover the current t64 transitions.
 set(CPACK_DEBIAN_PACKAGE_DEPENDS
-        "libc6, libstdc++6, libgcc-s1, libcurl4 | libcurl4t64, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-nice")
+        "libc6, libstdc++6, libgcc-s1, libbluray2 | libbluray3, libdvdread8, libcurl4 | libcurl4t64, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-nice")
 # Application-level license; component terms are retained in THIRD_PARTY_LICENSING.
 set(CPACK_RPM_PACKAGE_LICENSE "GPL-3.0-only")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
@@ -1061,6 +1009,14 @@ target_include_directories(GettingStartedTest PRIVATE $<TARGET_PROPERTY:Rendepth
 target_link_libraries(GettingStartedTest PRIVATE SDL3::SDL3 SDL3_image::SDL3_image SDL3_ttf::SDL3_ttf)
 
 # Disc integration test (requires a readable Blu-ray with at least two titles).
+if(TARGET RendepthMVC)
+    add_executable(MvcRuntimeTest EXCLUDE_FROM_ALL Source/MvcRuntimeTest.cpp)
+    target_link_libraries(MvcRuntimeTest PRIVATE RendepthMVC)
+    if(WIN32)
+        add_custom_command(TARGET MvcRuntimeTest POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:RendepthMVC>" "$<TARGET_FILE_DIR:MvcRuntimeTest>")
+    endif()
+endif()
 add_executable(BlurayPlaylistTest EXCLUDE_FROM_ALL Source/BlurayPlaylistTest.cpp)
 add_executable(BlurayTitleNamesTest EXCLUDE_FROM_ALL Source/BlurayTitleNamesTest.cpp)
 if(MSVC)
@@ -1099,6 +1055,12 @@ if(RENDEPTH_ENABLE_FFMPEG AND RENDEPTH_HAVE_DVD)
 endif()
 
 if(RENDEPTH_ENABLE_FFMPEG)
+    add_executable(VideoAudioTrackTest EXCLUDE_FROM_ALL
+        Source/VideoAudioTrackTest.cpp Source/VideoPlayer.cpp Source/AudioCdReader.cpp
+        Source/DiscSource.cpp Source/BlurayReader.cpp Source/DvdReader.cpp Source/MvcDecoder.cpp)
+    target_include_directories(VideoAudioTrackTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(VideoAudioTrackTest PRIVATE $<TARGET_PROPERTY:Rendepth,COMPILE_DEFINITIONS>)
+    target_link_libraries(VideoAudioTrackTest PRIVATE $<TARGET_PROPERTY:Rendepth,LINK_LIBRARIES>)
     add_executable(AudioCdReaderTest EXCLUDE_FROM_ALL
         Source/AudioCdReaderTest.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp)
     target_include_directories(AudioCdReaderTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)

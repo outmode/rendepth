@@ -3386,8 +3386,7 @@ static std::unordered_map<std::string, int> pendingOptionOriginals;
 // Identify settings whose expensive reloads should wait until the options menu closes.
 static bool deferredOption(const std::string& label) {
 	return label == ChoiceModel.label ||
-		label == ChoiceResolution.label || label == ChoiceSorting.label ||
-		label == ChoiceTags.label;
+		label == ChoiceResolution.label || label == ChoiceSorting.label;
 }
 
 // Apply only deferred settings that changed once the options menu is closed.
@@ -3396,10 +3395,8 @@ static void applyDeferredOptions() {
 	auto originals = std::move(pendingOptionOriginals);
 	pendingOptionOriginals.clear();
 	const auto selections = menuSelection;
-	// Display mode changes apply immediately using the currently loaded depth.
-	// Only settings that invalidate or reload the source are deferred here.
-	for (const auto* choice : { &ChoiceModel, &ChoiceResolution, &ChoiceSorting,
-		&ChoiceTags }) {
+	// Display mode and forced source format changes apply immediately.
+	for (const auto* choice : { &ChoiceModel, &ChoiceResolution, &ChoiceSorting }) {
 		const auto original = originals.find(choice->label);
 		const int selected = selections.at(choice->label);
 		if (original == originals.end() || original->second == selected) continue;
