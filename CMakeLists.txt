@@ -45,6 +45,19 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Keep developer paths out of release diagnostics and embedded debug metadata,
+# including the vendored libraries built below. Debug builds retain full paths.
+foreach(RENDEPTH_PATH_ROOT IN ITEMS "${CMAKE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}")
+    if(MSVC)
+        add_compile_options("$<$<AND:$<NOT:$<CONFIG:Debug>>,$<COMPILE_LANGUAGE:C,CXX>>:/pathmap:${RENDEPTH_PATH_ROOT}=.>")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        add_compile_options("$<$<AND:$<NOT:$<CONFIG:Debug>>,$<COMPILE_LANGUAGE:C,CXX>>:-ffile-prefix-map=${RENDEPTH_PATH_ROOT}=.>")
+    endif()
+endforeach()
+if(MSVC)
+    add_link_options("$<$<NOT:$<CONFIG:Debug>>:/PDBALTPATH:%_PDB%>")
+endif()
+
 set(CMAKE_POLICY_DEFAULT_CMP0077 OLD)
 set(CMAKE_POLICY_DEFAULT_CMP0095 OLD)
 set(CMAKE_POLICY_DEFAULT_CMP0068 OLD)
@@ -254,7 +267,8 @@ elseif(APPLE)
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.2.2.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libglm.dylib
-                ${CMAKE_SOURCE_DIR}/Legal/LICENSE)
+                ${CMAKE_SOURCE_DIR}/Legal/RENDEPTH_APP_LICENSE
+                ${CMAKE_BINARY_DIR}/generated/Legal/THIRD_PARTY_LICENSING)
         set_source_files_properties(
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3.0.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3.dylib
                 ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.2.4.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.dylib
@@ -281,7 +295,8 @@ elseif(APPLE)
                 PROPERTIES
                 MACOSX_PACKAGE_LOCATION Shaders/Compiled)
         set_source_files_properties(
-                ${CMAKE_SOURCE_DIR}/Legal/LICENSE
+                ${CMAKE_SOURCE_DIR}/Legal/RENDEPTH_APP_LICENSE
+                ${CMAKE_BINARY_DIR}/generated/Legal/THIRD_PARTY_LICENSING
                 PROPERTIES
                 MACOSX_PACKAGE_LOCATION Legal)
     endif()
@@ -299,6 +314,7 @@ target_compile_definitions(Rendepth PUBLIC
 
 target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp Source/VideoPlayer.cpp Source/AudioCdReader.cpp Source/DiscSource.cpp Source/MediaOpenDialog.cpp Source/BlurayReader.cpp Source/DvdReader.cpp Source/DiscTitleMenu.cpp
 		Source/VideoDepthProcessor.cpp
+		Source/GettingStarted.cpp
 		Source/ScreenCapture.cpp Source/BrowserBridge.cpp
         Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
         Source/ModelDownloader.cpp Source/SuperResolution.cpp Source/CubeViCalibration.cpp)
@@ -333,7 +349,7 @@ set(RENDEPTH_LICENSE_STORE_ID "474981" CACHE STRING "Lemon Squeezy store ID (0 d
 set(RENDEPTH_LICENSE_PRODUCT_ID "1373415" CACHE STRING "Rendepth Pro product ID")
 set(RENDEPTH_LICENSE_VARIANT_ID "0" CACHE STRING "Optional Pro variant ID (0 accepts all product variants)")
 # Current checkout is owner-supplied for Test Mode; verify live settings before release.
-set(RENDEPTH_LICENSE_PURCHASE_URL "https://shop.rendepth.com/checkout/buy/dea78604-79fe-4ef0-b9b8-b57d6017a9c3" CACHE STRING "Rendepth Pro HTTPS checkout URL")
+set(RENDEPTH_LICENSE_PURCHASE_URL "https://shop.rendepth.com/" CACHE STRING "Rendepth Pro HTTPS checkout URL")
 set(RENDEPTH_LICENSE_SUPPORT_URL "mailto:support@outmode.com" CACHE STRING "Rendepth license support HTTPS or mailto URL")
 foreach(field STORE_ID PRODUCT_ID VARIANT_ID)
     if(NOT "${RENDEPTH_LICENSE_${field}}" MATCHES "^(0|[1-9][0-9]*)$")
@@ -659,8 +675,6 @@ if(RENDEPTH_ENABLE_FFMPEG)
         target_link_libraries(RendepthMVC PUBLIC Threads::Threads)
         target_link_libraries(Rendepth PUBLIC RendepthMVC)
         target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_MVC)
-        install(FILES ThirdParty/SyLC/edge264/LICENSE_BSD.txt
-                DESTINATION share/licenses/rendepth RENAME SyLC-edge264-LICENSE.txt)
     endif()
 endif()
 
@@ -860,6 +874,7 @@ elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
 
 endif()
 
+include(Packaging/Legal.cmake)
 include(GNUInstallDirs)
 install(TARGETS Rendepth
         RUNTIME DESTINATION libexec/rendepth/Binary)
@@ -884,13 +899,7 @@ if(RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS)
             RUNTIME DESTINATION libexec/rendepth/Library
             LIBRARY DESTINATION libexec/rendepth/Library
             ARCHIVE DESTINATION libexec/rendepth/Library)
-    install(FILES
-            ThirdParty/SDL_image/external/aom/LICENSE
-            ThirdParty/SDL_image/external/dav1d/COPYING
-            ThirdParty/SDL_image/external/libavif/LICENSE
-            ThirdParty/SDL_image/external/libjxl/LICENSE
-            ThirdParty/SDL_image/external/libwebp/COPYING
-            DESTINATION share/licenses/rendepth/optional)
+
 endif()
 if(TARGET tiff)
     # SDL_image's vendored TIFF target is not installed transitively.
@@ -899,10 +908,11 @@ if(TARGET tiff)
             RUNTIME DESTINATION libexec/rendepth/Library
             LIBRARY DESTINATION libexec/rendepth/Library
             ARCHIVE DESTINATION libexec/rendepth/Library)
-    install(FILES ThirdParty/SDL_image/external/libtiff/LICENSE.md
-            DESTINATION share/licenses/rendepth/optional)
 endif()
-install(DIRECTORY "${CMAKE_SOURCE_DIR}/Assets/"
+# List runtime assets explicitly so local settings, sample media, and other
+# developer files in Assets cannot silently enter a release.
+install(FILES Assets/AppIcons.png Assets/CircleIcon.png Assets/Lato.ttf
+        Assets/NotoSans.ttf Assets/Rendepth.ico Assets/Rendepth.icns Assets/Rendepth.png
         DESTINATION libexec/rendepth/Assets)
 if(WIN32)
     install(DIRECTORY "${CMAKE_SOURCE_DIR}/Shaders/Compiled/"
@@ -918,8 +928,12 @@ elseif(UNIX)
             FILES_MATCHING PATTERN "*.spv"
             PATTERN "QuiltTest.*" EXCLUDE)
 endif()
-install(FILES "${CMAKE_SOURCE_DIR}/LICENSE"
+install(FILES "${RENDEPTH_LEGAL_OUTPUT_DIR}/RENDEPTH_APP_LICENSE"
+        "${RENDEPTH_LEGAL_OUTPUT_DIR}/THIRD_PARTY_LICENSING"
         DESTINATION share/licenses/rendepth)
+install(FILES "${RENDEPTH_LEGAL_OUTPUT_DIR}/RENDEPTH_APP_LICENSE"
+        "${RENDEPTH_LEGAL_OUTPUT_DIR}/THIRD_PARTY_LICENSING"
+        DESTINATION libexec/rendepth/Legal)
 if(UNIX AND NOT APPLE)
     install(PROGRAMS "${CMAKE_SOURCE_DIR}/Packaging/Linux/rendepth-launcher"
             DESTINATION bin
@@ -949,7 +963,7 @@ set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Convert any image to 3D")
 set(CPACK_PACKAGE_DESCRIPTION "Make any normal photo into UHD 3D. Rendepth uses machine learning algorithms to generate depth from regular color images, allowing you to adjust stereo and parallax settings for your display. Exports to open standard stereoscopic formats.")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_CONTACT "Outmode")
-set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/Legal/RENDEPTH_APP_LICENSE")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Outmode")
 set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
 set(CPACK_DEBIAN_PACKAGE_SECTION "graphics")
@@ -959,7 +973,8 @@ set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 # executable itself; alternatives cover the current t64 transitions.
 set(CPACK_DEBIAN_PACKAGE_DEPENDS
         "libc6, libstdc++6, libgcc-s1, libcurl4 | libcurl4t64, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-nice")
-set(CPACK_RPM_PACKAGE_LICENSE "MIT")
+# Application-level license; component terms are retained in THIRD_PARTY_LICENSING.
+set(CPACK_RPM_PACKAGE_LICENSE "GPL-3.0-only")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
 # Increment the RPM release for rebuilds of the same application version so
 # package managers do not treat a freshly built artifact as the old package.
@@ -971,6 +986,8 @@ endif()
 if(RENDEPTH_RPM_REQUIRES)
     list(JOIN RENDEPTH_RPM_REQUIRES ", " CPACK_RPM_PACKAGE_REQUIRES)
 endif()
+# Strip non-runtime symbol tables, including assembler source filenames.
+set(CPACK_STRIP_FILES TRUE)
 include(CPack)
 
 if(WIN32)
@@ -1037,6 +1054,11 @@ if(UNIX AND NOT APPLE)
 	add_executable(BrowserBridgeTest EXCLUDE_FROM_ALL Source/BrowserBridgeTest.cpp Source/BrowserBridge.cpp)
 	target_include_directories(BrowserBridgeTest PRIVATE ThirdParty/rapidjson/include)
 endif()
+
+# Headless welcome-page layout and interaction checks.
+add_executable(GettingStartedTest EXCLUDE_FROM_ALL Source/GettingStartedTest.cpp Source/GettingStarted.cpp)
+target_include_directories(GettingStartedTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
+target_link_libraries(GettingStartedTest PRIVATE SDL3::SDL3 SDL3_image::SDL3_image SDL3_ttf::SDL3_ttf)
 
 # Disc integration test (requires a readable Blu-ray with at least two titles).
 add_executable(BlurayPlaylistTest EXCLUDE_FROM_ALL Source/BlurayPlaylistTest.cpp)

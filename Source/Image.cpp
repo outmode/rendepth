@@ -19,6 +19,7 @@
 // SOFTWARE.
 
 #include "Image.h"
+#include "GettingStarted.h"
 #include "Utils.h"
 #include "WindowsCalibration.h"
 #include "NativeDisplayIdentity.h"
@@ -3185,8 +3186,118 @@ void Image::setSpriteUniforms(glm::vec3 position, glm::vec3 size, glm::vec4 colo
 	spriteDataFrag.slice = slice;
 }
 
+namespace {
+SDL_GPUTexture* gettingStartedTexture = nullptr;
+glm::ivec2 gettingStartedSize{};
+std::uint64_t gettingStartedRevision = 0;
+
+// Draw the regular cursor in each guide view, matching the page's packing and pointer coordinates.
+void drawGettingStartedCursor(Context* context, SDL_GPUCommandBuffer* command,
+	SDL_GPURenderPass* pass, int width, int height, GettingStarted::Layout layout) {
+	if (!context->fullscreen || SDL_GetMouseFocus() != context->window) return;
+	float mouseX = 0, mouseY = 0;
+	int logicalWidth = 0, logicalHeight = 0;
+	SDL_GetMouseState(&mouseX, &mouseY);
+	SDL_GetWindowSize(context->window, &logicalWidth, &logicalHeight);
+	mouseX *= static_cast<float>(width) / std::max(1, logicalWidth);
+	mouseY *= static_cast<float>(height) / std::max(1, logicalHeight);
+	const int views = layout == GettingStarted::Layout::Single ? 1 : 2;
+	const int leftWidth = views == 2 ? width / 2 : width;
+	const bool right = views == 2 && mouseX >= leftWidth;
+	const float localX = (mouseX - (right ? leftWidth : 0)) /
+		std::max(1, right ? width - leftWidth : leftWidth);
+	// Keep the app's pointer position current when the guide consumes mouse events.
+	context->mouse = {mouseX, mouseY};
+	context->mouseVisibility = 1.0;
+	Image::bindPipeline(pass, Image::iconPipeline);
+	SDL_GPUTextureSamplerBinding binding{Image::iconTexture, Image::imageSampler};
+	SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+	for (int view = 0; view < views; ++view) {
+		const int viewWidth = view == 0 ? leftWidth : width - leftWidth;
+		const SDL_GPUViewport viewport{static_cast<float>(view * leftWidth), 0,
+			static_cast<float>(viewWidth), static_cast<float>(height), 0, 1};
+		SDL_SetGPUViewport(pass, &viewport);
+		const SDL_Rect clip{view * leftWidth, 0, viewWidth, height};
+		SDL_SetGPUScissor(pass, &clip);
+		const float horizontalScale = layout == GettingStarted::Layout::SBSHalf ||
+			layout == GettingStarted::Layout::RGBD ? static_cast<float>(viewWidth) / width : 1.0f;
+		const glm::vec2 scale = glm::vec2(horizontalScale, 1.0f) * context->displayScale;
+		const glm::vec2 position{localX * viewWidth, height - mouseY};
+		Image::iconDataVert.projection = glm::ortho(0.0f, static_cast<float>(viewWidth),
+			0.0f, static_cast<float>(height));
+		Image::iconDataVert.transform = Image::getTransform(
+			glm::vec3(position + glm::vec2(9.0f, -16.0f) * scale, 0.0f),
+			glm::vec3(scale * Image::style.getIconRadius(Style::getCurrentScale()), 1.0f), glm::vec3(1.0f));
+		Image::iconDataVert.gridOffset = Image::getIconCoordinates(IconType::Cursor_Black);
+		Image::iconDataFrag.color = glm::vec4(1.0f);
+		Image::iconDataFrag.visibility = 1.0f;
+		Image::iconDataFrag.rotation = 0.0f;
+		Image::iconDataFrag.animated = 0;
+		Image::iconDataFrag.force = layout == GettingStarted::Layout::RGBD && view == 1 ? 1 : 0;
+		Image::drawIcon(command, pass);
+	}
+}
+
+// Present the guide in the same fullscreen packing layout as the media and controls.
+int drawGettingStarted(Context* context) {
+	int width = 0, height = 0;
+	SDL_GetWindowSizeInPixels(context->window, &width, &height);
+	if (width <= 0 || height <= 0) return 0;
+	const auto assets = std::filesystem::path(SDL_GetBasePath()).parent_path().parent_path() / "Assets";
+	auto layout = GettingStarted::Layout::Single;
+	if (context->fullscreen) {
+		if (context->mode == SBS_Full) layout = GettingStarted::Layout::SBSFull;
+		else if (context->mode == SBS_Half) layout = GettingStarted::Layout::SBSHalf;
+		else if (context->mode == RGB_Depth) layout = GettingStarted::Layout::RGBD;
+	}
+	auto* page = GettingStarted::render(width, height, context->displayScale, assets,
+		context->backgroundStyle == Light, layout);
+	if (page == nullptr) {
+		SDL_Log("Could not render getting started guide: %s", SDL_GetError());
+		GettingStarted::visible = false;
+		return 0;
+	}
+	if (!gettingStartedTexture || gettingStartedRevision != GettingStarted::revision()) {
+		if (Image::uploadTexture(context, page, &gettingStartedTexture, "Getting Started",
+			gettingStartedTexture && gettingStartedSize == glm::ivec2(width, height), true, false) < 0)
+			return -1;
+		gettingStartedSize = {width, height};
+		gettingStartedRevision = GettingStarted::revision();
+	}
+	auto* command = SDL_AcquireGPUCommandBuffer(context->device);
+	if (!command) return -1;
+	SDL_GPUTexture* swapchain = nullptr;
+	if (!SDL_AcquireGPUSwapchainTexture(command, context->window, &swapchain, nullptr, nullptr)) {
+		SDL_CancelGPUCommandBuffer(command);
+		return -1;
+	}
+	if (!swapchain) return SDL_SubmitGPUCommandBuffer(command) ? 0 : -1;
+	SDL_GPUColorTargetInfo target{};
+	target.texture = swapchain;
+	target.load_op = SDL_GPU_LOADOP_CLEAR;
+	target.store_op = SDL_GPU_STOREOP_STORE;
+	auto* pass = SDL_BeginGPURenderPass(command, &target, 1, nullptr);
+	if (!pass) { SDL_CancelGPUCommandBuffer(command); return -1; }
+	Image::bindPipeline(pass, Image::spritePipeline);
+	SDL_GPUTextureSamplerBinding binding{gettingStartedTexture, Image::imageSampler};
+	SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+	Image::spriteDataVert.projection = glm::ortho(0.0f, static_cast<float>(width), 0.0f, static_cast<float>(height));
+	Image::setSpriteUniforms({width * 0.5f, height * 0.5f, 0}, {width, height, 1},
+		{1, 1, 1, 1}, 1, 1, {0, 0}, {1, 1}, {0.5f, 0.5f}, {1, 1, 1});
+	Image::drawSprite(command, pass);
+	drawGettingStartedCursor(context, command, pass, width, height, layout);
+	SDL_EndGPURenderPass(pass);
+	return SDL_SubmitGPUCommandBuffer(command) ? 0 : -1;
+}
+}
+
 // Render media, backgrounds, subtitles, and UI overlays for the active presentation mode.
 int Image::draw(Context* context) {
+	if (GettingStarted::visible) {
+		if (context->fullscreen && SDL_GetMouseFocus() == context->window) SDL_HideCursor();
+		else SDL_ShowCursor();
+		return drawGettingStarted(context);
+	}
 	imageDataFrag.packedOutput = 0;
 	// Use faster attack than decay so waveform bars follow transients without flickering between
 	// frames.
@@ -4218,6 +4329,9 @@ int Image::drawNativeOutput(Context* context, NativeOutput& output, NativeDispla
 // Wait for outstanding GPU work and release rendering resources, fonts, and windows.
 void Image::quit(Context* context){
 	if (context->device != nullptr) SDL_WaitForGPUIdle(context->device);
+	if (gettingStartedTexture) SDL_ReleaseGPUTexture(context->device, gettingStartedTexture);
+	gettingStartedTexture = nullptr;
+	GettingStarted::release();
 	setNativeOutputActive(context, false);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, interlacerPipeline);
 	SDL_ReleaseGPUGraphicsPipeline(context->device, imagePipeline);

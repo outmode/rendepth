@@ -1,0 +1,54 @@
+RENDEPTH APPLICATION LICENSE
+Copyright (c) 2026 Outmode
+Application distribution license: GPL-3.0-only
+
+The combined Rendepth application is distributed under version 3 of the GNU
+General Public License. You may copy, modify, and redistribute that combined
+application under the terms of GPL version 3 reproduced below. The application
+is provided without warranty, to the extent permitted by applicable law.
+
+ORIGINAL SOURCE CODE AND THIRD-PARTY COMPONENTS
+
+Original Rendepth source code published in the GitHub repository remains
+available under the MIT License in the repository's root LICENSE file. That
+MIT grant is reproduced below and is not withdrawn by distributing the combined
+application under GPLv3. Files with their own notices retain those notices.
+
+This distinction permits reuse of the original MIT-licensed code under MIT,
+while distributions of the combined application must satisfy the GPLv3 terms
+and the applicable third-party license requirements. This document does not
+relicense third-party libraries, fonts, model weights, operating-system
+components, or separately distributed runtime packs. Their own licenses and
+notices apply; see THIRD_PARTY_LICENSING and the notices supplied with each pack.
+
+SOURCE AND DISTRIBUTION
+
+Project source: https://github.com/outmode/rendepth
+Release/source download index: https://github.com/outmode/rendepth/releases
+Build instructions: https://github.com/outmode/rendepth#build-instructions
+
+Source may be downloaded separately; it need not be inside the application
+installer. Use the source associated with the exact application release, not
+just the latest main branch. THIRD_PARTY_LICENSING includes source repository
+links and reference revisions for the dependencies.
+
+When obtaining source through Git, check out the release's published tag or
+commit and initialize its dependency submodules recursively. GitHub's automatic
+source ZIPs do not include the contents of submodules. A complete release-source
+archive can instead be provided as a separate GitHub release download.
+
+Distributors of application binaries must provide the matching Corresponding
+Source using a method permitted by GPLv3 section 6. This includes applicable
+modifications, dependency source, and build/install scripts. A link to the
+current repository alone is not a substitute for the complete source matching
+a particular binary. This notice is not a separate written source offer.
+Publish clear directions to the matching source alongside each binary download,
+with equivalent access at no additional charge. Upstream project links alone
+do not supply unpublished changes, private forks, or missing dependency source.
+
+Charging for copies or services does not remove recipients' rights under the
+GPL. Commercial activation or support terms must not restrict those rights.
+
+The full GPLv3 text below governs the combined application's distribution.
+The original-code MIT notice and the third-party notices remain in force for
+their respective components.

@@ -43,7 +43,7 @@ Retain the project's other machine-specific FFmpeg and NASM options. In CLion,
 add `RENDEPTH_CPU_RUNTIME_DIR` to each profile's CMake options to survive a cache
 reset. Builds copy the CPU DLL to `Runtimes/cpu/bin` beside `Binary`/`Debug`.
 Install rules place it in `libexec/rendepth/Runtimes/cpu/bin` with ORT notices in
-`share/licenses/rendepth/onnxruntime`. GPU packs are never included in the base.
+`share/licenses/rendepth/THIRD_PARTY_LICENSING`, alongside `RENDEPTH_APP_LICENSE`. GPU packs are never included in the base.
 Old flat-layout ORT/CUDA DLLs beside the EXE are not part of the new base; use a
 fresh package staging directory instead of distributing a historical build folder.
 

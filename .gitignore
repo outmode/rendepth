@@ -25,3 +25,8 @@ Thumbs.db
 .junie/
 .codex/
 AGENTS.md
+
+# Local diagnostics and generated Python bytecode can contain developer paths.
+/build_log.txt
+__pycache__/
+*.py[cod]

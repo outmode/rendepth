@@ -53,5 +53,4 @@ rendepth_windows_inference(InferenceRuntimeTest)
 
 install(FILES "${RENDEPTH_CPU_RUNTIME_DIR}/lib/onnxruntime.dll"
     DESTINATION libexec/rendepth/Runtimes/cpu/bin)
-install(FILES "${RENDEPTH_CPU_RUNTIME_DIR}/LICENSE" "${RENDEPTH_CPU_RUNTIME_DIR}/ThirdPartyNotices.txt"
-    DESTINATION share/licenses/rendepth/onnxruntime)
+# Exact SDK notices are incorporated into THIRD_PARTY_LICENSING by Packaging/Legal.cmake.

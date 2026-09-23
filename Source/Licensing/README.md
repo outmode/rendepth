@@ -30,7 +30,7 @@ cmake -S . -B <build-directory> \
   -DRENDEPTH_LICENSE_STORE_ID=474981 \
   -DRENDEPTH_LICENSE_PRODUCT_ID=1373415 \
   -DRENDEPTH_LICENSE_VARIANT_ID=0 \
-  -DRENDEPTH_LICENSE_PURCHASE_URL=https://shop.rendepth.com/checkout/buy/dea78604-79fe-4ef0-b9b8-b57d6017a9c3 \
+  -DRENDEPTH_LICENSE_PURCHASE_URL=https://shop.rendepth.com/ \
   -DRENDEPTH_LICENSE_SUPPORT_URL=mailto:support@outmode.com
 cmake --build <build-directory> --parallel 14
 ```

@@ -41,6 +41,7 @@
 #include "rapidjson/stringbuffer.h"
 #include "AIEngineSettings.h"
 #include "SettingsFile.h"
+#include "GettingStarted.h"
 #include "BlurayReader.h"
 #include "DiscTitleMenu.h"
 #include <utility>
@@ -1366,7 +1367,7 @@ Icon IconHelp = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Toggle Tooltips",
+	displayInfoEnabled ? "Hide Tooltips" : "Show Tooltips",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -3252,6 +3253,7 @@ void saveOptions() {
 	document.AddMember(rapidjson::StringRef("modelDirectory"), modelDirValue, allocator);
 	document.AddMember(rapidjson::StringRef("videoVolume"), currentVideoVolume, allocator);
 	document.AddMember(rapidjson::StringRef("losslessDepthmaps"), losslessDepthmaps, allocator);
+	document.AddMember(rapidjson::StringRef("hideGettingStarted"), GettingStarted::dontShowAgain, allocator);
 	const auto lastStereo = std::find(stereoModes.begin(), stereoModes.end(), lastUsedStereoMode);
 	document.AddMember(rapidjson::StringRef("Last 3D Mode"),
 		static_cast<int>(lastStereo - stereoModes.begin()), allocator);
@@ -3287,6 +3289,8 @@ void loadOptions() {
 	dataBuffer[dataSize] = '\0';
 	if (document.Parse(dataBuffer).HasParseError()) return;
 	if (!document.IsObject()) return;
+	if (document.HasMember("hideGettingStarted") && document["hideGettingStarted"].IsBool())
+		GettingStarted::dontShowAgain = document["hideGettingStarted"].GetBool();
 	if (document.HasMember("Last 3D Mode") && document["Last 3D Mode"].IsInt()) {
 		const int option = document["Last 3D Mode"].GetInt();
 		if (option >= 0 && option < static_cast<int>(stereoModes.size()) && stereoModes[option] != Mono)
@@ -4430,6 +4434,10 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 
 	hideUI();
 
+	// File associations open their media directly; an ordinary launch opens the welcome page.
+	if (fileToLoad.empty() && !GettingStarted::dontShowAgain) GettingStarted::show();
+	if (GettingStarted::visible) showCustomCursor(true);
+
 	return SDL_APP_CONTINUE;
 }
 
@@ -5091,13 +5099,14 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	pixelMotion = {0.0, 0.0 };
 
 	auto mouseMoveSince = timeNow - mouseLastActive;
-	if (mouseLastActive > 0.0 && ((mouseMoveSince > mouseMoveWait || mouseLeftWindow) &&
+	if (!GettingStarted::visible && mouseLastActive > 0.0 && ((mouseMoveSince > mouseMoveWait || mouseLeftWindow) &&
 		!isIconCaptured)) {
 		hideUI(true, true);
 		mouseLastActive = 0.0;
 	}
 
-	if (isPlayingSlideshow) {
+	if (GettingStarted::visible) lastSlideshowTime = timeNow;
+	if (isPlayingSlideshow && !GettingStarted::visible) {
 		depthEffect += deltaAverage / slideshowWaitTime;
 		depthEffect = std::clamp(depthEffect, 0.0, 1.0);
 		context.depthEffect = depthEffect;
@@ -5259,6 +5268,7 @@ static double getSliderPercentAtMouse(const Icon& icon, const glm::vec2& aspectS
 
 // Update control availability, hover states, and menu hit tests for the current mouse position.
 void checkMouseState() {
+	if (GettingStarted::visible) return;
 	isIconCaptured = false;
 	auto aspectScale = glm::vec2(1.0);
 	if (preferredStereoMode == SBS_Full && isFullscreen)
@@ -5277,6 +5287,13 @@ void checkMouseState() {
 			icon.type != IconType::Folder && icon.type != IconType::Settings && icon.type != IconType::Crop);
 		if (icon.type == IconType::Back) icon.label = discBrowser ? "Previous Page" : "Previous Image";
 		if (icon.type == IconType::Forward) icon.label = discBrowser ? "Next Page" : "Next Image";
+		if (icon.type == IconType::Info) {
+			const char* label = displayInfoEnabled ? "Hide Tooltips" : "Show Tooltips";
+			if (icon.label != label) {
+				icon.label = label;
+				icon.shown = false;
+			}
+		}
 		if (icon.type == IconType::Play) {
 			refreshPlayIcon();
 			const char* label = activeVideo
@@ -5362,7 +5379,8 @@ void checkMouseState() {
 				if (icon.type != IconType::Loading) {
 					icon.state = IconState::Over;
 					isIconCaptured = true;
-					if (displayInfoEnabled && icon.active && (!icon.shown ||
+					// Keep the tooltip switch discoverable even when other tooltips are disabled.
+					if ((displayInfoEnabled || icon.type == IconType::Info) && icon.active && (!icon.shown ||
 						icon.mode == IconMode::Slider)) {
 						auto doShowInfo = true;
 						if (icon.label != currentInfoLabel) {
@@ -6253,6 +6271,7 @@ static void callDepthGen(int imageIndex, bool speculative, SDL_Surface* inputSur
 
 // Dispatch window, keyboard, mouse, and drop events to the appropriate application controls.
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
+	static bool resumeAfterGuide = false;
 	if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
 	if (event->type == SDL_EVENT_DISPLAY_ADDED || event->type == SDL_EVENT_DISPLAY_REMOVED) {
 		if (preferredStereoMode == Lenticular) Image::initNativeOutput(&context);
@@ -6269,6 +6288,54 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 	if (const auto eventWindow = SDL_GetWindowFromEvent(event);
 		eventWindow != nullptr && eventWindow != context.window) {
 		return SDL_APP_CONTINUE;
+	}
+    // Global window/menu shortcuts must run before the guide consumes keyboard input.
+    auto dismissGuide = [&]() {
+        GettingStarted::visible = false;
+        if (resumeAfterGuide && activeVideo) videoPlayer.setPlaying(true);
+        resumeAfterGuide = false;
+        mouseLastActive = getTimeNow();
+        checkMouseState();
+    };
+    if (event->type == SDL_EVENT_KEY_DOWN) {
+        const auto key = event->key.key;
+        const bool fullscreenKey = key == SDLK_F || key == SDLK_F11 || key == SDLK_KP_0 ||
+            (key == SDLK_RETURN && (event->key.mod & SDL_KMOD_ALT));
+        if (fullscreenKey) {
+            if (!event->key.repeat) toggleFullscreen();
+            return SDL_APP_CONTINUE;
+        }
+        if (key == SDLK_TAB && !(event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
+            if (!event->key.repeat) {
+                if (GettingStarted::visible) dismissGuide();
+                finishSliderDrag(false);
+                toggleOptions();
+                mouseLastActive = getTimeNow();
+                checkMouseState();
+            }
+            return SDL_APP_CONTINUE;
+        }
+    }
+	if (event->type == SDL_EVENT_KEY_DOWN && event->key.key == SDLK_F1 &&
+		!event->key.repeat && !GettingStarted::visible) {
+		finishSliderDrag(false);
+		resumeAfterGuide = activeVideo && videoPlayer.playing();
+		if (resumeAfterGuide) videoPlayer.setPlaying(false);
+		GettingStarted::show();
+		showCustomCursor(true);
+		return SDL_APP_CONTINUE;
+	}
+	if (GettingStarted::visible) {
+		const auto action = GettingStarted::handleEvent(*event, context.window);
+		if (action == GettingStarted::Action::PreferenceChanged) saveOptions();
+		const bool droppedFile = event->type == SDL_EVENT_DROP_FILE;
+		if (action == GettingStarted::Action::Dismiss || droppedFile) {
+			dismissGuide();
+		}
+		// The release that dismisses the guide belongs to the guide, not a control underneath it.
+		if ((event->type >= SDL_EVENT_KEY_DOWN && event->type <= SDL_EVENT_TEXT_INPUT) ||
+			(event->type >= SDL_EVENT_MOUSE_MOTION && event->type <= SDL_EVENT_MOUSE_WHEEL))
+			return SDL_APP_CONTINUE;
 	}
 	if (discTitleMenu.visible() && !context.displayMenu) {
 		if (event->type == SDL_EVENT_MOUSE_MOTION) {
@@ -6388,9 +6455,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 				}
 			}
 
-			if (event->key.key == SDLK_HOME && !event->key.repeat) {
-				if (compileShadersForReload()) Image::reloadShader(&context);
-			}
+		#ifndef NDEBUG
+		// Shader recompilation is a development shortcut, unavailable in release builds.
+		if (event->key.key == SDLK_HOME && !event->key.repeat) {
+			if (compileShadersForReload()) Image::reloadShader(&context);
+		}
+		#endif
 
 		if (!event->key.repeat && !(event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
 			if (event->key.key == SDLK_1) selectStereoPresentation(1);
@@ -6416,14 +6486,6 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			}
 		} else if (event->key.key == SDLK_KP_5) {
 			if (!activeScreenCapture && !isConverting && !doingPreload && !fileList.empty()) toggleStereo();
-		}
-
-		if (event->key.key == SDLK_RETURN && event->key.mod == SDL_KMOD_LALT) {
-			toggleFullscreen();
-		}
-
-		if (event->key.key == SDLK_F || event->key.key == SDLK_KP_0 || event->key.key == SDLK_F11) {
-			toggleFullscreen();
 		}
 
 		if (event->key.key == SDLK_E && !event->key.repeat) {

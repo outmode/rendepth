@@ -21,8 +21,9 @@ cmake --install cmake-build-release --prefix /usr
 
 The install command writes the system prefix; use `DESTDIR` for package staging.
 The base installs exactly the specified ORT core as
-`libexec/rendepth/Runtimes/cpu/lib/libonnxruntime.so.1`, plus its LICENSE and
-ThirdPartyNotices.txt. Development builds copy the same core to
+`libexec/rendepth/Runtimes/cpu/lib/libonnxruntime.so.1`. Its exact LICENSE and
+ThirdPartyNotices.txt are incorporated into `share/licenses/rendepth/THIRD_PARTY_LICENSING`,
+next to `RENDEPTH_APP_LICENSE`. Development builds copy the same core to
 `Runtimes/cpu/lib/` beside the source tree's Binary and Library directories.
 GPU libraries and developer-machine symlinks are not installed in the base.
 Do not supply a distro ORT build with unbundled non-system dependencies as the
@@ -248,7 +249,7 @@ and no download endpoint was added.
 
 Assembled `Distribution/cuda` with the existing pack builder using:
 
-- ORT GPU SDK 1.22.0 (`/home/psyko/SDK/onnxruntime-linux-x64-gpu-1.22.0/lib`).
+- ORT GPU SDK 1.22.0 (`<sdk-directory>/onnxruntime-linux-x64-gpu-1.22.0/lib`).
 - CUDA 12.8 libraries (`/usr/local/cuda-12.8/targets/x86_64-linux/lib`).
 - cuDNN 9.25.1 libraries (`/usr/lib/x86_64-linux-gnu`).
 - CUDA's `EULA.txt` in a separate notices directory, and

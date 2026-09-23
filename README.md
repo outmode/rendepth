@@ -6,7 +6,11 @@ Converts Any Standard Image to 3D and Supports SBS Stereo Photos.
 
 Visit https://rendepth.com to Download the App.
 
-###### Rendepth Source Code is MIT License. Third Party Dependencies Have Respective Licenses and Copyright.
+Original Rendepth source code is available under the [MIT License](LICENSE).
+The combined application is distributed under [GNU GPL version 3](Legal/RENDEPTH_APP_LICENSE).
+Dependencies retain their own licenses; the collected texts and attributions are in
+[THIRD_PARTY_LICENSING](Legal/THIRD_PARTY_LICENSING). See the
+[licensing maintenance guide](Tools/Legal/README.md) for release-source and notice requirements.
 
 Lightfield Displays
 ------
@@ -111,7 +115,7 @@ This uses more memory and adds startup buffering compared with ordinary video.
 
 The source decoder currently builds with GCC/Clang and POSIX threads. MSVC
 builds retain the explicit unsupported-MVC message. The decoder's BSD notice
-is installed alongside Rendepth's license.
+is included in the installed THIRD_PARTY_LICENSING document.
 
 `BlurayPlaylistTest` checks playlist parsing without a disc.
 `DiscReadAheadTest` checks buffered reads, seeks, EOF and I/O errors without a disc.

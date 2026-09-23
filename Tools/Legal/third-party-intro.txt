@@ -1,0 +1,63 @@
+RENDEPTH THIRD-PARTY LICENSING
+
+This file compiles original license texts, copyright notices, and patent notices
+for Rendepth's vendored dependencies, bundled fonts, selected system interfaces,
+and development shader tools. Each section identifies its source and scope.
+Optional components and development tools listed here are not necessarily
+included in every binary. Their inclusion is attribution, not a statement that
+every upstream license option is selected or that every component is GPL.
+
+Rendepth's original code is MIT-licensed. The combined application is distributed
+under the terms stated in RENDEPTH_APP_LICENSE. Component licenses remain in
+force and are reproduced without replacing them with the application license.
+
+SOURCE DOWNLOADS
+
+Rendepth source and release index:
+https://github.com/outmode/rendepth
+https://github.com/outmode/rendepth/releases
+
+Each component below lists public source repositories and, where recorded, the
+reference dependency revision used when preparing this inventory. These are
+upstream reference links, not a guarantee that unpublished Rendepth changes are
+available there. A release must also provide its actual modifications and any
+private-fork source needed to rebuild the distributed application. Git checkouts
+must initialize recursive submodules; automatic GitHub archives omit their
+contents. Separate complete source downloads can accompany the binary downloads.
+
+ACKNOWLEDGMENTS
+
+This software is based in part on the work of the Independent JPEG Group.
+Portions of this software are copyright of The FreeType Project
+(https://www.freetype.org). All rights reserved.
+
+RUNTIME PACKS, MODELS, AND PLATFORM LIBRARIES
+
+The ONNX Runtime section at the end contains the CPU SDK's own license and
+ThirdPartyNotices.txt. Packaging substitutes the notices from the configured
+CPU SDK, so a different runtime must not inherit stale notices from a previous
+SDK. Keep these files with the exact runtime binaries to which they apply.
+
+CUDA, cuDNN, DirectML, and ROCm packs are distributed separately and retain the
+vendor notices collected in each pack's licenses directory. Those notices and
+their redistribution terms are additional to this document; this file does not
+grant rights to those components or assert GPL compatibility for a particular
+combination. Review the actual contents and terms of each distributed pack.
+
+Downloaded AI model weights are separate artifacts, not part of the base
+application package or relicensed by the application license. Their original
+model licenses/notices must accompany model distributions. Adding or replacing
+a model requires checking and retaining its own license.
+
+Linux system libraries are generally supplied by the operating system, not
+copied into the application package. Selected direct-dependency notices are
+included as reference snapshots. A distributor who bundles platform libraries
+must include the notices matching those exact builds and their dependencies.
+
+MAINTENANCE
+
+Generated with Tools/update_legal_notices.py from Tools/Legal/manifest.json and
+the original notices in the pinned source tree. Run the tool after dependency
+updates; --check detects stale generated files. SHA-256 values identify source
+notice content, not the complete binary dependency inventory. Source-distribution
+obligations are not satisfied by this notice compilation alone.

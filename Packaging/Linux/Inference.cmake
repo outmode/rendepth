@@ -51,9 +51,7 @@ endif()
 
 install(FILES "${RENDEPTH_CPU_RUNTIME_LIBRARY}"
     DESTINATION libexec/rendepth/Runtimes/cpu/lib RENAME libonnxruntime.so.1)
-install(FILES "${RENDEPTH_CPU_RUNTIME_NOTICES_DIR}/LICENSE"
-    "${RENDEPTH_CPU_RUNTIME_NOTICES_DIR}/ThirdPartyNotices.txt"
-    DESTINATION share/licenses/rendepth/onnxruntime)
+# Exact SDK notices are incorporated into THIRD_PARTY_LICENSING by Packaging/Legal.cmake.
 
 add_executable(InferenceRuntimeTest EXCLUDE_FROM_ALL
     Source/InferenceRuntimeTest.cpp Source/DepthEstimator.cpp Source/SuperResolution.cpp
