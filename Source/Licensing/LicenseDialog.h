@@ -7,6 +7,7 @@ namespace Licensing {
 struct DialogState {
     bool licensed = false, busy = false, canActivate = false;
     std::string message, purchaseUrl, supportUrl;
+    std::string maskedKey;
 };
 using DialogAction = std::function<void(bool deactivate, std::string key)>;
 namespace NativeDialog {

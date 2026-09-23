@@ -162,10 +162,13 @@ Build a test target with
 
 Keyboard presentation controls
 ------
-- **1:** Disable 3D (the same as choosing Disabled in 3D Mode settings).
-- **2:** Show the 2D view of the selected 3D display mode.
-- **3:** Show the 3D view of the selected 3D display mode.
+- **0:** Disable 3D and hide the 3D button, as with Disabled in settings.
+- **1:** Turn on 3D in the current display mode; each later press advances to the
+  next mode, looping after the last one. Disabled is skipped.
+- **2:** Switch to 2D using the display mode selected in settings.
+- **3:** Switch to 3D using the display mode selected in settings.
 
-After disabling 3D, **2** and **3** restore the last used display mode, including
-across restarts. Choose the display format in settings; **4–0** no longer select
-formats. If no display mode has been used yet, **2/3** use Natural Color.
+When 3D is disabled, **2** and **3** restore the last saved display mode in its
+2D or 3D view, including across restarts. Choose the display format in settings
+or cycle with **1**. **4–9** do not change presentation modes. If no display mode
+has been used yet, **1/2/3** use Natural Color.

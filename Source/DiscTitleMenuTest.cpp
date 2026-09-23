@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
                 if (!snapshot || snapshot->w != expectedWidth || snapshot->h != 800) return 30;
                 SDL_Event motion{};
                 motion.type = SDL_EVENT_MOUSE_MOTION;
-                motion.motion.x = fullscreen ? 160 : 320;
+                motion.motion.x = 320;
                 std::string first;
                 for (int y = 0; y < snapshot->h && first.empty(); y += 10) {
                     motion.motion.y = static_cast<float>(y);
@@ -92,14 +92,36 @@ int main(int argc, char** argv) {
                 if (fullscreen) {
                     motion.motion.x = 800;
                     menu.handleEvent(motion, context.window);
-                    if (menu.hoveredMetadata() != first) return 32;
+                    if ((menu.hoveredMetadata() == first) != (mode == SBS_Full)) return 32;
+                    if (mode == SBS_Full) {
+                        motion.motion.x = 1080;
+                        menu.handleEvent(motion, context.window);
+                        if (!menu.hoveredMetadata().empty()) return 35;
+                    }
                 }
             }
+        }
+        BlurayReader reader; std::string error;
+        if (!reader.open(argv[1], error) || reader.titles().empty()) {
+            std::cerr << "Cannot verify return selection: " << error << '\n'; return 33;
+        }
+        const int previousTitle = reader.titles().front().index;
+        menu.open(argv[1]);
+        menu.requestSelection(previousTitle);
+        std::optional<int> resumed;
+        const auto returnEnd = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+        while (!resumed && std::chrono::steady_clock::now() < returnEnd) {
+            menu.update(&context, font);
+            resumed = menu.takeSelection();
+            SDL_Delay(10);
+        }
+        if (!resumed || *resumed != previousTitle || menu.visible()) {
+            std::cerr << "Track Selection did not return to the prior title\n"; return 34;
         }
         menu.shutdown(&context);
         SDL_DestroySurface(snapshot); snapshot = nullptr;
         TTF_CloseFont(font); SDL_DestroyWindow(context.window); TTF_Quit(); SDL_Quit();
-        std::cout << "PASS: disc menu canvas and pointer mapping in windowed/fullscreen SBS Full, SBS Half and RGBD\n";
+        std::cout << "PASS: disc menu canvas and continuous pointer mapping in windowed/fullscreen SBS Full, SBS Half and RGBD; return to prior title\n";
         return 0;
     }
     std::vector<BlurayTitle> titles;

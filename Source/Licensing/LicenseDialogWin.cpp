@@ -5,7 +5,7 @@
 #include <vector>
 namespace Licensing::NativeDialog {
 namespace {
-HWND window = nullptr, entry = nullptr, status = nullptr, activate = nullptr, deactivate = nullptr;
+HWND window = nullptr, entry = nullptr, masked = nullptr, status = nullptr, activate = nullptr, deactivate = nullptr;
 DialogState current;
 DialogAction callback;
 HFONT font = nullptr;
@@ -25,6 +25,11 @@ std::string text(HWND control) {
 }
 // Dispatch license-window commands, confirmation prompts, and cleanup messages.
 LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
+    if (message == WM_CTLCOLORSTATIC && reinterpret_cast<HWND>(l) == masked) {
+        SetBkColor(reinterpret_cast<HDC>(w), GetSysColor(COLOR_WINDOW));
+        SetTextColor(reinterpret_cast<HDC>(w), GetSysColor(COLOR_WINDOWTEXT));
+        return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+    }
     if (message == WM_COMMAND) {
         const int id = LOWORD(w);
         if (id == Close || id == IDCANCEL) { DestroyWindow(hwnd); return 0; }
@@ -46,7 +51,7 @@ LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     if (message == WM_CLOSE) { DestroyWindow(hwnd); return 0; }
     if (message == WM_DESTROY) {
         SDL_SetWindowsMessageHook(nullptr, nullptr);
-        window = entry = status = activate = deactivate = nullptr;
+        window = entry = masked = status = activate = deactivate = nullptr;
         if (font) { DeleteObject(font); font = nullptr; }
         return 0;
     }
@@ -59,6 +64,8 @@ void update(const DialogState& state) {
     if (!window) return;
     SetWindowTextW(status, wide(state.message).c_str());
     ShowWindow(entry, state.licensed ? SW_HIDE : SW_SHOW);
+    SetWindowTextW(masked, wide(state.maskedKey).c_str());
+    ShowWindow(masked, state.licensed ? SW_SHOW : SW_HIDE);
     ShowWindow(activate, state.licensed ? SW_HIDE : SW_SHOW);
     ShowWindow(deactivate, state.licensed ? SW_SHOW : SW_HIDE);
     EnableWindow(entry, !state.busy && state.canActivate);
@@ -96,6 +103,9 @@ void open(SDL_Window* parent, const DialogState& state, DialogAction action) {
     control(L"STATIC", L"License Key", 0, 24, 112, 490, 20, 0);
     entry = control(L"EDIT", L"", Key, 24, 138, 490, 28, WS_TABSTOP | ES_AUTOHSCROLL);
     SendMessageW(entry, EM_SETLIMITTEXT, 256, 0);
+    masked = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"", WS_CHILD | SS_LEFTNOWORDWRAP | SS_CENTERIMAGE,
+        scale(24), scale(138), scale(490), scale(28), window, nullptr, cls.hInstance, nullptr);
+    SendMessageW(masked, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     status = control(L"STATIC", L"", 0, 24, 180, 490, 66, 0);
     activate = control(L"BUTTON", L"Activate Rendepth Pro", Activate, 24, 250, 240, 32, WS_TABSTOP | BS_DEFPUSHBUTTON);
     deactivate = control(L"BUTTON", L"Deactivate This Computer", Deactivate, 24, 250, 240, 32, WS_TABSTOP);

@@ -14,7 +14,7 @@
 int main(int argc, char** argv) {
     if (argc != 7 && argc != 9 && argc != 10) {
         std::cerr << "Usage: InferenceRuntimeTest <app-root> <pack-root> <cpu|cuda|rocm|directml> "
-            "<cpu|cuda|rocm|directml|unavailable> <status-substring> <installed|missing> [<depth-model> <sr-model> [<depth-size>]]\n";
+            "<cpu|cuda|rocm|directml|unavailable> <status-substring> <installed|missing> [<depth-model> <sr-model|-> [<depth-size>]]\n";
         return 2;
     }
     using Provider = DepthEstimator::Provider;
@@ -80,23 +80,28 @@ int main(int argc, char** argv) {
             SDL_DestroySurface(input);
             return 1;
         }
-        SuperResolution sr;
-        SuperResolution::Config srConfig;
-        srConfig.modelPath = argv[8];
-        srConfig.intraOpThreads = 2;
-        if (!sr.load(srConfig, error)) {
-            std::cerr << error << '\n';
-            SDL_DestroySurface(input);
-            return 1;
+        std::cout << "Depth: " << depth.providerName();
+        if (std::string(argv[8]) != "-") {
+            SuperResolution sr;
+            SuperResolution::Config srConfig;
+            srConfig.modelPath = argv[8];
+            srConfig.intraOpThreads = 2;
+            if (!sr.load(srConfig, error)) {
+                std::cerr << error << '\n';
+                SDL_DestroySurface(input);
+                return 1;
+            }
+            SDL_Surface* output = sr.predict(input, error);
+            if (!output) {
+                std::cerr << error << '\n';
+                SDL_DestroySurface(input);
+                return 1;
+            }
+            SDL_DestroySurface(output);
+            std::cout << "; SR: " << sr.providerName();
         }
-        SDL_Surface* output = sr.predict(input, error);
         SDL_DestroySurface(input);
-        if (!output) {
-            std::cerr << error << '\n';
-            return 1;
-        }
-        SDL_DestroySurface(output);
-        std::cout << "Depth: " << depth.providerName() << "; SR: " << sr.providerName() << '\n';
+        std::cout << '\n';
     }
     const auto provider = InferenceRuntime::provider();
 #ifdef _WIN32

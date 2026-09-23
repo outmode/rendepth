@@ -297,7 +297,6 @@ struct DiscTitleMenu::Impl {
     bool checkedFallbackFont = false;
     bool active = false, visible = false, dirty = true;
     int width = 0, height = 0, page = 0, focus = 0, columns = 3, perPage = 6;
-    int views = 1;
     int hovered = -1;
     unsigned revision = 0;
     std::optional<int> pending;
@@ -355,6 +354,7 @@ void DiscTitleMenu::shutdown(Context* context) {
     impl->fallbackFont = nullptr;
 }
 // Report whether the menu has a visible rendered page.
+bool DiscTitleMenu::active() const { return impl->active; }
 bool DiscTitleMenu::visible() const { return impl->visible; }
 // Return a scan failure and close the failed menu.
 std::string DiscTitleMenu::takeError() {
@@ -432,6 +432,14 @@ std::optional<int> DiscTitleMenu::takeSelection() {
     return result;
 }
 
+// Queue a title while the scan finishes, including a return to the title that was playing.
+void DiscTitleMenu::requestSelection(int title) {
+    if (!impl->active || title < 0) return;
+    impl->pending = title;
+    impl->stop();
+    impl->dirty = true;
+}
+
 // Handle title-menu pointer and keyboard navigation and selection.
 bool DiscTitleMenu::handleEvent(const SDL_Event& e, SDL_Window* window) {
     if (!visible()) return false;
@@ -466,9 +474,10 @@ bool DiscTitleMenu::handleEvent(const SDL_Event& e, SDL_Window* window) {
         int w, h; SDL_GetWindowSize(window, &w, &h);
         float x = e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.x : e.button.x;
         float y = e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.y : e.button.y;
-        const float viewWidth = std::max(1, w) / static_cast<float>(impl->views);
-        if (x >= viewWidth && impl->views == 2) x -= viewWidth;
-        SDL_Point p{static_cast<int>(x * impl->width / viewWidth), static_cast<int>(y * impl->height / std::max(1, h))};
+        // Each split viewport shows the whole menu. Its rendered cursor uses
+        // the full window's mouse range, so hit testing must use that range too.
+        SDL_Point p{static_cast<int>(x * impl->width / std::max(1, w)),
+            static_cast<int>(y * impl->height / std::max(1, h))};
         int hover = -1;
         for (size_t i = 0; i < impl->cards.size(); ++i) if (SDL_PointInRect(&p, &impl->cards[i])) hover = static_cast<int>(i);
         if (impl->hovered != hover) { impl->hovered = hover; impl->dirty = true; }
@@ -505,8 +514,6 @@ void DiscTitleMenu::update(Context* context, TTF_Font* font) {
     // Full SBS uses an undistorted canvas per eye. Half SBS/RGBD retain
     // the full-width canvas, matching the rest of the compressed split UI.
     int w, h; SDL_GetWindowSize(context->window, &w, &h);
-    impl->views = context->fullscreen && (context->mode == SBS_Full ||
-        context->mode == SBS_Half || context->mode == RGB_Depth) ? 2 : 1;
     if (context->fullscreen && context->mode == SBS_Full) w /= 2;
     w = std::max(1, w); h = std::max(1, h);
     std::vector<Title> titles;

@@ -115,16 +115,16 @@ cmake --build build-windows --config Release --target InferenceRuntimeTest
 python Tools/test_windows_inference.py Binary/InferenceRuntimeTest.exe `
   C:/SDKs/onnxruntime-win-x64-1.22.1/lib/onnxruntime.dll `
   --depth-model C:/Models/DA3-SMALL-560.onnx --depth-size 560 `
-  --sr-model C:/Models/RFDN_x4.onnx `
   --cuda-pack Distribution/windows-packs/cuda `
   --directml-pack Distribution/windows-packs/directml
 ```
 
 Each runtime case uses a fresh process. Tests cover CPU inference, missing and
 broken packs, wrong providers, paths with spaces, refusal to switch a live
-core, DLL origin, real depth/SR inference, and GPU-session CPU fallback. Omit
+core, DLL origin, real depth inference, optional SR inference, and GPU-session CPU fallback. Omit
 unavailable GPU pack arguments on hardware without those backends. Pass the
-input size expected by the depth model. These tests do not modify user settings.
+input size expected by the depth model. Add `--sr-model C:/Models/RFDN_x4.onnx`
+to also test super-resolution inference. These tests do not modify user settings.
 
 Provider references:
 - [DirectML requirements and session constraints](https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html)

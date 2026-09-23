@@ -11,6 +11,13 @@ DialogState state;
 // Translate the stored license result into dialog state and a default status message.
 void apply(const Result& result) {
     state.licensed = result.record.complete();
+    state.maskedKey.clear();
+    if (state.licensed) {
+        for (char character : result.record.key) {
+            if (character == '-') state.maskedKey += '-';
+            else state.maskedKey += "\xE2\x97\x8F"; // U+25CF BLACK CIRCLE
+        }
+    }
     state.message = result.message;
     if (state.message.empty()) state.message = state.licensed ? "Rendepth Pro is activated on this computer." :
         "Enter the license key from your purchase email.";

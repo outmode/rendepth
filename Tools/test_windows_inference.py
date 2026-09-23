@@ -18,10 +18,10 @@ def main():
     parser.add_argument("--cuda-pack", type=Path)
     parser.add_argument("--directml-pack", type=Path)
     args = parser.parse_args()
-    if bool(args.depth_model) != bool(args.sr_model):
-        parser.error("Supply both models")
+    if args.sr_model and not args.depth_model:
+        parser.error("Supply a depth model with the super-resolution model")
     if (args.cuda_pack or args.directml_pack) and not args.depth_model:
-        parser.error("Real GPU pack validation requires both models")
+        parser.error("Real GPU pack validation requires a depth model")
     probe = args.probe.resolve(strict=True)
     cpu = args.cpu_library.resolve(strict=True)
     # Keep fixtures in the workspace next to the probe's build outputs.
@@ -36,7 +36,8 @@ def main():
         def run(name, backend, expected, status, installed, models=False, pack_root=None, device=None):
             command = [str(probe), str(app), str(pack_root or packs), backend, expected, status, installed]
             if models:
-                command += [str(args.depth_model.resolve()), str(args.sr_model.resolve()), str(args.depth_size)]
+                command += [str(args.depth_model.resolve()),
+                            str(args.sr_model.resolve()) if args.sr_model else "-", str(args.depth_size)]
             environment = os.environ.copy()
             environment.pop("RENDEPTH_DIRECTML_DEVICE", None)
             if device is not None:
@@ -66,7 +67,8 @@ def main():
                 pack = pack.resolve(strict=True)
                 if pack.name != backend:
                     parser.error(f"Pack directory must be named {backend}")
-                run(f"real {backend} depth and SR", backend, backend,
+                name = f"real {backend} depth" + (" and SR" if args.sr_model else "")
+                run(name, backend, backend,
                     "CUDA runtime" if backend == "cuda" else "DirectML runtime",
                     "installed", True, pack.parent)
                 if backend == "directml":

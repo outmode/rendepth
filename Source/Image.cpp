@@ -4043,11 +4043,6 @@ int Image::draw(Context* context) {
 			}
 
 			auto cursorPosition = context->mouse;
-			if (discMenuTexture != nullptr && !context->displayMenu && viewsX == 2 && cursorPosition.x >= 0.0f) {
-				const float viewWidth = context->windowSize.x * 0.5f;
-				if (cursorPosition.x >= viewWidth) cursorPosition.x -= viewWidth;
-				cursorPosition.x *= 2.0f;
-			}
 			cursorPosition.y = context->windowSize.y - cursorPosition.y;
 			static glm::vec2 cursorOffset{9.0, -16.0 };
 			iconDataVert.transform = glm::translate(glm::mat4(1.0f),glm::vec3(cursorPosition +

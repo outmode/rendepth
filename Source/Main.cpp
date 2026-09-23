@@ -57,6 +57,7 @@
 #include <algorithm>
 #include <array>
 #include <functional>
+#include <iterator>
 #include <vector>
 #include <iostream>
 #include <string>
@@ -101,6 +102,15 @@ static DiscTitleMenu discTitleMenu;
 static std::filesystem::path selectedDiscPath;
 static int selectedDiscTitle = -1;
 static bool discTrackSelectionRequested = false;
+struct DiscPlaybackReturn {
+	std::filesystem::path path;
+	int title = -1;
+	double position = 0.0;
+	bool playing = false;
+	bool display3D = false;
+	bool requested = false;
+};
+static DiscPlaybackReturn discPlaybackReturn;
 static bool discLoadingMessageNeedsFrame = false;
 static bool blurayMediaActive = false;
 static ScreenCapture screenCapture;
@@ -169,6 +179,7 @@ static void setVideoControlsVisible(bool visible);
 static void finishSliderDrag(bool commitSeek = true);
 static Icon& getIcon(IconType type);
 static void checkMouseState();
+static glm::vec2 mousePositionForUI(float x, float y);
 static bool shouldShowCustomCursor();
 static void refreshDisplay3D(StereoFormat type);
 
@@ -1491,12 +1502,21 @@ Icon IconBatch = {
 	false
 };
 
-// Allow disc track selection only while the selected title is the active, fully loaded source.
+// Keep the track control available while browsing titles on the same disc.
 static bool canShowTrackSelection() {
-	return activeVideo && !activeScreenCapture && !discTitleMenu.visible() &&
-		!context.displayMenu && !context.loading && selectedDiscTitle >= 0 &&
-		!fileList.empty() && fileIndex >= 0 && fileIndex < static_cast<int>(fileList.size()) &&
-		selectedDiscPath == std::filesystem::path(fileList[fileIndex].link);
+	if (activeScreenCapture || context.displayMenu || context.loading || fileList.empty() ||
+		fileIndex < 0 || fileIndex >= static_cast<int>(fileList.size())) return false;
+	const auto currentPath = std::filesystem::path(fileList[fileIndex].link);
+	if (discTitleMenu.active())
+		return discPlaybackReturn.title >= 0 && discPlaybackReturn.path == currentPath;
+	return activeVideo && selectedDiscTitle >= 0 && selectedDiscPath == currentPath;
+}
+
+// Cancel browsing and reopen the title that was playing when Track Selection was opened.
+static void requestDiscPlaybackReturn() {
+	if (!discTitleMenu.active() || !canShowTrackSelection()) return;
+	discPlaybackReturn.requested = true;
+	discTitleMenu.requestSelection(discPlaybackReturn.title);
 }
 
 Icon IconTrackSelection = {
@@ -1512,11 +1532,14 @@ Icon IconTrackSelection = {
 	},
 	[]() {
 		if (!canShowTrackSelection()) return;
+		if (discTitleMenu.active()) { requestDiscPlaybackReturn(); return; }
 		finishSliderDrag(false);
 		if (isPlayingSlideshow) cancelSlideshow();
+		discPlaybackReturn = {selectedDiscPath, selectedDiscTitle,
+			videoPlayer.position(), videoPlayer.playing(), display3D, false};
 		selectedDiscTitle = -1;
 		discTrackSelectionRequested = true;
-		loadImage(nullptr);
+		if (loadImage(nullptr) != 0) discPlaybackReturn = {};
 	},
 	0.0,
 	false,
@@ -3930,14 +3953,14 @@ void toggleStereo() {
 	refreshDisplay3D(fileList[fileIndex].type);
 }
 
-// Select a presentation state without changing the user's display format.
+// Select Disabled (0), 2D (2), or 3D (3), remembering the user's display format.
 static void selectStereoPresentation(int state) {
 	if (doingFileOp || context.loading) return;
 	resetRapidBrowseState();
 	if (isPlayingSlideshow) cancelSlideshow();
 	const auto disabled = std::find(stereoModes.begin(), stereoModes.end(), Mono);
 	const int disabledOption = static_cast<int>(disabled - stereoModes.begin());
-	if (state == 1) {
+	if (state == 0) {
 		if (preferredStereoMode != Mono || display3D || isConverting)
 			changeStereo(disabledOption);
 		menuSelection[ChoiceStereo.label] = disabledOption;
@@ -3962,6 +3985,24 @@ static void selectStereoPresentation(int state) {
 	Image::saveMenuLayout(&context);
 	setShowStereoSettings(false);
 	checkMouseState();
+	saveOptions();
+}
+
+// Start 3D in the selected mode, then advance through the enabled display modes.
+static void cycleStereoPresentation() {
+	if (doingFileOp || context.loading) return;
+	if (!display3D) {
+		selectStereoPresentation(3);
+		return;
+	}
+	resetRapidBrowseState();
+	if (isPlayingSlideshow) cancelSlideshow();
+	const auto current = std::find(stereoModes.begin(), stereoModes.end(), preferredStereoMode);
+	auto next = current == stereoModes.end() ? stereoModes.begin() : std::next(current);
+	if (next == stereoModes.end() || *next == Mono) next = stereoModes.begin();
+	const int option = static_cast<int>(next - stereoModes.begin());
+	changeStereo(option);
+	menuSelection[ChoiceStereo.label] = option;
 	saveOptions();
 }
 
@@ -4699,6 +4740,7 @@ static void serviceDeferredMediaLoad() {
 	Image::discMenuTexture = nullptr;
 	Image::discMenuDepthTexture = nullptr;
 	discTrackSelectionRequested = false;
+	discPlaybackReturn = {};
 	if (Image::discBackgroundTexture) Image::updateDiscBackground(&context, nullptr);
 	selectedDiscTitle = -1;
 	if (activeScreenCapture) stopCapture();
@@ -4738,6 +4780,7 @@ static std::string openBrowserImage(const BrowserBridge::Request& request) {
 	if (Image::discBackgroundTexture) Image::updateDiscBackground(&context, nullptr);
 	selectedDiscTitle = -1;
 	discTrackSelectionRequested = false;
+	discPlaybackReturn = {};
 	parseFileList({path.string()});
 	fileList[fileIndex].preload = surface;
 	menuSelection[ChoiceEyes.label] = request.swap ? 1 : 0;
@@ -4767,6 +4810,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 			Image::updateDiscBackground(&context, nullptr);
 			selectedDiscPath.clear();
 			selectedDiscTitle = -1;
+			discPlaybackReturn = {};
 			stopCapture();
 		} else if (videoDepthProcessor.running() || videoDepthFrameLoaded) {
 			stopVideoDepth();
@@ -4792,10 +4836,24 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	const bool deferDiscSelection = std::exchange(discLoadingMessageNeedsFrame, false);
 	if (auto title = deferDiscSelection ? std::nullopt : discTitleMenu.takeSelection()) {
 		Image::updateDiscBackground(&context, nullptr);
+		const auto returning = discPlaybackReturn.requested &&
+			discPlaybackReturn.title == *title && discPlaybackReturn.path == selectedDiscPath;
+		const auto resume = discPlaybackReturn;
+		discPlaybackReturn = {};
 		selectedDiscTitle = *title;
-		loadImage(nullptr);
+		if (returning && resume.display3D) setDisplay3D(true);
+		const bool loaded = loadImage(nullptr) == 0;
+		if (loaded && returning && activeVideo) {
+			videoPlayer.setPlaying(resume.playing);
+			seekVideo(resume.position, false);
+			refreshPlayIcon();
+		}
+		// The menu disabled film controls. Restore their state immediately on
+		// selection, even before the replacement video's first frame arrives.
+		checkMouseState();
 	}
 	if (const auto error = discTitleMenu.takeError(); !error.empty()) {
+		discPlaybackReturn = {};
 		Image::discMenuTexture = nullptr;
 		Image::discMenuDepthTexture = nullptr;
 		Image::updateDiscBackground(&context, nullptr);
@@ -4813,6 +4871,12 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		setDisplay3D(false);
 		refreshDisplay3D(Color_Only);
 		doneLoadingImage = true;
+		float mouseX = 0.0f, mouseY = 0.0f;
+		SDL_GetMouseState(&mouseX, &mouseY);
+		context.mouse = mousePositionForUI(mouseX, mouseY);
+		mouseMoveDelay = -1;
+		showCustomCursor(true);
+		checkMouseState();
 	}
 	Image::discMenuTexture = discTitleMenu.texture();
 	Image::discMenuDepthTexture = discTitleMenu.depthTexture();
@@ -5278,7 +5342,9 @@ void checkMouseState() {
 			(activeVideo && videoDepthFrameLoaded)));
 	for (auto& icon : appIcons) {
 		auto displayLoading = !(icon.type == IconType::Loading && (!isConverting || isPlayingSlideshow));
-		const bool discBrowser = discTitleMenu.visible();
+		const bool discBrowser = discTitleMenu.active();
+		if (icon.type == IconType::TrackSelection)
+			icon.label = discBrowser ? "Return to Movie" : "Track Selection";
 		const bool displayDiscControl = !discBrowser || (icon.type != IconType::Play &&
 			icon.type != IconType::Stereo_3D && icon.type != IconType::Save &&
 			icon.type != IconType::Folder && icon.type != IconType::Settings && icon.type != IconType::Crop);
@@ -5494,6 +5560,12 @@ static bool shouldShowCustomCursor() {
 	// A saved stereo preference alone must not replace the windowed OS cursor.
 	return context.window != nullptr &&
 		(SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) != 0;
+}
+
+// UI coordinates span the full window. Rendering each fullscreen split view in
+// a half-width viewport maps the same cursor position into both halves.
+static glm::vec2 mousePositionForUI(float x, float y) {
+	return {x * Image::mouseScale, y * Image::mouseScale};
 }
 
 // Switch cursor visibility between the application overlay and the operating system.
@@ -6334,13 +6406,26 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			(event->type >= SDL_EVENT_MOUSE_MOTION && event->type <= SDL_EVENT_MOUSE_WHEEL))
 			return SDL_APP_CONTINUE;
 	}
+	if (discTitleMenu.active() && event->type == SDL_EVENT_KEY_DOWN &&
+		event->key.key == SDLK_ESCAPE && canShowTrackSelection()) {
+		if (!event->key.repeat) requestDiscPlaybackReturn();
+		return SDL_APP_CONTINUE;
+	}
 	if (discTitleMenu.visible() && !context.displayMenu) {
 		if (event->type == SDL_EVENT_MOUSE_MOTION) {
-			context.mouse = {event->motion.x * Image::mouseScale, event->motion.y * Image::mouseScale};
+			context.mouse = mousePositionForUI(event->motion.x, event->motion.y);
 			mouseLastActive = getTimeNow();
 			showCustomCursor(true);
 		}
-		if (discTitleMenu.handleEvent(*event, context.window)) {
+		if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT) {
+			context.mouse = mousePositionForUI(event->button.x, event->button.y);
+			checkMouseState();
+		}
+		const bool trackControlClick = event->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+			event->button.button == SDL_BUTTON_LEFT &&
+			getIcon(IconType::TrackSelection).state == IconState::Over &&
+			getIcon(IconType::TrackSelection).active;
+		if (!trackControlClick && discTitleMenu.handleEvent(*event, context.window)) {
 			if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) leftClickConsumedByUI = true;
 			Image::discMenuTexture = discTitleMenu.texture();
 			Image::discMenuDepthTexture = discTitleMenu.depthTexture();
@@ -6460,7 +6545,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		#endif
 
 		if (!event->key.repeat && !(event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
-			if (event->key.key == SDLK_1) selectStereoPresentation(1);
+			if (event->key.key == SDLK_0) selectStereoPresentation(0);
+			else if (event->key.key == SDLK_1) cycleStereoPresentation();
 			else if (event->key.key == SDLK_2) selectStereoPresentation(2);
 			else if (event->key.key == SDLK_3) selectStereoPresentation(3);
 		}
@@ -6534,8 +6620,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 	} else if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
 		if (event->button.button == SDL_BUTTON_LEFT) {
 			const bool menuWasOpen = context.displayMenu;
-			context.mouse.x = event->button.x * Image::mouseScale;
-			context.mouse.y = event->button.y * Image::mouseScale;
+			context.mouse = mousePositionForUI(event->button.x, event->button.y);
 			mouseLastActive = getTimeNow();
 			checkMouseState();
 			leftClickConsumedByUI = isIconCaptured || context.displayMenu;
@@ -6640,8 +6725,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			showCustomCursor(true);
 			if (!isIconCaptured && !isConverting) isDragging = true;
 		} else if (event->button.button == SDL_BUTTON_RIGHT) {
-			context.mouse.x = event->button.x * Image::mouseScale;
-			context.mouse.y = event->button.y * Image::mouseScale;
+			context.mouse = mousePositionForUI(event->button.x, event->button.y);
 			mouseLastActive = getTimeNow();
 			checkMouseState();
 			if (!isConverting) {
@@ -6703,8 +6787,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
 		showCustomCursor(true);
 
-		context.mouse.x = event->motion.x * Image::mouseScale;
-		context.mouse.y = event->motion.y * Image::mouseScale;
+		context.mouse = mousePositionForUI(event->motion.x, event->motion.y);
 		pixelMotion.x += event->motion.xrel * Image::mouseScale;
 		pixelMotion.y += event->motion.yrel * Image::mouseScale;
 
@@ -6747,8 +6830,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 				float mouseX = 0.0f;
 				float mouseY = 0.0f;
 				SDL_GetMouseState(&mouseX, &mouseY);
-				context.mouse.x = mouseX * Image::mouseScale;
-				context.mouse.y = mouseY * Image::mouseScale;
+				context.mouse = mousePositionForUI(mouseX, mouseY);
 				mouseLeftWindow = false;
 				mouseLastActive = getTimeNow();
 				showCustomCursor(true);
