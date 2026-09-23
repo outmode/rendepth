@@ -89,6 +89,12 @@ applicable vendor redistribution notices and use redistributable binaries.
 
 ## Install and select
 
+The planned public download location is `https://rendepth.com/packs/`, shared
+with the Linux packs. Windows archive filenames must identify Windows, x64,
+the provider, and runtime versions to avoid collisions with Linux archives.
+Publish a SHA-256 sidecar for each final archive. Uploading and availability
+verification are still pending; the location is not yet wired into the application.
+
 Copy the entire `cuda` or `directml` directory, including `bin`, `licenses`, and
 `pack.json`, into `%USERPROFILE%\.Rendepth\Runtimes`. The paths must be:
 

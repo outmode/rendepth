@@ -106,7 +106,11 @@ python3 Tools/test_linux_inference.py Binary/InferenceRuntimeTest \
 For local installation, close Rendepth and use
 `--output "$HOME/.Rendepth/Runtimes/cuda"` when building the pack. Select
 **Nvidia CUDA** through Settings → GPU Support → Choose AI Engine, then restart.
-In-app downloads remain a separate step; no download endpoint is configured.
+The planned public download location is `https://rendepth.com/packs/`.
+Upload the final archives and their adjacent `.sha256` files there, preserving
+their basenames. Uploading and availability verification are still pending;
+the location is not yet wired into the application. In-app downloads remain
+a separate step.
 
 ### Archive naming and checksum format
 
