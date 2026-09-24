@@ -1721,9 +1721,6 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 		SDL_Log("GPU Cannot Claim Window");
 		return -1;
 	}
-	initNativeOutput(context);
-	if (context->mode != Light_Field) setNativeOutputActive(context, false);
-
 	// Load the shader stages shared by image rendering, video conversion, depth refinement, and UI
 	// pipelines.
 	SDL_GPUShader* imageVertexShader = Core::loadShader(context->device,

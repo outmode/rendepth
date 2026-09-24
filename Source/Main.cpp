@@ -303,6 +303,8 @@ auto displayInfoEnabled = true;
 auto showDisplayInfoOnce = false;
 auto currentStereoMode = Native;
 auto preferredStereoMode = Mono;
+static bool startupNativeDiscoveryPending = false;
+static Uint64 startupFirstFrameTime = 0;
 auto defaultStereoMode = Mono;
 static ViewMode lastUsedStereoMode = Anaglyph_Accurate;
 glm::vec2 pixelMotion = {0.0, 0.0 };
@@ -3744,6 +3746,10 @@ static void setDisplay3D(bool display) {
 // Resolve the requested presentation against the loaded source format and output display.
 static void refreshDisplay3D(StereoFormat type) {
 	if (preferredStereoMode == Lenticular) {
+		if (startupNativeDiscoveryPending) {
+			setStereoMode(type == Color_Only ? Native : Mono);
+			return;
+		}
 		const bool isLenticular2View = (Image::nativeDisplayConfig.viewCount == 2);
 		const bool supportedSource = type == Color_Plus_Depth ||
 			type == Light_Field_LKG || (isLenticular2View && type != Color_Only);
@@ -3793,7 +3799,8 @@ static void refreshDisplay3D(StereoFormat type) {
 static void setStereoMode(ViewMode mode) {
 	currentStereoMode = mode;
 	context.mode = currentStereoMode;
-	if (mode == Lenticular) Image::setNativeOutputActive(&context, true);
+	if (mode == Lenticular && !startupNativeDiscoveryPending)
+		Image::setNativeOutputActive(&context, true);
 	Image::updateSize(&context);
 }
 
@@ -4578,6 +4585,8 @@ static void refreshLicenseMenu(bool rebuild) {
 
 // Initialize application services, the SDL window and GPU, preferences, and the initial media source.
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
+	startupNativeDiscoveryPending = true;
+	startupFirstFrameTime = 0;
 	Licensing::Service::initialize();
 	refreshLicenseMenu(false);
 	std::string fileToLoad{};
@@ -4676,27 +4685,12 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	refreshWindowSizeBase();
 	updateFullscreenState();
 
-	const char* requestedNative = std::getenv("RENDEPTH_NATIVE_OUTPUT");
-	if (requestedNative && std::string(requestedNative) == "1")
-		Image::setNativeOutputActive(&context, true);
-	const bool onLenticularDisplay = Image::isNativeDisplayOnMainWindow();
-	const bool forceNative = requestedNative && std::string(requestedNative) == "1" &&
-		Image::nativeOutputAvailable();
-	if ((onLenticularDisplay && preferredStereoMode != Mono) || forceNative) {
-		preferredStereoMode = Lenticular;
-		lastUsedStereoMode = Lenticular;
-		currentStereoMode = Lenticular;
-		context.mode = Lenticular;
-		if (forceNative && !fileList.empty() && fileIndex >= 0 &&
-			(fileList[fileIndex].type == Light_Field_LKG || fileList[fileIndex].type == Color_Plus_Depth))
-			setDisplay3D(true);
-	}
-
-	const bool savedLenticular = preferredStereoMode == Lenticular &&
-		!fileList.empty();
-	if (savedLenticular) Image::setNativeOutputActive(&context, true);
-
-	if (!fileList.empty() && fileList.size() > fileIndex) {
+	// Native display discovery can read calibration from a slow USB volume. Let
+	// the welcome page or initial media reach the screen before doing that work.
+	if (preferredStereoMode == Lenticular) {
+		setStereoMode(fileList.empty() || fileIndex < 0 ||
+			fileList[fileIndex].type == Color_Only ? Native : Mono);
+	} else if (!fileList.empty() && fileList.size() > fileIndex) {
 		refreshDisplay3D(fileList[fileIndex].type);
 		if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
 			preferredStereoMode == RGB_Depth)
@@ -4719,6 +4713,29 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	if (GettingStarted::visible) showCustomCursor(true);
 
 	return SDL_APP_CONTINUE;
+}
+
+// Apply native output selection after the first frame has been presented.
+static void finishStartupNativeDiscovery() {
+	startupNativeDiscoveryPending = false;
+	Image::initNativeOutput(&context);
+	const char* requestedNative = std::getenv("RENDEPTH_NATIVE_OUTPUT");
+	const bool forceNative = requestedNative && std::string(requestedNative) == "1" &&
+		Image::nativeOutputAvailable();
+	if ((Image::isNativeDisplayOnMainWindow() && preferredStereoMode != Mono) || forceNative) {
+		preferredStereoMode = Lenticular;
+		lastUsedStereoMode = Lenticular;
+		currentStereoMode = Lenticular;
+		context.mode = Lenticular;
+		if (forceNative && !fileList.empty() && fileIndex >= 0 &&
+			(fileList[fileIndex].type == Light_Field_LKG || fileList[fileIndex].type == Color_Plus_Depth))
+			setDisplay3D(true);
+	}
+	if (preferredStereoMode == Lenticular && Image::nativeOutputAvailable() &&
+		!fileList.empty() && fileIndex >= 0 && fileList.size() > fileIndex)
+		refreshDisplay3D(context.imageType);
+	if (preferredStereoMode != Lenticular)
+		Image::setNativeOutputActive(&context, false);
 }
 
 static auto visibilitySpeed = 9.0;
@@ -5406,6 +5423,11 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	if (Image::draw(&context) < 0) {
 		SDL_Log("Image Draw Failed.");
 		return SDL_APP_FAILURE;
+	}
+	if (startupNativeDiscoveryPending) {
+		const Uint64 now = SDL_GetTicks();
+		if (startupFirstFrameTime == 0) startupFirstFrameTime = now;
+		else if (now - startupFirstFrameTime >= 100) finishStartupNativeDiscovery();
 	}
 
 	pixelMotion = {0.0, 0.0 };
@@ -6594,7 +6616,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 	static bool resumeAfterGuide = false;
 	if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
 	if (event->type == SDL_EVENT_DISPLAY_ADDED || event->type == SDL_EVENT_DISPLAY_REMOVED) {
-		if (preferredStereoMode == Lenticular) Image::initNativeOutput(&context);
+		if (!startupNativeDiscoveryPending && preferredStereoMode == Lenticular)
+			Image::initNativeOutput(&context);
 		return SDL_APP_CONTINUE;
 	}
 	// The native output has its own fullscreen window and local coordinates.
@@ -6705,7 +6728,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		auto pixelDensity = SDL_GetWindowPixelDensity(context.window);
 		context.pixelDensity = pixelDensity;
 		updateDisplayScale();
-		if (preferredStereoMode == Lenticular) Image::initNativeOutput(&context);
+		if (!startupNativeDiscoveryPending && preferredStereoMode == Lenticular)
+			Image::initNativeOutput(&context);
 	} else if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
 		event->type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
 		refreshWindowSize();
@@ -6715,7 +6739,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		if (isFullscreen) {
 			Image::configureFullscreenMode(context.window, SDL_GetDisplayForWindow(context.window));
 		}
-		if (preferredStereoMode == Lenticular) {
+		if (!startupNativeDiscoveryPending && preferredStereoMode == Lenticular) {
 			Image::initNativeOutput(&context);
 		}
 	} else if (event->type == SDL_EVENT_WINDOW_RESIZED) {
