@@ -121,7 +121,8 @@ bool buildPage(int width, float scale, const std::filesystem::path& assets,
         {"1. Open your media", {"Click", IconType::File, "at the top-left to open a photo or video. You can also drag a file into the window."}},
         {"2. Bring it into 3D", {"Click", IconType::Stereo_3D, "at the bottom-center to switch to 3D. The first conversion may need to download a model. Video conversion requires Pro."}},
         {"3. Make the depth feel right", {"Open", IconType::Settings, "near the lower-left. Adjust", IconType::Glasses, "Separation,", IconType::Focus, "Depth, and", IconType::Layers, "Parallax with the sliders. Start with small changes."}},
-        {"4. Choose your view and save", {"Use", IconType::Options, "at the lower-left for the 3D mode, quality, and other settings. Use", IconType::Fullscreen, "for fullscreen and", IconType::Save, "to save the current image or video frame."}}
+        {"4. Choose your view and save", {"Use", IconType::Options, "at the lower-left for the 3D mode, quality, and other settings. Use", IconType::Fullscreen, "for fullscreen and", IconType::Save, "to save the current image or video frame."}},
+        {"5. Use your GPU for AI", {"Open", IconType::Options, "at the lower-left, then choose GPU Support > Choose AI Engine. Select an engine for your GPU, download its pack if prompted, and restart Rendepth."}}
     };
     Surface titlePixels(TTF_RenderText_Blended_Wrapped(title.get(), "Getting started with Rendepth", 0, foreground, contentWidth), SDL_DestroySurface);
     auto subtitle = text(body.get(), "A little depth. A whole new view.", muted);

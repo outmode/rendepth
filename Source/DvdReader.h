@@ -78,6 +78,7 @@ public:
     const std::vector<DvdTitle>& titles() const;
 
     double duration() const;
+    double displayAspectRatio() const;
     double currentTime() const;
     std::string discTitle() const;
     bool isOpen() const;

@@ -89,14 +89,24 @@ applicable vendor redistribution notices and use redistributable binaries.
 
 ## Install and select
 
-The planned public download location is `https://rendepth.com/packs/`, shared
-with the Linux packs. Windows archive filenames must identify Windows, x64,
-the provider, and runtime versions to avoid collisions with Linux archives.
-Publish a SHA-256 sidecar for each final archive. Uploading and availability
-verification are still pending; the location is not yet wired into the application.
+The public download location is `https://rendepth.com/packs/`, shared with the
+Linux packs. Windows archive filenames identify Windows, x64, the provider,
+and runtime versions to avoid collisions with Linux archives. Each archive has
+an adjacent SHA-256 sidecar. Rendepth also pins the release archive hashes in
+`Source/RuntimePackDownloader.cpp`; changing an archive requires updating the
+filename and pinned hash in a new app build.
 
-Copy the entire `cuda` or `directml` directory, including `bin`, `licenses`, and
-`pack.json`, into `%USERPROFILE%\.Rendepth\Runtimes`. The paths must be:
+When a missing engine is chosen in **GPU Support → Choose AI Engine** or the
+AI Engine settings row, Rendepth offers to download and install its pack. The
+download runs in the background and can be cancelled from **GPU Support**.
+It verifies the published sidecar and the pinned archive hash, extracts into a
+temporary directory, and moves the finished pack into place. Existing pack
+directories are never overwritten; move an incomplete directory aside before
+retrying. Restart Rendepth after installation.
+
+For manual installation, copy the entire `cuda` or `directml` directory,
+including `bin`, `licenses`, and `pack.json`, into
+`%USERPROFILE%\.Rendepth\Runtimes`. The paths must be:
 
 ```text
 %USERPROFILE%/.Rendepth/Runtimes/cuda/bin/onnxruntime.dll
@@ -105,12 +115,15 @@ Copy the entire `cuda` or `directml` directory, including `bin`, `licenses`, and
 ```
 
 Select the engine in Settings and restart Rendepth. Pack presence does not
-guarantee a compatible GPU/driver. No automatic pack downloads are implemented.
+guarantee a compatible GPU/driver.
 
 ## Validate
 
 ```powershell
 python Tools/test_build_windows_runtime_pack.py
+cmake --build build-windows --config Release --target RuntimePackDownloaderSmoke
+# Downloads and installs the smaller public pack in a new test folder.
+.\build-windows\tests\RuntimePackDownloaderSmoke.exe directml build-windows/runtime-pack-smoke
 cmake --build build-windows --config Release --target InferenceRuntimeTest
 python Tools/test_windows_inference.py Binary/InferenceRuntimeTest.exe `
   C:/SDKs/onnxruntime-win-x64-1.22.1/lib/onnxruntime.dll `

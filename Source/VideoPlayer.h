@@ -110,6 +110,7 @@ public:
 	double duration() const;
 	std::uint64_t generation() const;
 	int width() const;
+	int displayWidth(int decodedWidth, int decodedHeight) const;
 	int height() const;
 	int rotation() const;
 

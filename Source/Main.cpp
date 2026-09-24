@@ -24,6 +24,8 @@
 #include <SDL3/SDL_timer.h>
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_dialog.h>
+#include <SDL3/SDL_filesystem.h>
+#include <SDL3/SDL_hints.h>
 #include <SDL3_image/SDL_image.h>
 #define QOI_NO_STDIO
 #define QOI_IMPLEMENTATION
@@ -73,6 +75,7 @@
 #include <cstdlib>
 #include <regex>
 #include <random>
+#include <exception>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -87,6 +90,9 @@
 #include "DepthEstimator.h"
 #include "SuperResolution.h"
 #include "ModelDownloader.h"
+#ifdef _WIN32
+#include "RuntimePackDownloader.h"
+#endif
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 #include "InferenceRuntime.h"
 #endif
@@ -167,6 +173,7 @@ static VideoDepthBlendState videoDepthBlend;
 static bool activeVideo = false;
 static bool activeScreenCapture = false;
 static bool browserCapture = false;
+static std::filesystem::path browserImagePath;
 static StereoFormat captureSourceType = Color_Only;
 static bool videoFrameLoaded = false;
 static bool videoDepthFrameLoaded = false;
@@ -499,7 +506,8 @@ static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool pre
 		SDL_SetWindowTitle(context.window, windowTitle.c_str());
 		context.fileLink = activeScreenCapture ? "screen-capture" : fileList[fileIndex].link;
 		Image::updateVideoFrame(&context, displayFrame, true,
-			activeScreenCapture ? displayFrame.width : videoPlayer.width(),
+			activeScreenCapture ? displayFrame.width :
+				videoPlayer.displayWidth(displayFrame.width, displayFrame.height),
 			activeScreenCapture ? displayFrame.height : videoPlayer.height(), true);
 		if (context.imageType != Color_Only && !isConverted3D) {
 			if (!display3D) setDisplay3D(true);
@@ -525,7 +533,8 @@ static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool pre
 		}
 	} else {
 		Image::updateVideoFrame(&context, displayFrame, false,
-			activeScreenCapture ? displayFrame.width : videoPlayer.width(),
+			activeScreenCapture ? displayFrame.width :
+				videoPlayer.displayWidth(displayFrame.width, displayFrame.height),
 			activeScreenCapture ? displayFrame.height : videoPlayer.height(), !preview);
 	}
 }
@@ -1227,7 +1236,7 @@ Icon IconStereo3D = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Toggle 2D/3D",
+	"Switch to 3D",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -1297,7 +1306,7 @@ Icon IconFullscreen = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Toggle Full Screen",
+	"Enter Fullscreen",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -1576,7 +1585,7 @@ Icon IconSettings = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Toggle 3D Settings",
+	"Open 3D Settings",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -1672,12 +1681,27 @@ Choice ChoiceRuntimeTools {
 	"GPU Support", { "Choose AI Engine", "Open Pack Folder" }, {}, {}, false, false, true,
 };
 static int startupInferenceOption = 0;
+static int committedInferenceOption = 0;
 static bool inferencePreferenceDirty = false;
 static bool inferenceRuntimeLoaded = false;
 static std::string inferenceStartupError;
 static void refreshInferenceSettings();
 static void changeInference(int option);
 static void runtimeTools(int option);
+#ifdef _WIN32
+struct RuntimePackInstallState {
+	RuntimePackDownloader::Progress progress;
+	std::atomic<bool> cancel{false};
+	std::atomic<bool> done{false};
+	SDL_Thread* thread = nullptr;
+	std::filesystem::path root;
+	int option = 0;
+	bool success = false;
+	std::string error;
+};
+static RuntimePackInstallState runtimePackInstall;
+static void pollRuntimePackInstall();
+#endif
 #endif
 
 Choice ChoiceVersion {
@@ -2344,15 +2368,107 @@ static void refreshInferenceSettings() {
 	}
 }
 
+// Native dialogs take focus from an exclusive fullscreen window. Keep SDL from
+// minimizing the owner until the dialog has closed, then restore the old hint.
+class FullscreenMessageBoxGuard {
+public:
+	FullscreenMessageBoxGuard() {
+		const char* previous = SDL_GetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS);
+		hadPrevious_ = previous != nullptr;
+		if (previous) previous_ = previous;
+		SDL_SetHintWithPriority(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0", SDL_HINT_OVERRIDE);
+	}
+	~FullscreenMessageBoxGuard() {
+		if (hadPrevious_)
+			SDL_SetHintWithPriority(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS,
+				previous_.c_str(), SDL_HINT_OVERRIDE);
+		else
+			SDL_ResetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS);
+	}
+	FullscreenMessageBoxGuard(const FullscreenMessageBoxGuard&) = delete;
+	FullscreenMessageBoxGuard& operator=(const FullscreenMessageBoxGuard&) = delete;
+
+private:
+	std::string previous_;
+	bool hadPrevious_ = false;
+};
+
+static bool showAppMessageBox(const SDL_MessageBoxData& dialog, int* selected) {
+	const FullscreenMessageBoxGuard guard;
+	return SDL_ShowMessageBox(&dialog, selected);
+}
+
+static bool showAppSimpleMessageBox(SDL_MessageBoxFlags flags, const char* title,
+		const char* message, SDL_Window* window) {
+	const FullscreenMessageBoxGuard guard;
+	return SDL_ShowSimpleMessageBox(flags, title, message, window);
+}
+
 // Persist an explicit inference-engine choice and indicate whether it needs an application restart.
 static void changeInference(int option) {
-	menuSelection[ChoiceInference.label] = std::clamp(option, 0, 2);
-	if (firstInit) return;
+	option = std::clamp(option, 0, 2);
+	if (firstInit) {
+		menuSelection[ChoiceInference.label] = option;
+		committedInferenceOption = option;
+		return;
+	}
+#ifdef _WIN32
+	if (runtimePackInstall.thread != nullptr) {
+		menuSelection[ChoiceInference.label] = committedInferenceOption;
+		showAppSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "GPU Runtime Packs",
+			"A GPU pack installation is in progress. Open GPU Support to view or cancel it.", context.window);
+		return;
+	}
+	if (option != 0 && !InferenceRuntime::installed(inferenceProviderForOption(option))) {
+		menuSelection[ChoiceInference.label] = committedInferenceOption;
+		const char* label = option == 1 ? "Nvidia CUDA" : "DirectML";
+		const char* size = option == 1 ? "2.39 GiB" : "15 MiB";
+		const std::string message = std::string(label) + " needs a GPU runtime pack (" + size +
+			" download). Download and install it from rendepth.com now?\n\n"
+			"The engine will be selected after installation. Restart Rendepth to use it.";
+		const SDL_MessageBoxButtonData buttons[] = {
+			{ SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel" },
+			{ SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Download and Install" }
+		};
+		const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_INFORMATION, context.window,
+			"Install GPU Runtime Pack", message.c_str(), static_cast<int>(std::size(buttons)), buttons, nullptr };
+		int selected = 0;
+		if (!showAppMessageBox(dialog, &selected) || selected != 1) return;
+		runtimePackInstall.root = InferenceRuntime::packDirectory();
+		runtimePackInstall.option = option;
+		runtimePackInstall.error.clear();
+		runtimePackInstall.cancel = false;
+		runtimePackInstall.done = false;
+		runtimePackInstall.progress.stage = RuntimePackDownloader::Stage::Checksum;
+		runtimePackInstall.progress.received = 0;
+		runtimePackInstall.progress.total = 0;
+		runtimePackInstall.thread = SDL_CreateThread([](void* data) -> int {
+			auto& state = *static_cast<RuntimePackInstallState*>(data);
+			try {
+				state.success = RuntimePackDownloader::install(
+					state.option == 1 ? RuntimePackDownloader::Pack::CUDA : RuntimePackDownloader::Pack::DirectML,
+					state.root, state.cancel, state.progress, state.error);
+			} catch (const std::exception& exception) {
+				state.success = false;
+				state.error = std::string("Could not install GPU pack: ") + exception.what();
+			}
+			state.done.store(true, std::memory_order_release);
+			return state.success ? 0 : 1;
+		}, "RuntimePackInstall", &runtimePackInstall);
+		if (!runtimePackInstall.thread)
+			showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs",
+				"Could not start the GPU pack download thread.", context.window);
+		return;
+	}
+#endif
+	menuSelection[ChoiceInference.label] = option;
+	committedInferenceOption = option;
 	inferencePreferenceDirty = true;
 	SDL_Log("AI Engine explicitly selected: %d", menuSelection[ChoiceInference.label]);
 	refreshInferenceSettings();
 	saveOptions();
-	const bool restart = menuSelection[ChoiceInference.label] != startupInferenceOption;
+	const bool restart = menuSelection[ChoiceInference.label] != startupInferenceOption ||
+		InferenceRuntime::provider() != inferenceProviderForOption(option);
 	Core::drawText(&context, restart ? "Restart Rendepth to apply the AI inference preference" :
 		"AI inference preference unchanged", Image::helpFont,
 		Image::helpTexture, Image::helpTextSize, "Help Texture");
@@ -2364,13 +2480,34 @@ static void changeInference(int option) {
 static void runtimeTools(int option) {
 	menuSelection[ChoiceRuntimeTools.label] = -1;
 	if (firstInit) return;
+#ifdef _WIN32
+	if (runtimePackInstall.thread != nullptr) {
+		const auto stage = runtimePackInstall.progress.stage.load();
+		std::string message = stage == RuntimePackDownloader::Stage::Checksum ?
+			"Checking the GPU pack checksum..." : stage == RuntimePackDownloader::Stage::Extract ?
+			"Extracting and installing the GPU pack..." : "Downloading the GPU pack...";
+		const auto total = runtimePackInstall.progress.total.load();
+		if (stage == RuntimePackDownloader::Stage::Download && total != 0)
+			message += " " + std::to_string(runtimePackInstall.progress.received.load() * 100 / total) + "%";
+		const SDL_MessageBoxButtonData buttons[] = {
+			{ SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Close" },
+			{ 0, 1, "Cancel Download" }
+		};
+		const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_INFORMATION, context.window,
+			"GPU Runtime Packs", message.c_str(), static_cast<int>(std::size(buttons)), buttons, nullptr };
+		int selected = 0;
+		if (showAppMessageBox(dialog, &selected) && selected == 1)
+			runtimePackInstall.cancel = true;
+		return;
+	}
+#endif
 	refreshInferenceSettings();
 	const auto directory = InferenceRuntime::packDirectory();
 	if (option == 1) {
 		std::error_code error;
 		if (!directory.empty()) std::filesystem::create_directories(directory, error);
 		if (directory.empty() || error) {
-			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs",
+			showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs",
 				"Could not create the runtime pack folder.", context.window);
 			return;
 		}
@@ -2387,7 +2524,7 @@ static void runtimeTools(int option) {
 			else { url += '%'; url += hex[c >> 4]; url += hex[c & 15]; }
 		}
 		if (!SDL_OpenURL(url.c_str()))
-			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs", SDL_GetError(), context.window);
+			showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs", SDL_GetError(), context.window);
 		return;
 	}
 	std::string message = InferenceRuntime::status();
@@ -2396,8 +2533,12 @@ static void runtimeTools(int option) {
 	message += "\n" + std::string(secondaryInferenceLabel) + " pack: " +
 		std::string((menuSelection[ChoiceRuntimePacks.label] & 2) ? "Installed" : "Not installed");
 	message += "\n\nPack folder: " + directory.string();
-	message += "\n\nGPU packs are installed separately. In-app downloads are not available yet."
-		"\nAn installed pack still needs a compatible GPU and driver."
+#ifdef _WIN32
+	message += "\n\nChoosing a missing engine downloads and installs its pack from rendepth.com.";
+#else
+	message += "\n\nGPU packs are installed separately. In-app downloads are not available yet.";
+#endif
+	message += "\nAn installed pack still needs a compatible GPU and driver."
 		"\nRestart Rendepth after installing a pack or changing the inference preference.";
 	if (menuSelection[ChoiceInference.label] != startupInferenceOption)
 		message += "\n\nA preference change is waiting for restart.";
@@ -2411,9 +2552,45 @@ static void runtimeTools(int option) {
 		static_cast<int>(std::size(buttons)), buttons, nullptr
 	};
 	int selected = -1;
-	if (SDL_ShowMessageBox(&dialog, &selected) && selected >= 0 && selected <= 2)
+	if (showAppMessageBox(dialog, &selected) && selected >= 0 && selected <= 2)
 		changeInference(selected);
 }
+
+#ifdef _WIN32
+static void pollRuntimePackInstall() {
+	if (!runtimePackInstall.thread) return;
+	if (!runtimePackInstall.done.load(std::memory_order_acquire)) {
+		static double nextUpdate = 0.0;
+		if (getTimeNow() >= nextUpdate) {
+			const auto stage = runtimePackInstall.progress.stage.load();
+			std::string status = stage == RuntimePackDownloader::Stage::Checksum ?
+				"Checking GPU pack checksum" : stage == RuntimePackDownloader::Stage::Extract ?
+				"Installing GPU pack" : "Downloading GPU pack";
+			const auto total = runtimePackInstall.progress.total.load();
+			if (stage == RuntimePackDownloader::Stage::Download && total != 0)
+				status += ": " + std::to_string(runtimePackInstall.progress.received.load() * 100 / total) + "%";
+			Core::drawText(&context, status, Image::helpFont,
+				Image::helpTexture, Image::helpTextSize, "Help Texture");
+			Image::displayTip = true;
+			displayTipTime = getTimeNow();
+			nextUpdate = getTimeNow() + 1.0;
+		}
+		return;
+	}
+	SDL_WaitThread(runtimePackInstall.thread, nullptr);
+	runtimePackInstall.thread = nullptr;
+	refreshInferenceSettings();
+	if (runtimePackInstall.success) {
+		const int option = runtimePackInstall.option;
+		changeInference(option);
+		showAppSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "GPU Runtime Packs",
+			"GPU pack installed. Restart Rendepth to use the selected AI engine.", context.window);
+	} else if (!runtimePackInstall.cancel.load()) {
+		showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs",
+			runtimePackInstall.error.c_str(), context.window);
+	}
+}
+#endif
 #endif
 
 static double sliderStart = 0.5;
@@ -3019,6 +3196,32 @@ static std::string formatVideoTimeTag(double presentationTime) {
 		seconds, milliseconds);
 }
 
+static std::filesystem::path exportUserFolder(SDL_Folder folder) {
+	const char* location = SDL_GetUserFolder(folder);
+	return location && *location ? std::filesystem::u8path(location) : std::filesystem::path{};
+}
+
+static std::string exportBaseName(const std::string& sourceName) {
+	// A disc root such as F:\ has no filename. Passing it through as a filename
+	// makes path joining discard Pictures and write back to the disc.
+	auto base = removeFileTags(std::filesystem::path(sourceName).filename().string());
+	for (char& character : base) {
+		const auto value = static_cast<unsigned char>(character);
+		if (value < 32 || std::strchr("<>:\"/\\|?*", character)) character = '_';
+	}
+	while (!base.empty() && (base.back() == ' ' || base.back() == '.')) base.pop_back();
+	return base.empty() ? "Disc" : base;
+}
+
+static bool isOpticalDiscPath(const std::filesystem::path& path) {
+#ifdef _WIN32
+	const auto root = path.root_path();
+	return !root.empty() && GetDriveTypeW(root.c_str()) == DRIVE_CDROM;
+#else
+	return DiscSource::candidate(path);
+#endif
+}
+
 // Render and save the current media in the selected export format, then show the result.
 static void saveFile() {
 	doingFileOp = true;
@@ -3028,7 +3231,8 @@ static void saveFile() {
 	if (activeVideo && lastVideoFrame != nullptr &&
 		lastVideoFrame->generation == videoPlayer.generation()) {
 		if (Image::updateVideoFrame(&context, *lastVideoFrame, false,
-			lastVideoFrame->width, lastVideoFrame->height, false) != 0) {
+			videoPlayer.displayWidth(lastVideoFrame->width, lastVideoFrame->height),
+			lastVideoFrame->height, false) != 0) {
 			doingFileOp = false;
 			return;
 		}
@@ -3047,21 +3251,9 @@ static void saveFile() {
 	}
 
 	std::string outFileName;
-	std::string outputPathString;
+	std::string savedLocation;
+	bool saved = false;
 	try {
-		auto exportDir = std::filesystem::path(context.fileLink).parent_path();
-		if (exportDir.filename() != exportFolderName) exportDir /= exportFolderName;
-
-		std::error_code directoryError;
-		std::filesystem::create_directories(exportDir, directoryError);
-		if (directoryError) {
-			SDL_Log("Could not create export directory %s: %s", exportDir.string().c_str(),
-				directoryError.message().c_str());
-			SDL_DestroySurface(data);
-			doingFileOp = false;
-			return;
-		}
-
 		std::string gridInfo;
 		if (exportFormat == Light_Field_LKG) {
 			const std::string aspect = std::format("{:.3f}",
@@ -3069,30 +3261,69 @@ static void saveFile() {
 			gridInfo = "9x8a" + aspect;
 		}
 
-		outFileName = removeFileTags(context.fileName);
+		outFileName = exportBaseName(context.fileName);
 		if (activeVideo && lastVideoFrame != nullptr &&
 			lastVideoFrame->generation == videoPlayer.generation()) {
 			outFileName += formatVideoTimeTag(lastVideoFrame->presentationTime);
 		}
 		const std::filesystem::path outFilePath = outFileName + "_" + exportTag +
 			gridInfo + ".jpg";
-		outputPathString = (exportDir / outFilePath).string();
+
+		const auto sourcePath = std::filesystem::path(context.fileLink);
+		// Disc, capture, and browser photo sources have no persistent writable folder.
+		const bool exportToUserFolder = videoPlayer.discSource() || activeScreenCapture ||
+			isOpticalDiscPath(sourcePath) ||
+			(!selectedDiscPath.empty() && sourcePath == selectedDiscPath) ||
+			(!browserImagePath.empty() && sourcePath == browserImagePath);
+		std::vector<std::pair<std::filesystem::path, std::string>> exportDirectories;
+		const auto addExportDirectory = [&](std::filesystem::path parent, std::string location) {
+			if (parent.empty()) return;
+			if (parent.filename() != exportFolderName) parent /= exportFolderName;
+			for (const auto& destination : exportDirectories) {
+				if (destination.first == parent) return;
+			}
+			exportDirectories.emplace_back(std::move(parent), std::move(location));
+		};
+		if (!exportToUserFolder) addExportDirectory(sourcePath.parent_path(), {});
+		addExportDirectory(exportUserFolder(SDL_FOLDER_PICTURES), "Pictures");
+		addExportDirectory(exportUserFolder(SDL_FOLDER_HOME), "Home");
+		addExportDirectory(homeDir, "Home");
+
+		for (const auto& [exportDir, location] : exportDirectories) {
+			std::error_code directoryError;
+			std::filesystem::create_directories(exportDir, directoryError);
+			if (directoryError) {
+				SDL_Log("Could not create export directory %s: %s", exportDir.string().c_str(),
+					directoryError.message().c_str());
+				continue;
+			}
+			const auto outputPath = exportDir / outFilePath;
+			const auto utf8Path = outputPath.u8string();
+			const std::string outputPathString(
+				reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
+			if (!IMG_SaveJPG(data, outputPathString.c_str(), 65)) {
+				SDL_Log("Could not save export to %s: %s", outputPathString.c_str(), SDL_GetError());
+				continue;
+			}
+			savedLocation = location;
+			saved = true;
+			SDL_Log("Saved export to %s", outputPathString.c_str());
+			break;
+		}
 	} catch (const std::exception& error) {
 		SDL_Log("Could not prepare export path: %s", error.what());
-		SDL_DestroySurface(data);
-		doingFileOp = false;
-		return;
 	} catch (...) {
 		SDL_Log("Could not prepare export path: unknown filesystem error");
-		SDL_DestroySurface(data);
-		doingFileOp = false;
-		return;
 	}
 
-	const bool saved = IMG_SaveJPG(data, outputPathString.c_str(), 65);
 	SDL_DestroySurface(data);
 	if (!saved) {
-		SDL_Log("Could not save export to %s: %s", outputPathString.c_str(), SDL_GetError());
+		SDL_Log("Could not find a writable export destination");
+		Core::drawText(&context, "Could Not Save Export",
+			Image::helpFont, Image::helpTexture,
+			Image::helpTextSize, "Help Texture");
+		Image::displayTip = true;
+		displayTipTime = getTimeNow();
 		doingFileOp = false;
 		return;
 	}
@@ -3104,7 +3335,10 @@ static void saveFile() {
 	}
 	std::string toType = " to 3D";
 	if (exportFormat == Color_Only) toType = " to 2D";
-	Core::drawText(&context, "Saved " + displayName + toType,
+	const std::string savedMessage = !savedLocation.empty() ?
+		"Saved to " + savedLocation + "/" + exportFolderName :
+		"Saved " + displayName + toType;
+	Core::drawText(&context, savedMessage,
 		Image::helpFont, Image::helpTexture,
 		Image::helpTextSize, "Help Texture");
 	Image::displayTip = true;
@@ -3386,6 +3620,7 @@ void loadOptions() {
 static void updateStereoIcon() {
 	auto& icon = getIcon(IconType::Stereo_3D);
 	icon.image = display3D ? IconType::Stereo_2D : IconType::Stereo_3D;
+	icon.label = display3D ? "Revert to 2D" : "Switch to 3D";
 	if (preferredStereoMode == Depth_Zoom) icon.image = IconType::Stereo_2D;
 	if (preferredStereoMode == Mono) icon.image = display3D ? IconType::Mono_SD : IconType::Mono_SR;
 }
@@ -3395,6 +3630,7 @@ static void setShowStereoSettings(bool show) {
 	showingStereoSettings = show;
 	auto& icon = getIcon(IconType::Settings);
 	icon.image = show ? IconType::Close : IconType::Settings;
+	icon.label = show ? "Close 3D Settings" : "Open 3D Settings";
 	if (activeVideo) setVideoControlsVisible(!show && !context.displayMenu);
 }
 
@@ -3690,11 +3926,17 @@ static glm::vec2 refreshWindowSizeBase() {
 	return windowSizeBase;
 }
 
+// Keep the button action and its tooltip aligned with the actual window state.
+static void updateFullscreenButton() {
+	auto& icon = getIcon(IconType::Fullscreen);
+	icon.image = isFullscreen ? IconType::Window : IconType::Fullscreen;
+	icon.label = isFullscreen ? "Leave Fullscreen" : "Enter Fullscreen";
+}
+
 // Reconcile fullscreen state with UI icons, image sizing, and stereo presentation.
 static void updateFullscreenState() {
 	isFullscreen = (SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) != 0;
-	auto& icon = getIcon(IconType::Fullscreen);
-	icon.image = isFullscreen ? IconType::Window : IconType::Fullscreen;
+	updateFullscreenButton();
 	context.offset = glm::vec2(0.0f);
 	targetZoom = 1.0f;
 	context.fullscreen = isFullscreen;
@@ -4790,6 +5032,7 @@ static std::string openBrowserImage(const BrowserBridge::Request& request) {
 	updateStereoIcon();
 	checkMouseState();
 	if (result != 0) return "Could not display the browser image.";
+	browserImagePath = path;
 	if (SDL_GetWindowFlags(context.window) & SDL_WINDOW_MINIMIZED)
 		SDL_RestoreWindow(context.window);
 	SDL_RaiseWindow(context.window);
@@ -4798,6 +5041,9 @@ static std::string openBrowserImage(const BrowserBridge::Request& request) {
 
 // Service asynchronous work, advance playback and UI animations, and render the next application frame.
 SDL_AppResult SDL_AppIterate(void* appstate) {
+#if defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME) && defined(_WIN32)
+	pollRuntimePackInstall();
+#endif
 	MediaOpenDialog::poll();
 	Licensing::Service::poll();
 	refreshLicenseMenu(true);
@@ -5128,8 +5374,13 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	context.gotoRand = false;
 	// Use the window's actual state for the render decision. The cached flag
 	// can briefly be stale during startup before the first resize event.
-	if (context.window != nullptr)
-		isFullscreen = (SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) != 0;
+	if (context.window != nullptr) {
+		const bool fullscreen = (SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) != 0;
+		if (fullscreen != isFullscreen) {
+			isFullscreen = fullscreen;
+			updateFullscreenButton();
+		}
+	}
 	context.fullscreen = isFullscreen;
 	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
 		preferredStereoMode == RGB_Depth) {
@@ -6844,6 +7095,13 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
 // Stop workers and services, save preferences, and release session media and graphics resources.
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
+#if defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME) && defined(_WIN32)
+	if (runtimePackInstall.thread) {
+		runtimePackInstall.cancel = true;
+		SDL_WaitThread(runtimePackInstall.thread, nullptr);
+		runtimePackInstall.thread = nullptr;
+	}
+#endif
 	Licensing::Service::close();
 	MediaOpenDialog::close();
 	discTitleMenu.shutdown(&context);

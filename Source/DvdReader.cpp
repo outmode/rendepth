@@ -493,6 +493,13 @@ double DvdReader::duration() const {
     return duration_;
 }
 
+// Read the selected title's intended 4:3 or 16:9 presentation ratio from its IFO.
+double DvdReader::displayAspectRatio() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!vtsIfo_ || !vtsIfo_->vtsi_mat) return 0.0;
+    return vtsIfo_->vtsi_mat->vts_video_attr.display_aspect_ratio ? 16.0 / 9.0 : 4.0 / 3.0;
+}
+
 // Estimate playback time from the byte cursor's fraction of the title data.
 double DvdReader::currentTime() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
@@ -574,6 +581,9 @@ const std::vector<DvdTitle>& DvdReader::titles() const { return emptyDvdTitles; 
 
 // Provide the unavailable-backend fallback for duration.
 double DvdReader::duration() const { return 0.0; }
+
+// Provide the unavailable-backend fallback for display metadata.
+double DvdReader::displayAspectRatio() const { return 0.0; }
 
 // Provide the unavailable-backend fallback for playback time.
 double DvdReader::currentTime() const { return 0.0; }

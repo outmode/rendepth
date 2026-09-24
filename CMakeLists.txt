@@ -339,6 +339,33 @@ endif()
 
 if(WIN32)
     target_link_libraries(Rendepth PUBLIC winhttp ole32 shell32 uuid bcrypt crypt32)
+    if(TARGET zlibstatic)
+        set(RENDEPTH_PACK_ZLIB zlibstatic)
+    else()
+        find_package(ZLIB REQUIRED)
+        set(RENDEPTH_PACK_ZLIB ZLIB::ZLIB)
+    endif()
+    target_sources(Rendepth PRIVATE Source/RuntimePackDownloader.cpp
+        ThirdParty/SDL_image/external/zlib/contrib/minizip/unzip.c
+        ThirdParty/SDL_image/external/zlib/contrib/minizip/ioapi.c
+        ThirdParty/SDL_image/external/zlib/contrib/minizip/iowin32.c)
+    target_include_directories(Rendepth PRIVATE
+        ThirdParty/SDL_image/external/zlib/contrib/minizip)
+    target_link_libraries(Rendepth PRIVATE ${RENDEPTH_PACK_ZLIB})
+    add_executable(RuntimePackDownloaderSmoke EXCLUDE_FROM_ALL
+        Source/RuntimePackDownloaderSmoke.cpp Source/RuntimePackDownloader.cpp
+        ThirdParty/SDL_image/external/zlib/contrib/minizip/unzip.c
+        ThirdParty/SDL_image/external/zlib/contrib/minizip/ioapi.c
+        ThirdParty/SDL_image/external/zlib/contrib/minizip/iowin32.c)
+    set_target_properties(RuntimePackDownloaderSmoke PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/tests"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/tests")
+    target_include_directories(RuntimePackDownloaderSmoke PRIVATE
+        ThirdParty/SDL_image/external/zlib/contrib/minizip)
+    target_link_libraries(RuntimePackDownloaderSmoke PRIVATE ${RENDEPTH_PACK_ZLIB} winhttp bcrypt)
 else()
     target_link_libraries(Rendepth PUBLIC CURL::libcurl)
 endif()
