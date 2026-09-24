@@ -13,23 +13,37 @@ This is the release-version convention, not a runtime version-enforcement check.
 
 Manifest V3 port of the Firefox extension, with the same popup layout, font,
 icons, controls, remembered preferences and native photo/video protocol.
-The native viewer/host currently supports Linux. No Chrome Web Store upload or
-signing is required for local testing.
+The native viewer/host supports Windows and Linux. No Chrome Web Store upload
+or signing is required for local testing.
 
 ## Install locally
 
-1. Build Rendepth if needed:
-   ```sh
-   cmake --build cmake-build-debug --target Rendepth --parallel 14
+1. On Windows, build Rendepth and its Chrome launcher from a Visual Studio
+   developer shell (or the configured CLion toolchain):
+   ```powershell
+   cmake --build cmake-build-debug --target Rendepth ChromeNativeHost --parallel 10
    ```
-2. Register Chrome's native host:
+   On Linux, build Rendepth:
+   ```sh
+   cmake --build cmake-build-debug --target Rendepth --parallel 10
+   ```
+2. Register Chrome's native host. On Windows, run:
+   ```powershell
+   py -3 Browser/Chrome/native/install.py --rendepth Debug/Rendepth.exe --launcher Debug/ChromeNativeHost.exe
+   ```
+   This installs the launcher and manifest under `%LOCALAPPDATA%\Rendepth\Chrome`
+   and registers the manifest for the current user in Chrome's native-messaging
+   registry key. The registration stores absolute paths, so reinstall after
+   moving the checkout or changing the Python interpreter.
+
+   On Linux, run:
    ```sh
    python3 Browser/Chrome/native/install.py --rendepth "$PWD/Debug/Rendepth"
    ```
    For Chromium, add `--browser chromium`. The installer uses
    `~/.config/google-chrome/NativeMessagingHosts` by default (respects
-   `XDG_CONFIG_HOME`), independently of Firefox's registration. It reuses
-   `Browser/Firefox/native/host.py`; keep both directories in the checkout.
+   `XDG_CONFIG_HOME`), independently of Firefox's registration. Both platforms
+   reuse `Browser/Firefox/native/host.py`; keep both directories in the checkout.
 3. Open `chrome://extensions`, enable **Developer mode**, choose **Load
    unpacked**, and select `Browser/Chrome/extension`. Pin Rendepth Companion if desired.
 4. Open a page with a playing video or an image. Use the toolbar popup for video,
@@ -43,6 +57,7 @@ The public key is an identity anchor for local loading, not a signing credential
 
 After updating the extension, use **Reload** in `chrome://extensions` and reload
 any previously captured page. Restart Rendepth if its executable changed.
+On Windows, rerun the installer after rebuilding `ChromeNativeHost.exe`.
 
 ## Features
 
@@ -66,7 +81,7 @@ any previously captured page. Restart Rendepth if its executable changed.
   **Automatically reconnect on this site** requests optional site access and
   remembers the explicit opt-in. Navigation outside that origin waits for a
   manual action. During an in-page video replacement, temporary cross-origin
-  capture failures retain the viewer and retry every three seconds until the
+  capture failures retain the viewer and retry every second until the
   source becomes capturable. Recovery stops on Stop, tab closure, or navigation
   away from the current origin; it cannot override the site’s media restrictions. Stop and closing the video tab end the capture.
 
@@ -103,12 +118,18 @@ node Browser/Chrome/test_images.mjs
 node Browser/Chrome/test_popup.mjs
 node Browser/Chrome/test_quality.mjs
 python3 -m unittest discover -s Browser/Chrome/native -p 'test_*.py'
-cmake --build cmake-build-debug --target BrowserCaptureTest --parallel 14
-node Browser/Chrome/test_runtime.mjs
+cmake --build cmake-build-debug --target BrowserCaptureTest --parallel 10
 ```
 
-The integration test uses an isolated Chrome profile and local fixtures, the
-production extension and native host, and Rendepth's WebRTC receiver test binary.
+On Linux, run `node Browser/Chrome/test_runtime.mjs` for the full integration
+suite. On Windows, run `node Browser/Chrome/test_windows_runtime.mjs` after
+registering the native host. It loads the real extension in an isolated Chrome
+profile and checks photo transfer and all four video format/expansion choices
+through the registered host and desktop app. Its temporary manifest pre-grants
+access only to the local fixture server; it does not alter the normal profile.
+
+The Linux integration test uses an isolated Chrome profile and local fixtures,
+the production extension and native host, and Rendepth's WebRTC receiver test binary.
 It checks all photo/video formats, exact stereo-photo pixels, automatic recovery
 after an 11-second simulated player ad state, and navigation
 with a 32-second paused interval before reconnecting to the retained receiver.
@@ -130,7 +151,7 @@ ancestors (including `ad-showing`, `vjs-ad-playing`, `jw-flag-ads`,
 player. There is no advertising-domain list or classification based on CDN/CORS.
 
 When the selected player signals an ad, Rendepth retains its last frame while
-capture reconnects/checks readiness every three seconds. This handling does not
+capture reconnects/checks readiness every second. This handling does not
 pause, seek, mute, reload, remove, or skip anything in the website's player.
 Stop, tab closure, or leaving the capture's origin cancels recovery. CORS
 failures also use recovery, without treating them as proof of advertising.

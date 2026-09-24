@@ -339,6 +339,12 @@ endif()
 
 if(WIN32)
     target_link_libraries(Rendepth PUBLIC winhttp ole32 shell32 uuid bcrypt crypt32)
+    add_executable(FirefoxNativeHost EXCLUDE_FROM_ALL Source/FirefoxNativeHost.cpp)
+    add_executable(ChromeNativeHost EXCLUDE_FROM_ALL Source/FirefoxNativeHost.cpp)
+    target_compile_definitions(ChromeNativeHost PRIVATE RENDEPTH_CHROME_NATIVE_HOST=1)
+    add_executable(BrowserBridgeTest EXCLUDE_FROM_ALL
+        Source/BrowserBridgeWindowsTest.cpp Source/BrowserBridge.cpp)
+    target_include_directories(BrowserBridgeTest PRIVATE ThirdParty/rapidjson/include)
     if(TARGET zlibstatic)
         set(RENDEPTH_PACK_ZLIB zlibstatic)
     else()
@@ -848,6 +854,34 @@ if(APPLE AND RENDEPTH_MAC_BUNDLE)
     add_custom_command(TARGET Rendepth POST_BUILD
         COMMAND ${CMAKE_COMMAND} "-DRENDEPTH_BUNDLE=$<TARGET_BUNDLE_DIR:Rendepth>"
             -P "${CMAKE_SOURCE_DIR}/Packaging/Mac/FixupBundle.cmake")
+endif()
+
+if(WIN32)
+    set(RENDEPTH_GSTREAMER_ROOT "${CMAKE_SOURCE_DIR}/Runtimes/GStreamer" CACHE PATH
+        "GStreamer MSVC development installation for Firefox video capture")
+    if(EXISTS "${RENDEPTH_GSTREAMER_ROOT}/bin/pkg-config.exe")
+        set(PKG_CONFIG_EXECUTABLE "${RENDEPTH_GSTREAMER_ROOT}/bin/pkg-config.exe")
+        set(ENV{PKG_CONFIG_PATH} "${RENDEPTH_GSTREAMER_ROOT}/lib/pkgconfig")
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-1.0 gstreamer-app-1.0
+            gstreamer-video-1.0 gstreamer-webrtc-1.0>=1.22 gstreamer-sdp-1.0)
+        target_sources(Rendepth PRIVATE Source/BrowserStream.cpp)
+        target_compile_definitions(Rendepth PRIVATE RENDEPTH_HAVE_GSTREAMER=1
+            RENDEPTH_GSTREAMER_PLUGIN_DIR="${RENDEPTH_GSTREAMER_ROOT}/lib/gstreamer-1.0")
+        target_link_libraries(Rendepth PRIVATE PkgConfig::GSTREAMER)
+        add_executable(BrowserCaptureTest EXCLUDE_FROM_ALL
+            Source/BrowserCaptureTest.cpp Source/ScreenCapture.cpp Source/BrowserStream.cpp)
+        target_compile_definitions(BrowserCaptureTest PRIVATE RENDEPTH_HAVE_GSTREAMER=1
+            RENDEPTH_GSTREAMER_PLUGIN_DIR="${RENDEPTH_GSTREAMER_ROOT}/lib/gstreamer-1.0")
+        target_link_libraries(BrowserCaptureTest PRIVATE SDL3::SDL3 PkgConfig::GSTREAMER)
+        foreach(RENDEPTH_BROWSER_TARGET IN ITEMS Rendepth BrowserCaptureTest)
+            add_custom_command(TARGET ${RENDEPTH_BROWSER_TARGET} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${RENDEPTH_GSTREAMER_ROOT}/bin" "$<TARGET_FILE_DIR:${RENDEPTH_BROWSER_TARGET}>")
+        endforeach()
+    else()
+        message(STATUS "GStreamer development files not found; Firefox video capture is disabled")
+    endif()
 endif()
 include(GNUInstallDirs)
 install(TARGETS Rendepth

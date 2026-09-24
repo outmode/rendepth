@@ -6,7 +6,6 @@
 #include <iostream>
 #include <stdexcept>
 #include <thread>
-#include <unistd.h>
 
 // Fail the capture test with a readable diagnostic when a required condition is missing.
 static void require(bool condition, const char* message) {
@@ -17,7 +16,8 @@ static void require(bool condition, const char* message) {
 static int receive(const char* directory, double seconds, bool prepareDepth = false) {
 	ScreenCapture capture;
 	std::string error;
-	require(capture.startBrowser(directory, error, prepareDepth), error.c_str());
+	const bool started = capture.startBrowser(directory, error, prepareDepth);
+	require(started, error.c_str());
 	using Clock = std::chrono::steady_clock;
 	const auto deadline = Clock::now() + std::chrono::seconds(45);
 	auto first = Clock::time_point{};
@@ -72,7 +72,8 @@ static int receive(const char* directory, double seconds, bool prepareDepth = fa
 static int navigation(const std::filesystem::path& directory) {
 	ScreenCapture capture;
 	std::string error;
-	require(capture.startBrowser(directory.string(), error), error.c_str());
+	const bool started = capture.startBrowser(directory.string(), error);
+	require(started, error.c_str());
 	using Clock = std::chrono::steady_clock;
 	const auto deadline = Clock::now() + std::chrono::seconds(60);
 	auto waitingSince = Clock::time_point{};
@@ -111,21 +112,28 @@ int main(int argc, char** argv) {
 	try {
 		if (argc == 3 && std::string(argv[2]) == "navigation") return navigation(argv[1]);
 		if (argc == 3 || argc == 4) return receive(argv[1], std::stod(argv[2]), argc == 4 && std::string(argv[3]) == "2d");
-		char pattern[] = "/tmp/rendepth-browser-test-XXXXXX";
-		const char* temporary = mkdtemp(pattern);
-		require(temporary != nullptr, "Could not create test directory");
-		const std::filesystem::path directory(temporary);
+		std::filesystem::path directory;
+		for (int attempt = 0; attempt < 100; ++attempt) {
+			directory = std::filesystem::temp_directory_path() /
+				("rendepth-browser-test-" + std::to_string(
+					std::chrono::steady_clock::now().time_since_epoch().count()) +
+					"-" + std::to_string(attempt));
+			if (std::filesystem::create_directory(directory)) break;
+		}
+		require(std::filesystem::is_directory(directory), "Could not create test directory");
 		ScreenCapture capture;
 		std::string error;
 		require(!capture.startBrowser(directory.string(), error), "Accepted missing offer");
 		std::ofstream(directory / "offer.sdp") << "invalid SDP";
-		require(capture.startBrowser(directory.string(), error), error.c_str());
+		const bool started = capture.startBrowser(directory.string(), error);
+		require(started, error.c_str());
 		for (int attempt = 0; attempt < 200 && capture.running(); ++attempt)
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		require(!capture.running() && std::filesystem::exists(directory / "error"), "Malformed SDP was not reported");
 		capture.stop();
 		require(!capture.takeFrame(), "Stop retained a frame");
-		require(capture.startBrowser(directory.string(), error), error.c_str());
+		const bool restarted = capture.startBrowser(directory.string(), error);
+		require(restarted, error.c_str());
 		const auto before = std::chrono::steady_clock::now();
 		capture.stop();
 		require(std::chrono::steady_clock::now() - before < std::chrono::seconds(2), "Cancellation blocked");

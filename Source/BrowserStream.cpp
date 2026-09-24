@@ -2,6 +2,7 @@
 #include "BrowserStream.h"
 #include <atomic>
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -62,7 +63,8 @@ struct InferenceConverter {
 
 // Publish connection data through a temporary file so readers do not see a partial response.
 void publish(const std::filesystem::path& path, const std::string& text) {
-	const auto pending = path.string() + ".pending";
+	auto pending = path;
+	pending += ".pending";
 	std::ofstream output(pending, std::ios::binary);
 	output << text;
 	output.close();
@@ -120,10 +122,12 @@ struct BrowserStream::Impl {
 		GstElement* sink = nullptr;
 		GstBus* bus = nullptr;
 		try {
-			std::ifstream input(offerPath, std::ios::binary);
 			std::string offer(maxSDP + 1, '\0');
-			input.read(offer.data(), offer.size());
-			offer.resize(input.gcount());
+			{
+				std::ifstream input(offerPath, std::ios::binary);
+				input.read(offer.data(), offer.size());
+				offer.resize(input.gcount());
+			} // Release the offer before the native host removes its session directory.
 			if (offer.empty() || offer.size() > maxSDP || offer.find('\0') != std::string::npos)
 				throw std::runtime_error("Invalid browser SDP offer.");
 			GstSDPMessage* sdp = nullptr;
@@ -259,17 +263,23 @@ struct BrowserStream::Impl {
 				}
 				// Navigation suspends transport checks, not host-liveness checks. Keep
 				// active true and retain the viewer's last frame while the next page waits.
-				std::ifstream stateFile(directory / "state");
 				std::string state;
-				stateFile >> state;
+				{
+					std::ifstream stateFile(directory / "state");
+					stateFile >> state;
+				} // Release the file before the host replaces it on Windows.
 				if (state == "waiting") {
 					disconnectedSince = {};
 					transportError.clear();
 					std::this_thread::sleep_for(std::chrono::milliseconds(20));
 					continue;
 				}
-				if (!state.empty() && std::stoull(state) != generation) {
-					generation = std::stoull(state);
+				uint64_t nextGeneration = generation;
+				const auto [stateEnd, stateError] = std::from_chars(
+					state.data(), state.data() + state.size(), nextGeneration);
+				if (stateError == std::errc{} && stateEnd == state.data() + state.size() &&
+					nextGeneration != generation) {
+					generation = nextGeneration;
 					restart = true;
 					break;
 				}
@@ -349,7 +359,7 @@ struct BrowserStream::Impl {
 						if (!inference.fill(info, mapped, *frame)) {
 							gst_video_frame_unmap(&mapped);
 							gst_sample_unref(sample);
-							throw std::runtime_error("Could not prepare Firefox video for depth conversion.");
+						throw std::runtime_error("Could not prepare browser video for depth conversion.");
 						}
 						nextInference = Clock::now() + std::chrono::milliseconds(50);
 					}
@@ -393,23 +403,30 @@ BrowserStream::~BrowserStream() { stop(); }
 bool BrowserStream::start(const std::string& directory, std::string& error, bool prepareDepth) {
 	stop();
 	std::error_code ec;
-	if (!std::filesystem::is_regular_file(std::filesystem::path(directory) / "offer.sdp", ec)) {
-		error = "Firefox WebRTC offer is missing. Reload the extension and restart the connection.";
+	const auto session = std::filesystem::u8path(directory);
+	if (!std::filesystem::is_regular_file(session / "offer.sdp", ec)) {
+		error = "Browser WebRTC offer is missing. Reload the extension and restart the connection.";
 		return false;
 	}
+	#ifdef _WIN32
+	// The app loads GStreamer DLLs from its output directory, while the plugins
+	// remain in the developer's GStreamer installation.
+	if (!g_getenv("GST_PLUGIN_PATH_1_0"))
+		g_setenv("GST_PLUGIN_PATH_1_0", RENDEPTH_GSTREAMER_PLUGIN_DIR, FALSE);
+	#endif
 	gst_init(nullptr, nullptr);
 	for (const char* name : {"webrtcbin", "nicesrc", "nicesink", "dtlssrtpdec", "dtlssrtpenc", "rtpvp8depay", "vp8dec", "appsink"}) {
 		auto* factory = gst_element_factory_find(name);
 		if (!factory) {
-			error = std::string("Firefox streaming needs the GStreamer plugin '") + name +
-				"'. Install the WebRTC, libnice and VP8 plugins (see Browser/Firefox/README.md).";
+			error = std::string("Browser streaming needs the GStreamer plugin '") + name +
+				"'. Install the WebRTC, libnice and VP8 plugins (see Browser/Chrome/README.md).";
 			return false;
 		}
 		gst_object_unref(factory);
 	}
 	impl->cancelled = false;
 	impl->active = true;
-	impl->worker = std::thread([this, directory, prepareDepth] { impl->receive(directory, prepareDepth); });
+	impl->worker = std::thread([this, session, prepareDepth] { impl->receive(session, prepareDepth); });
 	return true;
 }
 // Cancel and join the receiver and discard its last pending frame.

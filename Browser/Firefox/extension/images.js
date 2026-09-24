@@ -9,22 +9,29 @@ async function webImageBlob(info, tab, signal) {
       // without resizing or reading unrelated page content.
       const [data] = await browser.tabs.executeScript(tab.id, {
         frameId: info.frameId ?? 0,
-        code: `(() => {
+        code: `(async () => {
           const image = browser.menus.getTargetElement(${JSON.stringify(info.targetElementId)});
           if (!(image instanceof HTMLImageElement) || !image.complete || !image.naturalWidth)
             throw new Error("The selected image is no longer available.");
           if ((image.currentSrc || image.src) !== ${JSON.stringify(info.srcUrl)})
             throw new Error("The selected image has changed.");
-          if (image.naturalWidth > 16384 || image.naturalHeight > 16384 ||
-              image.naturalWidth * image.naturalHeight > ${MAX_WEB_IMAGE})
-            throw new Error("Image dimensions are too large.");
-          const canvas = document.createElement("canvas");
-          canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
-          canvas.getContext("2d").drawImage(image, 0, 0);
-          const data = canvas.toDataURL("image/png");
-          if (data.length > ${Math.ceil(MAX_WEB_IMAGE / 3) * 4 + 64})
-            throw new Error("Image exceeds the 32 MiB limit.");
-          return data;
+          // naturalWidth/Height are density-adjusted for srcset 2x images.
+          // The bitmap dimensions retain the actual decoded pixel count.
+          const bitmap = await createImageBitmap(image);
+          try {
+            if (bitmap.width > 16384 || bitmap.height > 16384 ||
+                bitmap.width * bitmap.height > ${MAX_WEB_IMAGE})
+              throw new Error("Image dimensions are too large.");
+            const canvas = document.createElement("canvas");
+            canvas.width = bitmap.width; canvas.height = bitmap.height;
+            canvas.getContext("2d").drawImage(bitmap, 0, 0);
+            const data = canvas.toDataURL("image/png");
+            if (data.length > ${Math.ceil(MAX_WEB_IMAGE / 3) * 4 + 64})
+              throw new Error("Image exceeds the 32 MiB limit.");
+            return data;
+          } finally {
+            bitmap.close();
+          }
         })()`
       });
       return (await fetch(data, {signal})).blob();

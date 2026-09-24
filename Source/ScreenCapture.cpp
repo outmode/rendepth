@@ -21,8 +21,10 @@ bool setCaptureError(std::string& destination, const char* message) {
 }
 }
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(RENDEPTH_HAVE_GSTREAMER)
 #include "BrowserStream.h"
+#endif
+#if defined(__linux__)
 #include <gio/gio.h>
 #include <gio/gunixfdlist.h>
 #include <gst/app/gstappsink.h>
@@ -38,8 +40,10 @@ struct ScreenCapture::Impl {
 	bool stopRequested = false;
 	std::string error;
 
-	#if defined(__linux__)
+	#if defined(__linux__) || defined(RENDEPTH_HAVE_GSTREAMER)
 	std::unique_ptr<BrowserStream> browser;
+	#endif
+	#if defined(__linux__)
 	GstElement* pipeline = nullptr;
 	GstElement* sink = nullptr;
 	int pipewireFd = -1;
@@ -336,20 +340,22 @@ bool ScreenCapture::start(SDL_Window* parentWindow, std::string& error) {
 
 // Start the browser-stream backend through the shared capture interface.
 bool ScreenCapture::startBrowser(const std::string& directory, std::string& error, bool prepareDepth) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(RENDEPTH_HAVE_GSTREAMER)
 	stop();
 	impl->browser = std::make_unique<BrowserStream>();
 	return impl->browser->start(directory, error, prepareDepth);
 #else
-	return setCaptureError(error, "Firefox capture is currently implemented for Linux only.");
+	return setCaptureError(error, "Browser video capture needs GStreamer WebRTC support in this build.");
 #endif
 }
 
 // Stop the active capture backend and release its worker, pipeline, portal session, and pending frame.
 void ScreenCapture::stop() {
 	if (impl == nullptr) return;
-#if defined(__linux__)
+#if defined(__linux__) || defined(RENDEPTH_HAVE_GSTREAMER)
 	impl->browser.reset();
+#endif
+#if defined(__linux__)
 	{
 		std::lock_guard lock(impl->mutex);
 		impl->stopRequested = true;
@@ -372,7 +378,7 @@ void ScreenCapture::stop() {
 
 // Report whether desktop or browser capture is currently active.
 bool ScreenCapture::running() const {
-#if defined(__linux__)
+#if defined(__linux__) || defined(RENDEPTH_HAVE_GSTREAMER)
 	if (impl->browser) return impl->browser->running();
 #endif
 	std::lock_guard lock(impl->mutex);
@@ -381,7 +387,7 @@ bool ScreenCapture::running() const {
 
 // Consume the newest frame from the active capture backend.
 std::shared_ptr<VideoFrame> ScreenCapture::takeFrame() {
-#if defined(__linux__)
+#if defined(__linux__) || defined(RENDEPTH_HAVE_GSTREAMER)
 	if (impl->browser) return impl->browser->takeFrame();
 #endif
 	std::lock_guard lock(impl->mutex);

@@ -68,7 +68,7 @@ function retryCapture(current) {
   if (session !== current) return;
   suspend(current);
   const generation = current.generation, retryVersion = current.retryVersion;
-  setStatus("Waiting for a capturable video. Retrying every 3 seconds…");
+  setStatus("Waiting for a capturable video. Retrying every 1 second…");
   current.retryTimer = setTimeout(async () => {
     current.retryTimer = null;
     if (session !== current || generation !== current.generation || retryVersion !== current.retryVersion) return;
@@ -86,7 +86,7 @@ function retryCapture(current) {
     } catch (error) {
       if (session === current) setStatus("Waiting for video. Use Refresh Video to reconnect. " + error.message);
     }
-  }, 3000);
+  }, 1000);
 }
 
 async function inject(current, resume, targetElementId = null) {

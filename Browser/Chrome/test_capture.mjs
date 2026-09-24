@@ -9,7 +9,7 @@ const flush = async () => { for (let n = 0; n < 8; ++n) await new Promise(setImm
 
 async function fixture(format = 'sbs-full', width = 1920, height = 1080, scaleHalf = true, limitSource = false, contextTarget = null, resume = false, siteAd = false, initialAd = false) {
   let start, now = 0, interval, disconnect, replacementGate;
-  const messages = [], streams = [], configurations = [];
+  const messages = [], streams = [], configurations = [], intervalDelays = [];
   const makeTrack = () => ({readyState: 'live', muted: false, stop() {this.readyState = 'ended';}});
   class Video extends EventTarget {
     paused = false; videoWidth = 1920; videoHeight = 1080; readyState = 4;
@@ -86,7 +86,7 @@ async function fixture(format = 'sbs-full', width = 1920, height = 1080, scaleHa
     RTCRtpSender: {getCapabilities: () => ({codecs: [{mimeType: 'video/VP8'}]})},
     document: {querySelectorAll: () => videos, createElement: () => canvas}, window: testWindow,
     performance: {now: () => now}, setTimeout, clearTimeout,
-    setInterval(fn) {interval = fn;return 1;}, clearInterval() {interval = null;},
+    setInterval(fn, delay) {interval = fn;intervalDelays.push(delay);return 1;}, clearInterval() {interval = null;},
     rendepthBrowser: {menus: {getTargetElement: () => target}, runtime: {onMessage: {addListener(fn) {start = fn;}}, connect: () => port}}});
   if (initialAd) source.adState = '[data-is-ad="true"]';
   if (resume) source.paused = true;
@@ -104,7 +104,7 @@ async function fixture(format = 'sbs-full', width = 1920, height = 1080, scaleHa
     assert.equal(result.retryable, true, 'Starting during an ad must enter recovery, not fail permanently');
     assert.equal(streams.length, 0, 'Do not capture an already marked ad');
   } else assert.equal(result.ok, true);
-  return {source, ad, sender, port, streams, configurations, messages, canvas, callbacks, draws,
+  return {source, ad, sender, port, streams, configurations, messages, canvas, callbacks, draws, intervalDelays,
     frame() {const pending = [...callbacks.values()];callbacks.clear();pending.forEach(fn => fn());},
     drawFailure() {drawError = new Error('Canvas capture denied');},
     addVideo() {const video = new Video();
@@ -306,6 +306,7 @@ console.log('Cross-origin replacement: suspends content capture for automatic re
 
 for (const resume of [false, true]) {
   const f = await fixture('sbs-full', 1920, 1080, true, false, null, resume, true);
+  if (resume) assert.ok(f.intervalDelays.includes(1000), 'Resume checks for new playback every second');
   assert.equal(f.sender.track.owner, f.source, 'Select the main player, not its larger cross-origin ad');
   f.source.paused = true;
   f.tick(1000); await flush();

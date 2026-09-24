@@ -1,6 +1,7 @@
 """Protocol and lifecycle tests; no browser or desktop session required."""
 import io
 import base64
+from contextlib import nullcontext
 import json
 import os
 import socket
@@ -30,6 +31,31 @@ class Fragmented(io.BytesIO):
 
 
 class ProtocolTest(unittest.TestCase):
+    def ready_input(self):
+        return patch.object(host.winbridge, "input_ready", return_value=True) if os.name == "nt" else nullcontext()
+
+    @unittest.skipUnless(os.name == "nt", "Windows file-sharing test")
+    def test_publish_waits_for_state_reader(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / "state"
+            state.write_text("0")
+            reader = state.open("rb")
+            released = threading.Event()
+            def release():
+                time.sleep(1)
+                reader.close()
+                released.set()
+            worker = threading.Thread(target=release)
+            worker.start()
+            try:
+                host.publish(state, "waiting")
+                self.assertEqual(state.read_text(), "waiting")
+                self.assertFalse(released.is_set())
+                self.assertFalse((Path(temporary) / "state.tmp").exists())
+            finally:
+                reader.close()
+                worker.join(timeout=2)
+
     def test_image_limits_and_validation(self):
         for size in (True, -1, host.MAX_IMAGE + 1):
             with self.assertRaises(ValueError):
@@ -76,7 +102,7 @@ class ProtocolTest(unittest.TestCase):
             with patch.object(host, "attach", side_effect=attach), \
                  patch.object(host, "send") as send, \
                  patch.object(host.sys, "stdin", unittest.mock.Mock(buffer=io.BytesIO(b"".join(map(packet, messages))))), \
-                 patch.object(host.select, "select", return_value=([True], [], [])):
+                 patch.object(host.select, "select", return_value=([True], [], [])), self.ready_input():
                 host.run(Path("/bin/false"))
                 self.assertEqual(send.call_args.args[0], {"action": "image-opened"})
                 self.assertEqual(send.call_count, 4)
@@ -112,7 +138,7 @@ class ProtocolTest(unittest.TestCase):
             return os.getpid(), None
         with patch.object(host, "attach", side_effect=attach), \
              patch.object(host.sys, "stdin", unittest.mock.Mock(buffer=io.BytesIO(packet(offer)))), \
-             patch.object(host.select, "select", return_value=([True], [], [])):
+             patch.object(host.select, "select", return_value=([True], [], [])), self.ready_input():
             with self.assertRaisesRegex(ValueError, "VP8 decoder failed"):
                 host.run(Path("/bin/false"))
         self.assertEqual(len(session_paths), 1)
@@ -120,10 +146,11 @@ class ProtocolTest(unittest.TestCase):
 
     def test_media_messages_are_not_accepted(self):
         with patch.object(host.sys, "stdin", unittest.mock.Mock(buffer=io.BytesIO(packet({"action": "frame"})))), \
-             patch.object(host.select, "select", return_value=([True], [], [])):
+             patch.object(host.select, "select", return_value=([True], [], [])), self.ready_input():
             with self.assertRaisesRegex(ValueError, "Unexpected capture message"):
                 host.run(Path("/bin/false"))
 
+    @unittest.skipIf(os.name == "nt", "Unix socket test")
     def test_reuses_open_window_and_keeps_it_open_on_disconnect(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -214,6 +241,7 @@ class ProtocolTest(unittest.TestCase):
                     done.set()
                     worker.join(timeout=2)
 
+    @unittest.skipIf(os.name == "nt", "Unix socket test")
     def test_launches_only_when_no_receiver_exists(self):
         with tempfile.TemporaryDirectory(prefix="rendepth-firefox-") as temporary:
             directory = Path(temporary)
@@ -227,6 +255,7 @@ class ProtocolTest(unittest.TestCase):
                 self.assertTrue(launch.call_args.kwargs["start_new_session"])
                 self.assertEqual(connect.call_count, 3)
 
+    @unittest.skipIf(os.name == "nt", "Unix socket test")
     def test_rechecks_receiver_before_launching(self):
         with tempfile.TemporaryDirectory(prefix="rendepth-firefox-") as temporary:
             directory = Path(temporary)
@@ -236,6 +265,7 @@ class ProtocolTest(unittest.TestCase):
                 self.assertEqual(host.attach(Path("/example/Rendepth"), directory, "sbs-full", True), (321, None))
                 launch.assert_not_called()
 
+    @unittest.skipIf(os.name == "nt", "Unix socket test")
     def test_busy_receiver_does_not_launch_another_window(self):
         with tempfile.TemporaryDirectory(prefix="rendepth-firefox-") as temporary:
             directory = Path(temporary)
@@ -246,6 +276,7 @@ class ProtocolTest(unittest.TestCase):
                     host.attach(Path("/example/Rendepth"), directory, "sbs-half", False)
                 launch.assert_not_called()
 
+    @unittest.skipIf(os.name == "nt", "Unix socket test")
     def test_skips_stale_socket(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

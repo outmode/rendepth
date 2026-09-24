@@ -501,10 +501,10 @@ static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool pre
 			(activeScreenCapture ? captureSourceType : fileList[fileIndex].type);
 		if (context.imageType == Light_Field_LKG)
 			context.gridSize = Core::getGridInfo(fileList[fileIndex].base);
-		context.fileName = activeScreenCapture ? (browserCapture ? "Firefox Video" : "Screen Capture") : fileList[fileIndex].base;
+		context.fileName = activeScreenCapture ? (browserCapture ? "Browser Video" : "Screen Capture") : fileList[fileIndex].base;
 		context.loading = false;
 		Image::displayHelp = false;
-		std::string windowTitle = activeScreenCapture ? (browserCapture ? "Rendepth - Firefox Video" : "Rendepth - Screen Capture") : fileList[fileIndex].name;
+		std::string windowTitle = activeScreenCapture ? (browserCapture ? "Rendepth - Browser Video" : "Rendepth - Screen Capture") : fileList[fileIndex].name;
 		SDL_SetWindowTitle(context.window, windowTitle.c_str());
 		context.fileLink = activeScreenCapture ? "screen-capture" : fileList[fileIndex].link;
 		Image::updateVideoFrame(&context, displayFrame, true,
@@ -519,7 +519,7 @@ static void presentVideoFrame(const std::shared_ptr<VideoFrame>& frame, bool pre
 			videoFileTransitionActive = false;
 			videoFileTransitionNeedsDepth = false;
 		}
-		std::string infoText = activeScreenCapture ? (browserCapture ? "Live Firefox video" : "Live screen capture") : Core::getFileText(fileList[fileIndex], context.imageSize);
+		std::string infoText = activeScreenCapture ? (browserCapture ? "Live browser video" : "Live screen capture") : Core::getFileText(fileList[fileIndex], context.imageSize);
 		context.infoText = infoText;
 		videoFrameLoaded = true;
 		if (activeScreenCapture) {
@@ -4700,10 +4700,10 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 		setStereoMode(Native);
 	}
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
 	std::string bridgeError;
 	if (!browserBridge.start(BrowserBridge::runtimeDirectory(), bridgeError))
-		SDL_Log("Could not enable Firefox window reuse: %s", bridgeError.c_str());
+		SDL_Log("Could not enable browser bridge: %s", bridgeError.c_str());
 #endif
 
 	hideUI();
@@ -5024,7 +5024,7 @@ static std::string openBrowserImage(const BrowserBridge::Request& request) {
 	std::error_code error;
 	std::filesystem::create_directory(directory, error);
 	if (!error) std::filesystem::copy_file(
-		std::filesystem::path(request.directory) / "image.png", path,
+		std::filesystem::u8path(request.directory) / "image.png", path,
 		std::filesystem::copy_options::none, error);
 	if (error) return "Could not save the browser image: " + error.message();
 	auto* surface = Core::loadImageDirect(path.string());

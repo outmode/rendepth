@@ -51,7 +51,7 @@
           });
           if (ready) finish(true);
         };
-        timer = setInterval(check, 3000);
+        timer = setInterval(check, 1000);
         check();
       });
       if (!ready || run !== currentRun) return {ok: false, cancelled: true};

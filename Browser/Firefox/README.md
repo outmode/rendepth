@@ -44,13 +44,13 @@ Image checks:
 node Browser/Firefox/test_images.mjs
 python3 Browser/Firefox/test_images_browser.py
 python3 -m unittest discover -s Browser/Firefox/native -p 'test_host.py'
-cmake --build cmake-build-debug --target BrowserBridgeTest --parallel 14
+cmake --build cmake-build-debug --target BrowserBridgeTest --parallel 10
 Debug/BrowserBridgeTest
 ```
 
 ## Live video
 
-This Linux development extension sends **only the active video's track** to a
+The extension sends **only the active video's track** to a
 running Rendepth window, launching the app if none is available. It uses a direct
 **WebRTC/VP8 video stream**, with a **60 fps ceiling**, instead of JPEG snapshots.
 Choose **2D Video** (the first/default option) to run ordinary video through
@@ -63,6 +63,58 @@ depth conversion requires Pro. Deactivating Pro stops depth conversion while
 keeping the browser video connected.
 
 ## Try it
+
+### Windows video and photo testing
+
+Firefox and Python 3 must be installed. Video also needs the 64-bit MSVC
+[GStreamer development installer](https://gstreamer.freedesktop.org/download/)
+(1.22 or newer), including WebRTC, libnice, DTLS/SRTP and VP8 plugins. Install
+it to `Runtimes/GStreamer` in this checkout, or set `RENDEPTH_GSTREAMER_ROOT`
+to its install directory when configuring CMake. The current development build
+loads the plugins from that installation.
+
+1. Configure and build the app and native host from an MSVC developer prompt:
+   ```powershell
+   cmake -S . -B cmake-build-debug
+   cmake --build cmake-build-debug --target Rendepth FirefoxNativeHost --parallel 10
+   ```
+2. Register the host for the current Windows user:
+   ```powershell
+   py -3 Browser/Firefox/native/install.py --rendepth Debug/Rendepth.exe --launcher Debug/FirefoxNativeHost.exe
+   ```
+   The installer creates a manifest and configuration under
+   `%LOCALAPPDATA%\Rendepth\Firefox` and registers that manifest under
+   `HKCU\Software\Mozilla\NativeMessagingHosts\com.outmode.rendepth`.
+   Register again if you move the checkout or change either executable path.
+3. Restart Rendepth after building. In Firefox, open
+   `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**,
+   and select `Browser/Firefox/extension/manifest.json`. Reload it after edits.
+4. Open a web image, right-click it, and choose **Open in Rendepth** →
+   **2D Photo**, **Cross-Eye**, or **Parallel**. Approve Firefox's site permission
+   when prompted. The photo should appear in Rendepth. Photos also work when
+   Rendepth is closed; the native host starts it.
+
+5. Play a video in Firefox, click the extension toolbar button, choose
+   **2D Video**, **SBS Half**, or **SBS Full**, then **Open Playing Video**.
+   Playback and audio stay in Firefox. Rendepth opens or switches to the live
+   stream. For SBS video, use the matching half/full format; 2D depth conversion
+   requires Pro.
+
+For local checks, run `Debug/BrowserBridgeTest.exe`,
+`py -3 -m unittest discover -s Browser/Firefox/native -v`, and
+`node Browser/Firefox/test_images.mjs`. After registering, run
+`py -3 Browser/Firefox/test_windows_photo.py` to test the installed host,
+or `py -3 Browser/Firefox/test_windows_firefox_native.py` to test native
+messaging from an isolated Firefox profile into the real app. These use a
+synthetic stereo image; the right-click menu is the manual check in step 4.
+For video, build `BrowserCaptureTest` and run
+`py -3 Browser/Firefox/test_stream.py --fps 30 --min-fps 15` to check Firefox's
+WebRTC output and decoded stereo frames. Run the same command with `--app`
+instead of `--min-fps 15` to check the Windows host, app and viewer window.
+To unregister, remove the current-user
+registry value and the two files in `%LOCALAPPDATA%\Rendepth\Firefox`.
+
+### Linux video and photo testing
 
 1. Install GStreamer's WebRTC, VP8 and libnice plugins. On Fedora:
    ```sh
@@ -534,7 +586,7 @@ extension avoids modifying native-host registration. It does not run the rendere
 or verify physical light-field output. Run it with:
 
 ```sh
-cmake --build cmake-build-debug --target BrowserCaptureTest --parallel 14
+cmake --build cmake-build-debug --target BrowserCaptureTest --parallel 10
 python3 Browser/Firefox/test_navigation.py
 ```
 

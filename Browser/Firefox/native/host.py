@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Firefox native host for Linux image transfer and SBS WebRTC capture.
+"""Firefox native host for image transfer and SBS WebRTC capture.
 
 Only the registered extension can start this host. No TCP listener, URLs,
 commands, or caller-chosen filesystem paths are accepted from the browser.
@@ -7,12 +7,13 @@ commands, or caller-chosen filesystem paths are accepted from the browser.
 import argparse
 import base64
 import binascii
+from contextlib import contextmanager
 import errno
-import fcntl
 import json
 import os
 from pathlib import Path
 import select
+import shutil
 import socket
 import stat
 import struct
@@ -20,6 +21,11 @@ import subprocess
 import sys
 import tempfile
 import time
+
+if os.name == "nt":
+    import winbridge
+else:
+    import fcntl
 
 MAX_MESSAGE = 128 * 1024
 MAX_SDP = 64 * 1024
@@ -103,6 +109,8 @@ def validate_offer(message):
 
 
 def runtime_directory():
+    if os.name == "nt":
+        return winbridge.runtime_directory()
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     directory = Path(runtime) / "rendepth-browser" if runtime else Path(f"/tmp/rendepth-browser-{os.getuid()}")
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -146,6 +154,8 @@ def connect_existing(client, registry, request):
 
 
 def attach(executable, directory, format_name, swap, image=False):
+    if os.name == "nt":
+        return winbridge.attach(executable, directory, format_name, swap, image)
     registry = runtime_directory()
     request = json.dumps({"directory": str(directory), "format": format_name,
                           "swap": swap, "image": image}).encode()
@@ -176,6 +186,8 @@ def attach(executable, directory, format_name, swap, image=False):
 
 
 def process_alive(pid):
+    if os.name == "nt":
+        return winbridge.process_alive(pid)
     try:
         os.kill(pid, 0)
         return True
@@ -186,7 +198,53 @@ def process_alive(pid):
 def publish(path, text):
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(text)
-    temporary.replace(path)
+    deadline = time.monotonic() + (5 if os.name == "nt" else 0)
+    replace_deadline = time.monotonic() + 0.25
+    while True:
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if os.name != "nt" or time.monotonic() >= deadline:
+                raise
+            if path.name == "state" and time.monotonic() >= replace_deadline:
+                try:
+                    # Older Windows viewers keep state open during the whole
+                    # frame loop, leaving no reliable gap for a rename. A
+                    # single unbuffered write lets their next read see the
+                    # complete short state value; an empty read is ignored.
+                    with path.open("r+b", buffering=0) as state:
+                        state.write(text.encode("ascii"))
+                        state.truncate()
+                    temporary.unlink()
+                    return
+                except PermissionError:
+                    pass
+            time.sleep(0.01)
+
+
+@contextmanager
+def session_directory():
+    directory = Path(tempfile.mkdtemp(prefix="rendepth-firefox-")).resolve()
+    if directory.parent != Path(tempfile.gettempdir()).resolve() or not directory.name.startswith("rendepth-firefox-"):
+        raise ValueError("Invalid browser session directory")
+    try:
+        yield directory
+    finally:
+        # The viewer detects a stopped host asynchronously. Windows cannot
+        # remove a file while the viewer still has it open, so wait for it to
+        # release the directory instead of reporting a spurious WinError 32.
+        deadline = time.monotonic() + (8 if os.name == "nt" else 0)
+        while True:
+            try:
+                shutil.rmtree(directory)
+                break
+            except FileNotFoundError:
+                break
+            except PermissionError:
+                if os.name != "nt" or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.1)
 
 
 def run(executable):
@@ -203,8 +261,7 @@ def run(executable):
     request_id = None
     image_transfer = None
     image_deadline = None
-    with tempfile.TemporaryDirectory(prefix="rendepth-firefox-") as temporary:
-        directory = Path(temporary)
+    with session_directory() as directory:
         # A killed native host cannot run TemporaryDirectory cleanup. Let the
         # viewer distinguish that from a healthy but paused browser video.
         heartbeat = directory / "heartbeat"
@@ -236,7 +293,10 @@ def run(executable):
                         answered = True
                     elif time.monotonic() > answer_deadline:
                         raise ValueError("Timed out preparing Rendepth WebRTC. Check its GStreamer plugins.")
-            if not select.select([input_stream], [], [], 0.05)[0]:
+            if not (winbridge.input_ready(input_stream) if os.name == "nt" else
+                    select.select([input_stream], [], [], 0.05)[0]):
+                if os.name == "nt":
+                    time.sleep(0.05)
                 continue
             message = read_message(input_stream)
             if message is None:

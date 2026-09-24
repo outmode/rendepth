@@ -28,7 +28,7 @@ const runRetry = async () => {
 };
 const context = {URL, AbortController,
   setTimeout(fn, delay) {
-    if (delay !== 3000) return setTimeout(fn, delay);
+    if (delay !== 1000) return setTimeout(fn, delay);
     const id = 'retry-' + ++nextTimer; retries.set(id, fn); return id;
   },
   clearTimeout(id) {retries.delete(id);clearTimeout(id);}, Date: {now: () => now},
@@ -198,7 +198,7 @@ blockedContent.emit({action: 'capture-blocked', error: 'Chrome blocked capture. 
 assert.equal(blockedNative.closed, false, 'Blocked replacement retains the native viewer');
 assert.equal(blockedNative.messages.at(-1).action, 'navigate');
 assert.equal((await receive({action: 'status'})).active, true);
-assert.match((await receive({action: 'status'})).status, /every 3 seconds/);
+assert.match((await receive({action: 'status'})).status, /every 1 second/);
 captureReply = {ok: false, retryable: true, error: 'Still an ad'};
 for (let n = 0; n < 6; ++n) await runRetry();
 assert.equal(blockedNative.closed, false, 'Keep viewer beyond the former ten-second cutoff');
@@ -235,7 +235,7 @@ await pendingRetry;
 assert.equal(executed.length, beforeStaleRetry, 'Navigation cancels a retry already awaiting tab lookup');
 context.rendepthBrowser.tabs.query = originalQuery;
 await receive({action: 'stop'});
-console.log('Recovery: three-second retry, long ads, native reuse, Stop, origin bounds and stale retry cancellation passed.');
+console.log('Recovery: one-second retry, long ads, native reuse, Stop, origin bounds and stale retry cancellation passed.');
 
 // MV3 can restart between opening an image and reopening the popup.
 const restartTime = now;

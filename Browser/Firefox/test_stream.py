@@ -5,16 +5,52 @@ Build BrowserCaptureTest first. No changes to the user's Firefox profile or host
 registration. Requires Firefox with Marionette and the receiver's GStreamer plugins.
 """
 import argparse
+import ctypes
 import itertools
 import json
+import os
+import queue
 import re
+import struct
 import socket
 import subprocess
 import tempfile
+import threading
 import time
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+
+def fixture_video(directory, width, height, fps):
+    video = directory / "source.mp4"
+    if os.name == "nt":
+        # The Windows GStreamer development install already supplies x264enc.
+        # Keep the moving test picture and red/blue stereo markers used below.
+        marker = directory / "marker.png"
+        def chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        marker.write_bytes(b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 1, 8, 2, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(b"\0\xff\0\0\0\0\xff")) + chunk(b"IEND", b""))
+        gst_root = Path(os.environ.get("RENDEPTH_GSTREAMER_ROOT",
+            ROOT.parent.parent / "Runtimes/GStreamer"))
+        gst = gst_root / "bin/gst-launch-1.0.exe"
+        subprocess.run([str(gst), "--quiet", "-e", "videotestsrc", f"num-buffers={fps * 20}",
+            "pattern=ball", "!", f"video/x-raw,width={width},height={height},framerate={fps}/1", "!",
+            "gdkpixbufoverlay", f"location={marker.as_posix()}", f"overlay-width={width}",
+            "overlay-height=32", "!", "videoconvert", "!", "video/x-raw,format=I420", "!",
+            "x264enc", "speed-preset=ultrafast", "tune=zerolatency", "bitrate=2000", "!",
+            "h264parse", "!", "mp4mux", "!", "filesink", f"location={video.as_posix()}"], check=True)
+    else:
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                        f"testsrc2=size={width}x{height}:rate={fps}:duration=20",
+                        "-vf", "drawbox=x=0:y=0:w=iw/2:h=32:color=red:t=fill,"
+                               "drawbox=x=iw/2:y=0:w=iw/2:h=32:color=blue:t=fill",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-threads", "4",
+                        "-pix_fmt", "yuv420p", str(video)], check=True)
+    return video
 
 
 class Firefox:
@@ -61,8 +97,48 @@ def wait_for(check, seconds=20):
     raise TimeoutError("Timed out waiting for WebRTC setup")
 
 
+def native_answer(native, offer):
+    message = json.dumps(offer).encode()
+    native.stdin.write(struct.pack("=I", len(message)) + message)
+    native.stdin.flush()
+    replies = queue.Queue(maxsize=1)
+    def read_reply():
+        try:
+            size = native.stdout.read(4)
+            if len(size) != 4:
+                raise RuntimeError("Native host closed before answering")
+            data = native.stdout.read(struct.unpack("=I", size)[0])
+            replies.put(json.loads(data))
+        except Exception as error:
+            replies.put(error)
+    threading.Thread(target=read_reply, daemon=True).start()
+    reply = replies.get(timeout=30)
+    if isinstance(reply, Exception):
+        raise reply
+    if reply.get("error"):
+        raise RuntimeError(reply["error"])
+    return reply["sdp"]
+
+
+def firefox_video_window():
+    user32 = ctypes.windll.user32
+    found = []
+    callback_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+    def check(window, _):
+        length = user32.GetWindowTextLengthW(window)
+        if length:
+            title = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(window, title, length + 1)
+            if title.value == "Rendepth - Browser Video":
+                found.append(title.value)
+        return 1
+    user32.EnumWindows(callback_type(check), 0)
+    return bool(found)
+
+
 def run(fps, receiver, width=1920, height=1080, half=False, min_fps=None, mono=False,
-        windowed=False, diagnose=False, motion=False, capture_script=None, min_browser_fps=None):
+        windowed=False, diagnose=False, motion=False, capture_script=None, min_browser_fps=None,
+        app=False):
     with tempfile.TemporaryDirectory(prefix="rendepth-firefox-test-") as temporary:
         directory = Path(temporary)
         profile = directory / "profile"
@@ -79,17 +155,11 @@ def run(fps, receiver, width=1920, height=1080, half=False, min_fps=None, mono=F
         fixture = directory / "fixture.html"
         fixture.write_text((ROOT / "test-video.html").read_text().replace(
             "if (!video.srcObject)", "if (!video.srcObject && !video.src)"))
-        video = directory / "source.mp4"
-        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
-                        f"testsrc2=size={width}x{height}:rate={fps}:duration=20",
-                        # Small stereo markers leave most of the moving detail
-                        # intact: full-frame overlays hid bitrate starvation.
-                        "-vf", "drawbox=x=0:y=0:w=iw/2:h=32:color=red:t=fill,"
-                               "drawbox=x=iw/2:y=0:w=iw/2:h=32:color=blue:t=fill",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-threads", "4",
-                        "-pix_fmt", "yuv420p", str(video)], check=True)
+        video = fixture_video(directory, width, height, fps)
         with (directory / "firefox.log").open("w") as log:
-            browser = subprocess.Popen(["firefox", *([] if windowed else ["--headless"]), "--no-remote", "--profile", str(profile),
+            firefox_exe = (Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Mozilla Firefox/firefox.exe"
+                           if os.name == "nt" else "firefox")
+            browser = subprocess.Popen([str(firefox_exe), *([] if windowed else ["--headless"]), "--no-remote", "--profile", str(profile),
                                         "--marionette", "about:blank"], stdout=log, stderr=log)
             native = None
             connection = None
@@ -201,6 +271,24 @@ return true;
                 if "sdp" not in result:
                     raise RuntimeError(result)
                 (directory / "offer.sdp").write_text(result["sdp"])
+                if app:
+                    if os.name != "nt":
+                        raise RuntimeError("--app currently tests the Windows native host")
+                    import winreg
+                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Mozilla\NativeMessagingHosts\com.outmode.rendepth") as key:
+                        manifest = Path(winreg.QueryValueEx(key, "")[0])
+                    launcher = json.loads(manifest.read_text())["path"]
+                    native = subprocess.Popen([launcher, str(manifest), "firefox@rendepth.outmode"],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    sdp = native_answer(native, result)
+                    firefox.script("hostReply({action:'answer',sdp:arguments[0]}); return true;", sdp)
+                    wait_for(lambda: firefox.script("return captureResult.connected;"), seconds=30)
+                    wait_for(firefox_video_window, seconds=20)
+                    print("Firefox video reached the Rendepth window through the Windows native host.", flush=True)
+                    native.stdin.close()
+                    native.wait(timeout=5)
+                    return
                 native = subprocess.Popen([str(receiver), str(directory), "5"] + (["2d"] if mono else []), stdout=subprocess.PIPE,
                                           stderr=subprocess.PIPE, text=True)
                 def answer():
@@ -264,7 +352,8 @@ return true;
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--receiver", type=Path, default=ROOT.parent.parent / "Debug/BrowserCaptureTest")
+    parser.add_argument("--receiver", type=Path, default=ROOT.parent.parent /
+                        ("Debug/BrowserCaptureTest.exe" if os.name == "nt" else "Debug/BrowserCaptureTest"))
     parser.add_argument("--fps", type=int, choices=[30, 60], nargs="+", default=[30, 60])
     parser.add_argument("--width", type=int, choices=[1920, 2560, 3840], default=1920)
     parser.add_argument("--height", type=int, choices=[1080, 1440, 2160], default=1080)
@@ -276,9 +365,10 @@ if __name__ == "__main__":
     parser.add_argument("--min-fps", type=float, help="Explicit throughput threshold; default is 90%% of source FPS")
     parser.add_argument("--min-browser-fps", type=float, help="Also require this browser presentation rate during streaming")
     parser.add_argument("--mono", action="store_true", help="Test 2D capture and native depth inputs")
+    parser.add_argument("--app", action="store_true", help="Send the WebRTC stream through the Windows native host and app")
     args = parser.parse_args()
     if args.mono and args.half:
         parser.error("--mono and --half are mutually exclusive")
     for rate in args.fps:
         run(rate, args.receiver.resolve(), args.width, args.height, args.half, args.min_fps, args.mono,
-            args.windowed, args.diagnose, args.motion, args.capture_script, args.min_browser_fps)
+            args.windowed, args.diagnose, args.motion, args.capture_script, args.min_browser_fps, args.app)
