@@ -38,6 +38,8 @@ int main(int argc, char** argv) {
     key(window, SDLK_END);
     surface = GettingStarted::render(512, 768, 1, argv[1]);
     require(surface && std::memcmp(first.data(), surface->pixels, first.size()) != 0, "Scroll narrow content");
+    if (argc > 2) require(IMG_SavePNG(surface, (std::filesystem::path(argv[2]) /
+        "guide-narrow-end.png").string().c_str()), "Save Getting Started link preview");
     const int footer = 682 * surface->pitch;
     require(std::memcmp(first.data() + footer, static_cast<unsigned char*>(surface->pixels) + footer,
         first.size() - footer) == 0, "Keep footer fixed when scrolling");
@@ -57,6 +59,77 @@ int main(int argc, char** argv) {
     require(key(window, SDLK_F1) == GettingStarted::Action::Dismiss && !GettingStarted::visible,
         "F1 closes the guide");
     GettingStarted::show();
+    key(window, SDLK_END);
+    surface = GettingStarted::render(512, 768, 1, argv[1]);
+    int linkX = -1, linkY = -1;
+    for (int y = 0; y < 682 && linkX < 0; ++y) for (int x = 0; x < surface->w; ++x) {
+        Uint8 r, g, b, a;
+        if (SDL_ReadSurfacePixel(surface, x, y, &r, &g, &b, &a) &&
+            r == 255 && g == 23 && b == 111) { linkX = x; linkY = y; break; }
+    }
+    require(linkX >= 0, "Show the control guide link at the end of Getting Started");
+    SDL_Event linkClick{}; linkClick.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    linkClick.button.button = SDL_BUTTON_LEFT; linkClick.button.x = linkX; linkClick.button.y = linkY;
+    GettingStarted::handleEvent(linkClick, window);
+    linkClick.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    require(GettingStarted::handleEvent(linkClick, window) == GettingStarted::Action::PageChanged &&
+        GettingStarted::currentPage() == GettingStarted::Page::Controls,
+        "Open the control guide by clicking its link");
+    surface = GettingStarted::render(512, 768, 1, argv[1]);
+    require(surface != nullptr, "Render the control guide");
+    std::vector<unsigned char> controlsTop(static_cast<unsigned char*>(surface->pixels),
+        static_cast<unsigned char*>(surface->pixels) + surface->pitch * surface->h);
+    if (argc > 2) require(IMG_SavePNG(surface, (std::filesystem::path(argv[2]) /
+        "guide-controls-narrow.png").string().c_str()), "Save narrow control guide preview");
+    key(window, SDLK_END);
+    surface = GettingStarted::render(512, 768, 1, argv[1]);
+    require(surface && std::memcmp(controlsTop.data(), surface->pixels, controlsTop.size()) != 0,
+        "Scroll the control guide to its video section");
+    if (argc > 2) require(IMG_SavePNG(surface, (std::filesystem::path(argv[2]) /
+        "guide-controls-narrow-video.png").string().c_str()), "Save narrow video shortcuts preview");
+    SDL_Event backClick{}; backClick.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    backClick.button.button = SDL_BUTTON_LEFT; backClick.button.x = 60; backClick.button.y = 725;
+    GettingStarted::handleEvent(backClick, window);
+    backClick.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    require(GettingStarted::handleEvent(backClick, window) == GettingStarted::Action::None &&
+        GettingStarted::currentPage() == GettingStarted::Page::Controls,
+        "Control guide has no footer navigation link");
+    int backX = -1, backY = -1;
+    for (int y = 0; y < 682 && backX < 0; ++y) for (int x = 0; x < surface->w; ++x) {
+        Uint8 r, g, b, a;
+        if (SDL_ReadSurfacePixel(surface, x, y, &r, &g, &b, &a) &&
+            r == 255 && g == 23 && b == 111) { backX = x; backY = y; break; }
+    }
+    require(backX >= 0, "Show Getting started link at the end of the control guide");
+    backClick.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    backClick.button.x = backX; backClick.button.y = backY;
+    GettingStarted::handleEvent(backClick, window);
+    backClick.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    require(GettingStarted::handleEvent(backClick, window) == GettingStarted::Action::PageChanged &&
+        GettingStarted::currentPage() == GettingStarted::Page::Welcome,
+        "Return from the control guide through the Getting started link");
+    require(key(window, SDLK_F2) == GettingStarted::Action::PageChanged &&
+        GettingStarted::currentPage() == GettingStarted::Page::Controls,
+        "F2 reopens the control guide");
+    require(key(window, SDLK_F1) == GettingStarted::Action::PageChanged &&
+        GettingStarted::currentPage() == GettingStarted::Page::Welcome,
+        "F1 returns to Getting Started");
+    require(key(window, SDLK_F2) == GettingStarted::Action::PageChanged &&
+        GettingStarted::currentPage() == GettingStarted::Page::Controls,
+        "F2 opens the control guide from Getting Started");
+    SDL_Event repeatedF2{}; repeatedF2.type = SDL_EVENT_KEY_DOWN;
+    repeatedF2.key.key = SDLK_F2; repeatedF2.key.repeat = true;
+    require(GettingStarted::handleEvent(repeatedF2, window) == GettingStarted::Action::None &&
+        GettingStarted::visible, "Ignore F2 key repeat");
+    surface = GettingStarted::render(1280, 900, 1, argv[1]);
+    require(surface != nullptr, "Render wide control guide");
+    if (argc > 2) require(IMG_SavePNG(surface, (std::filesystem::path(argv[2]) /
+        "guide-controls-wide.png").string().c_str()), "Save wide control guide preview");
+    require(key(window, SDLK_F2) == GettingStarted::Action::Dismiss && !GettingStarted::visible,
+        "F2 closes the control guide");
+    GettingStarted::show();
+    require(GettingStarted::render(512, 768, 1, argv[1]) != nullptr,
+        "Restore narrow guide before clicking its footer");
     SDL_Event click{}; click.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
     click.button.button = SDL_BUTTON_LEFT; click.button.x = 60; click.button.y = 725;
     GettingStarted::handleEvent(click, window);
@@ -151,6 +224,11 @@ int main(int argc, char** argv) {
                 "Click packed dismissal button");
         }
     }
+    GettingStarted::show(GettingStarted::Page::Controls);
+    surface = GettingStarted::render(1280, 900, 1, argv[1], false, GettingStarted::Layout::RGBD);
+    require(surface != nullptr, "Render control guide in RGBD layout");
+    require(SDL_ReadSurfacePixel(surface, 700, 100, &r, &g, &b, &a) &&
+        r == 192 && g == r && b == r, "Keep control guide depth panel neutral gray");
     GettingStarted::release();
     require(!GettingStarted::render(512, 768, 1, "/missing-assets"), "Handle missing assets");
     require(GettingStarted::render(512, 768, 1, argv[1]) != nullptr, "Recover after missing assets");

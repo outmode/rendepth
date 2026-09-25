@@ -230,7 +230,10 @@ void scanDisc(Reader& reader, const std::filesystem::path& path, const std::shar
         }
         else title.commentaryAvailable = t.commentaryAvailable;
     }
-    std::stable_sort(titles.begin(), titles.end(), [](const auto& a, const auto& b) { return a.duration > b.duration; });
+    std::stable_sort(titles.begin(), titles.end(), [](const auto& a, const auto& b) {
+        if (a.duration != b.duration) return a.duration > b.duration;
+        return a.mainFeatureCandidate && !b.mainFeatureCandidate;
+    });
     if (titles.empty()) {
         std::lock_guard lock(scan->mutex);
         scan->error = "No playable disc titles found";

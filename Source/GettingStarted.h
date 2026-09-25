@@ -8,10 +8,12 @@
 
 namespace GettingStarted {
 enum class Layout { Single, SBSFull, SBSHalf, RGBD };
-enum class Action { None, Dismiss, PreferenceChanged };
+enum class Page { Welcome, Controls };
+enum class Action { None, Dismiss, PreferenceChanged, PageChanged };
 inline bool visible = false;
 inline bool dontShowAgain = false;
-void show();
+void show(Page page = Page::Welcome);
+Page currentPage();
 Action handleEvent(const SDL_Event& event, SDL_Window* window);
 SDL_Surface* render(int width, int height, float scale, const std::filesystem::path& assets, bool light = false, Layout layout = Layout::Single);
 std::uint64_t revision();

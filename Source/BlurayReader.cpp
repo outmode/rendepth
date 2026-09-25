@@ -2,6 +2,7 @@
 #include "BlurayReader.h"
 #include "BlurayPlaylist.h"
 #include "BlurayTitleNames.h"
+#include "BlurayMainFeature.h"
 #include <cstdlib>
 #include <format>
 #include <iostream>
@@ -216,19 +217,11 @@ bool BlurayReader::open(const std::filesystem::path& path, std::string& error) {
         return false;
     }
 
-    // Identify main feature: title with the longest duration
-    int bestTitleIndex = 0;
-    double maxDuration = 0.0;
-    int maxChapters = 0;
-
-    for (const auto& title : titles_) {
-        if (title.duration > maxDuration ||
-            (std::abs(title.duration - maxDuration) < 1.0 && title.chapterCount > maxChapters)) {
-            maxDuration = title.duration;
-            maxChapters = title.chapterCount;
-            bestTitleIndex = title.index;
-        }
-    }
+    // Prefer the full-length playlist with the widest language coverage when
+    // alternate cuts have essentially the same running time.
+    const int bestTitleIndex = BlurayMainFeature::select(titles_);
+    for (auto& title : titles_)
+        title.mainFeatureCandidate = title.index == bestTitleIndex;
 
     if (!selectTitle(bestTitleIndex, error)) {
         close();

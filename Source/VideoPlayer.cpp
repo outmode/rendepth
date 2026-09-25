@@ -213,6 +213,8 @@ struct VideoPlayer::Impl {
 	std::unique_ptr<BlurayReader> blurayReader;
 	std::unique_ptr<MvcDecoder> mvcDecoder;
 	std::unique_ptr<DvdReader> dvdReader;
+	std::optional<double> dvdSeekTarget;
+	double dvdTimestampOffset = 0.0;
 	std::unique_ptr<AudioCdReader> audioCdReader;
 	std::vector<double> discChapterTimes;
 	AVCodecContext* codec = nullptr;
@@ -1156,6 +1158,10 @@ struct VideoPlayer::Impl {
 			// can repeatedly land on the same packet and never make progress.
 			const bool sought = blurayReader ? blurayReader->seekTime(request.seconds) : dvdReader->seekTime(request.seconds);
 			if (sought) {
+				if (dvdReader) {
+					dvdSeekTarget = request.seconds;
+					dvdTimestampOffset = 0.0;
+				}
 				avio_flush(avioContext);
 				avioContext->pos = blurayReader ? blurayReader->bytePosition() : dvdReader->bytePosition();
 				if (discReadAhead) discReadAhead->setPosition(avioContext->pos);
@@ -1378,6 +1384,25 @@ struct VideoPlayer::Impl {
 			if (readResult < 0) {
 				setRuntimeError("FFmpeg could not read the video: " + ffmpegError(readResult));
 				break;
+			}
+			if (dvdReader) {
+				const auto timeBase = format->streams[packet->stream_index]->time_base;
+				const int64_t timestamp = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
+				if (dvdSeekTarget && timestamp != AV_NOPTS_VALUE) {
+					const double packetPosition = timestamp * av_q2d(timeBase) - streamStart;
+					// Some VOB segments restart their MPEG timestamps. A time-map seek
+					// still lands at the right sector, but the old timeline floor would
+					// otherwise discard every decoded frame from that segment.
+					if (std::abs(packetPosition - *dvdSeekTarget) > 300.0)
+						dvdTimestampOffset = *dvdSeekTarget - packetPosition;
+					dvdSeekTarget.reset();
+				}
+				if (dvdTimestampOffset != 0.0) {
+					const int64_t offset = static_cast<int64_t>(std::llround(
+						dvdTimestampOffset / av_q2d(timeBase)));
+					if (packet->pts != AV_NOPTS_VALUE) packet->pts += offset;
+					if (packet->dts != AV_NOPTS_VALUE) packet->dts += offset;
+				}
 			}
 
             if (mvcDecoder) {

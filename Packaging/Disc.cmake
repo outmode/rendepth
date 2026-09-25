@@ -5,6 +5,23 @@ set(RENDEPTH_DISC_ROOT "${RENDEPTH_FFMPEG_ROOT}" CACHE PATH
 
 find_package(PkgConfig QUIET)
 foreach(disc_library IN ITEMS bluray dvdread)
+    string(TOUPPER "${disc_library}" disc_library_upper)
+    # Preserve valid paths from older CMake profiles, then remove their old names.
+    foreach(disc_suffix IN ITEMS INCLUDE_DIR RELEASE DEBUG LIBRARY)
+        if(disc_suffix STREQUAL "INCLUDE_DIR")
+            set(disc_cache_type PATH)
+        else()
+            set(disc_cache_type FILEPATH)
+        endif()
+        if(DEFINED CACHE{RENDEPTH_${disc_library}_${disc_suffix}} AND
+           NOT DEFINED CACHE{RENDEPTH_${disc_library_upper}_${disc_suffix}} AND
+           NOT "${RENDEPTH_${disc_library}_${disc_suffix}}" MATCHES "-NOTFOUND$")
+            set(RENDEPTH_${disc_library_upper}_${disc_suffix}
+                "${RENDEPTH_${disc_library}_${disc_suffix}}" CACHE ${disc_cache_type}
+                "Migrated disc dependency path")
+        endif()
+        unset(RENDEPTH_${disc_library}_${disc_suffix} CACHE)
+    endforeach()
     if(disc_library STREQUAL "bluray")
         set(disc_header libbluray/bluray.h)
         set(disc_package libbluray)
@@ -18,35 +35,35 @@ foreach(disc_library IN ITEMS bluray dvdread)
     if(WIN32)
         # pkg-config can select release libraries for a Debug MSVC build.
         # Resolve both configurations and use headers from the same SDK.
-        find_path(RENDEPTH_${disc_library}_INCLUDE_DIR NAMES ${disc_header}
+        find_path(RENDEPTH_${disc_library_upper}_INCLUDE_DIR NAMES ${disc_header}
             HINTS "${RENDEPTH_DISC_ROOT}/include" NO_DEFAULT_PATH REQUIRED)
-        find_library(RENDEPTH_${disc_library}_RELEASE
+        find_library(RENDEPTH_${disc_library_upper}_RELEASE
             NAMES ${disc_library} lib${disc_library}
             HINTS "${RENDEPTH_DISC_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
-        find_library(RENDEPTH_${disc_library}_DEBUG
+        find_library(RENDEPTH_${disc_library_upper}_DEBUG
             NAMES ${disc_library} lib${disc_library}
             HINTS "${RENDEPTH_DISC_ROOT}/debug/lib" NO_DEFAULT_PATH REQUIRED)
         add_library(RendepthDisc_${disc_library} UNKNOWN IMPORTED GLOBAL)
         set_target_properties(RendepthDisc_${disc_library} PROPERTIES
-            IMPORTED_LOCATION "${RENDEPTH_${disc_library}_RELEASE}"
-            IMPORTED_LOCATION_DEBUG "${RENDEPTH_${disc_library}_DEBUG}"
-            INTERFACE_INCLUDE_DIRECTORIES "${RENDEPTH_${disc_library}_INCLUDE_DIR}")
+            IMPORTED_LOCATION "${RENDEPTH_${disc_library_upper}_RELEASE}"
+            IMPORTED_LOCATION_DEBUG "${RENDEPTH_${disc_library_upper}_DEBUG}"
+            INTERFACE_INCLUDE_DIRECTORIES "${RENDEPTH_${disc_library_upper}_INCLUDE_DIR}")
     else()
         if(PKG_CONFIG_FOUND)
-            pkg_check_modules(RENDEPTH_${disc_library} QUIET IMPORTED_TARGET GLOBAL ${disc_package})
+            pkg_check_modules(RENDEPTH_${disc_library_upper} QUIET IMPORTED_TARGET GLOBAL ${disc_package})
         endif()
-        if(TARGET PkgConfig::RENDEPTH_${disc_library})
-            add_library(RendepthDisc_${disc_library} ALIAS PkgConfig::RENDEPTH_${disc_library})
+        if(TARGET PkgConfig::RENDEPTH_${disc_library_upper})
+            add_library(RendepthDisc_${disc_library} ALIAS PkgConfig::RENDEPTH_${disc_library_upper})
         else()
-            find_path(RENDEPTH_${disc_library}_INCLUDE_DIR NAMES ${disc_header}
+            find_path(RENDEPTH_${disc_library_upper}_INCLUDE_DIR NAMES ${disc_header}
                 HINTS "${RENDEPTH_DISC_ROOT}/include" REQUIRED)
-            find_library(RENDEPTH_${disc_library}_LIBRARY
+            find_library(RENDEPTH_${disc_library_upper}_LIBRARY
                 NAMES ${disc_library} lib${disc_library}
                 HINTS "${RENDEPTH_DISC_ROOT}/lib" REQUIRED)
             add_library(RendepthDisc_${disc_library} UNKNOWN IMPORTED GLOBAL)
             set_target_properties(RendepthDisc_${disc_library} PROPERTIES
-                IMPORTED_LOCATION "${RENDEPTH_${disc_library}_LIBRARY}"
-                INTERFACE_INCLUDE_DIRECTORIES "${RENDEPTH_${disc_library}_INCLUDE_DIR}")
+                IMPORTED_LOCATION "${RENDEPTH_${disc_library_upper}_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${RENDEPTH_${disc_library_upper}_INCLUDE_DIR}")
         endif()
     endif()
     target_link_libraries(Rendepth PUBLIC RendepthDisc_${disc_library})

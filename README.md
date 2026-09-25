@@ -96,6 +96,12 @@ fails if either is missing instead of producing a player with disabled readers.
 - Linux: install the distribution's libbluray and libdvdread development
   packages. Installed packages also require the corresponding runtime libraries.
 
+If CMake asks for `RENDEPTH_BLURAY_INCLUDE_DIR`, point it to the directory
+containing `libbluray/bluray.h` (for example, `<sdk>/include` or `/usr/include`),
+not to the `libbluray` directory itself. `RENDEPTH_DVDREAD_INCLUDE_DIR` similarly
+points to the directory containing `dvdread/dvd_reader.h`. On Windows, setting
+`RENDEPTH_DISC_ROOT` to the SDK prefix lets CMake find both headers and libraries.
+
 Blu-ray remains a Pro feature. Protected media still requires decryption support
 and any keys required by the underlying disc libraries; enabling a backend does
 not make every encrypted disc readable.

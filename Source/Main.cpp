@@ -6648,9 +6648,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             if (!event->key.repeat) toggleFullscreen();
             return SDL_APP_CONTINUE;
         }
-        if (key == SDLK_TAB && !(event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
+        if (key == SDLK_TAB && !GettingStarted::visible &&
+            !(event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
             if (!event->key.repeat) {
-                if (GettingStarted::visible) dismissGuide();
                 finishSliderDrag(false);
                 toggleOptions();
                 mouseLastActive = getTimeNow();
@@ -6659,12 +6659,14 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             return SDL_APP_CONTINUE;
         }
     }
-	if (event->type == SDL_EVENT_KEY_DOWN && event->key.key == SDLK_F1 &&
+	if (event->type == SDL_EVENT_KEY_DOWN &&
+		(event->key.key == SDLK_F1 || event->key.key == SDLK_F2) &&
 		!event->key.repeat && !GettingStarted::visible) {
 		finishSliderDrag(false);
 		resumeAfterGuide = activeVideo && videoPlayer.playing();
 		if (resumeAfterGuide) videoPlayer.setPlaying(false);
-		GettingStarted::show();
+		GettingStarted::show(event->key.key == SDLK_F2
+			? GettingStarted::Page::Controls : GettingStarted::Page::Welcome);
 		showCustomCursor(true);
 		return SDL_APP_CONTINUE;
 	}
