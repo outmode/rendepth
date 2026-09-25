@@ -3233,11 +3233,13 @@ static void saveFile() {
 	doingFileOp = true;
 	// The save callback can run between video-frame updates. Refresh the GPU
 	// source from the frame currently being presented so export reads the
-	// complete packed frame (both eyes for native SBS video).
-	if (activeVideo && lastVideoFrame != nullptr &&
-		lastVideoFrame->generation == videoPlayer.generation()) {
+	// complete packed frame (both eyes for native SBS video or a browser stream).
+	if ((activeScreenCapture || (activeVideo &&
+		lastVideoFrame != nullptr && lastVideoFrame->generation == videoPlayer.generation())) &&
+		lastVideoFrame != nullptr) {
 		if (Image::updateVideoFrame(&context, *lastVideoFrame, false,
-			videoPlayer.displayWidth(lastVideoFrame->width, lastVideoFrame->height),
+			activeScreenCapture ? lastVideoFrame->width :
+				videoPlayer.displayWidth(lastVideoFrame->width, lastVideoFrame->height),
 			lastVideoFrame->height, false) != 0) {
 			doingFileOp = false;
 			return;
@@ -3268,8 +3270,8 @@ static void saveFile() {
 		}
 
 		outFileName = exportBaseName(context.fileName);
-		if (activeVideo && lastVideoFrame != nullptr &&
-			lastVideoFrame->generation == videoPlayer.generation()) {
+		if (lastVideoFrame != nullptr && (activeScreenCapture ||
+			(activeVideo && lastVideoFrame->generation == videoPlayer.generation()))) {
 			outFileName += formatVideoTimeTag(lastVideoFrame->presentationTime);
 		}
 		const std::filesystem::path outFilePath = outFileName + "_" + exportTag +
@@ -5652,8 +5654,8 @@ void checkMouseState() {
 		auto displayParallax = !(icon.type == IconType::Focus &&
 			(!fileList.empty() && fileList[fileIndex].type == Light_Field_LKG));
 		auto displayCaptureFileActions = !(activeScreenCapture &&
-			(icon.type == IconType::File || icon.type == IconType::Folder ||
-				icon.type == IconType::Save));
+			(icon.type == IconType::Folder ||
+				(!browserCapture && (icon.type == IconType::File || icon.type == IconType::Save))));
 		const bool displayBatch = icon.type != IconType::Folder ||
 			(!activeVideo && !activeScreenCapture && !discBrowser && !context.loading &&
 				!fileList.empty() && fileIndex >= 0 && fileIndex < static_cast<int>(fileList.size()) &&
@@ -5672,7 +5674,12 @@ void checkMouseState() {
 		auto displayXD = !((context.displayMenu || preferredStereoMode == Mono ||
 			(activeVideo && videoPlayer.audioOnly())) && icon.type == IconType::Stereo_3D);
 		auto displaySave = true;
-		if (!fileList.empty()) {
+		if (activeScreenCapture) {
+			displaySave = icon.type != IconType::Save ||
+				(videoFrameLoaded && context.imageType != Color_Only &&
+					context.imageType != Color_Anaglyph &&
+					(exportFormat != Color_Plus_Depth || videoDepthFrameLoaded));
+		} else if (!fileList.empty()) {
 			const bool videoDepthReady = activeVideo && videoDepthFrameLoaded;
 			displaySave = !(icon.type == IconType::Save &&
 			(((fileList[fileIndex].type == Color_Only ||
@@ -6853,7 +6860,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		}
 
 		if (event->key.key == SDLK_E && !event->key.repeat) {
-			if (!activeScreenCapture && !isConverting && !fileList.empty() && fileIndex < fileList.size()) {
+			if (browserCapture && videoFrameLoaded && !doingFileOp && !isConverting &&
+				context.imageType != Color_Only && context.imageType != Color_Anaglyph &&
+				(exportFormat != Color_Plus_Depth || videoDepthFrameLoaded)) {
+				saveFile();
+			} else if (!activeScreenCapture && !isConverting && !fileList.empty() && fileIndex < fileList.size()) {
 				const bool videoDepthReady = activeVideo && videoDepthFrameLoaded;
 				const bool canExport = !(((fileList[fileIndex].type == Color_Only ||
 					fileList[fileIndex].type == Color_Anaglyph) && !videoDepthReady) ||
