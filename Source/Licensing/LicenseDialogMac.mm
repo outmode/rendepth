@@ -35,8 +35,7 @@ NSString* ns(const std::string& text) { return [NSString stringWithUTF8String:te
 - (void)support:(id)sender {
     const auto& url = current.supportUrl;
     if (!url.empty() && !SDL_OpenURL(url.c_str())) {
-        statusField.stringValue = ns(url.starts_with("mailto:") ?
-            "Could not open your email app. Please email " + url.substr(7) : std::string("Could not open your browser."));
+        statusField.stringValue = @"Could not open your browser.";
     }
 }
 // Hide the license window on close so it can be reused later.
@@ -81,7 +80,7 @@ void open(SDL_Window* parent, const DialogState& state, DialogAction action) {
     activateButton = button(@"Activate Rendepth Pro", NSMakeRect(24, 96, 240, 32), @selector(activate:));
     deactivateButton = button(@"Deactivate This Computer", NSMakeRect(24, 96, 240, 32), @selector(deactivate:));
     auto* buy = button(@"Buy Rendepth Pro", NSMakeRect(24, 56, 180, 32), @selector(buy:));
-    auto* support = button(@"Contact Support", NSMakeRect(220, 56, 180, 32), @selector(support:));
+    auto* support = button(@"Join Community", NSMakeRect(220, 56, 180, 32), @selector(support:));
     buy.enabled = !state.purchaseUrl.empty(); support.enabled = !state.supportUrl.empty();
     label(@"Lost access to an old computer? Contact support to recover its activation slot.", NSMakeRect(24, 8, 492, 42));
     if (parent) {

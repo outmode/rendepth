@@ -11,9 +11,7 @@ DialogAction callback;
 // Open a purchase or support link and show an actionable error if launching fails.
 void launch(const std::string& url) {
     if (!url.empty() && !SDL_OpenURL(url.c_str())) {
-        const auto error = url.starts_with("mailto:") ? "Could not open your email app. Please email " + url.substr(7) :
-            std::string("Could not open your browser.");
-        gtk_label_set_text(GTK_LABEL(status), error.c_str());
+        gtk_label_set_text(GTK_LABEL(status), "Could not open your browser.");
     }
 }
 // Confirm deactivation with the user before dispatching the license operation.
@@ -88,7 +86,7 @@ void open(SDL_Window* parent, const DialogState& state, DialogAction action) {
     auto* buy = gtk_button_new_with_label("Buy Rendepth Pro"); gtk_container_add(GTK_CONTAINER(links), buy);
     gtk_widget_set_sensitive(buy, !state.purchaseUrl.empty());
     g_signal_connect(buy, "clicked", G_CALLBACK(+[](GtkButton*, gpointer) { launch(current.purchaseUrl); }), nullptr);
-    auto* support = gtk_button_new_with_label("Contact Support"); gtk_container_add(GTK_CONTAINER(links), support);
+    auto* support = gtk_button_new_with_label("Join Community"); gtk_container_add(GTK_CONTAINER(links), support);
     gtk_widget_set_sensitive(support, !state.supportUrl.empty());
     g_signal_connect(support, "clicked", G_CALLBACK(+[](GtkButton*, gpointer) { launch(current.supportUrl); }), nullptr);
     addLabel("Lost access to an old computer? Contact support to recover its activation slot.");

@@ -1,9 +1,14 @@
 # edge264 uses GNU C vector extensions. Build its Windows C ABI as a DLL with
 # MinGW, then generate an MSVC import library; the application stays on MSVC.
-get_filename_component(mvc_cmake_bin "${CMAKE_COMMAND}" DIRECTORY)
+# Older configurations selected CLion's bundled MinGW through the CMake path
+# hint. Its static winpthread archive cannot link this DLL, so discard that
+# cached auto-selection and search the developer's PATH again.
+if(RENDEPTH_MVC_GCC MATCHES "[/\\\\]JetBrains[/\\\\].*[/\\\\]mingw[/\\\\]bin[/\\\\]gcc\\.exe$")
+    unset(RENDEPTH_MVC_GCC CACHE)
+    unset(RENDEPTH_MVC_RUNTIME_LICENSES_DIR CACHE)
+endif()
 find_program(RENDEPTH_MVC_GCC NAMES gcc x86_64-w64-mingw32-gcc
     HINTS "C:/msys64/ucrt64/bin" "C:/msys64/mingw64/bin"
-        "${mvc_cmake_bin}/../../../../mingw/bin"
     DOC "64-bit MinGW GCC used to build the bundled MVC decoder" REQUIRED)
 execute_process(COMMAND "${RENDEPTH_MVC_GCC}" -dumpmachine
     OUTPUT_VARIABLE mvc_machine OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
@@ -11,7 +16,19 @@ if(NOT mvc_machine MATCHES "^x86_64-.*mingw" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "The Windows MVC decoder requires an x64 MinGW compiler and x64 application")
 endif()
 get_filename_component(mvc_gcc_bin "${RENDEPTH_MVC_GCC}" DIRECTORY)
-find_path(RENDEPTH_MVC_RUNTIME_LICENSES_DIR NAMES crt/COPYING.MinGW-w64-runtime.txt
+# GCC finds its tools relative to its executable. Only its own bin directory
+# needs to be on PATH for the DLLs used by the compiler and linker. Passing the
+# full Windows PATH here breaks Visual Studio custom commands at semicolons.
+get_filename_component(mvc_gcc_root "${mvc_gcc_bin}" DIRECTORY)
+if(RENDEPTH_MVC_RUNTIME_LICENSES_DIR)
+    cmake_path(IS_PREFIX mvc_gcc_root "${RENDEPTH_MVC_RUNTIME_LICENSES_DIR}"
+        NORMALIZE mvc_licenses_match)
+    if(NOT mvc_licenses_match)
+        unset(RENDEPTH_MVC_RUNTIME_LICENSES_DIR CACHE)
+    endif()
+endif()
+find_path(RENDEPTH_MVC_RUNTIME_LICENSES_DIR NAMES
+    crt/COPYING.MinGW-w64-runtime.txt mingw-w64/COPYING.MinGW-w64-runtime.txt
     HINTS "${mvc_gcc_bin}/../share/licenses" "${mvc_gcc_bin}/../licenses"
     DOC "MinGW runtime license directory for the selected MVC compiler" REQUIRED)
 set(mvc_source "${CMAKE_SOURCE_DIR}/ThirdParty/SyLC/edge264")
@@ -29,13 +46,13 @@ foreach(variant IN ITEMS base v2 v3)
         set(variant_flags -march=x86-64-${variant} "-DADD_VARIANT(f)=f##_${variant}")
     endif()
     add_custom_command(OUTPUT "${mvc_output}/${variant}.o"
-        COMMAND ${CMAKE_COMMAND} -E env "PATH=${mvc_gcc_bin};$ENV{PATH}"
+        COMMAND ${CMAKE_COMMAND} -E env "PATH=${mvc_gcc_bin}"
             "${RENDEPTH_MVC_GCC}" ${mvc_flags} ${variant_flags}
             -c "${variant_source}" -o "${mvc_output}/${variant}.o"
         DEPENDS ${mvc_sources} "${mvc_source}/edge264.h" VERBATIM)
 endforeach()
 add_custom_command(OUTPUT "${mvc_output}/rendepth-mvc.dll"
-    COMMAND ${CMAKE_COMMAND} -E env "PATH=${mvc_gcc_bin};$ENV{PATH}"
+    COMMAND ${CMAKE_COMMAND} -E env "PATH=${mvc_gcc_bin}"
         "${RENDEPTH_MVC_GCC}" -shared -static-libgcc
         "${CMAKE_CURRENT_LIST_DIR}/Mvc.def"
         "${mvc_output}/base.o" "${mvc_output}/v2.o" "${mvc_output}/v3.o"

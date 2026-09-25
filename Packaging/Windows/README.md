@@ -1,5 +1,36 @@
 # Windows inference packs
 
+## Build an unsigned installer
+
+Install Inno Setup 6, configure an x64 Visual Studio Release build as described
+below, then run from the repository root:
+
+```powershell
+& Packaging/Windows/Build-Installer.ps1
+```
+
+Pass `-BuildDir` for another configured CMake directory or `-InnoCompiler` for
+an ISCC.exe outside the usual installation paths. Pass `-SkipBuild` only when
+the Release binary has already been built, for example when refreshing the
+installer script while Rendepth is running. The script builds Rendepth
+with 28 parallel jobs, stages the CMake install tree, checks the required CPU
+runtime and Visual C++ DLLs, and writes
+`Distribution/<version>/Windows/Rendepth-<version>-windows-x64-setup.exe`.
+The installer includes the CPU runtime, program DLLs, assets, shaders, and
+licenses. GPU runtime packs remain separate. The output is unsigned; sign the
+finished setup executable with Microsoft SignTool when preparing a release.
+
+The script replaces an existing installer for the same version after the new
+installer compiles successfully. It does not keep backup executables.
+
+The installer registers Rendepth as an **Open with** choice for its supported
+image, video, and audio formats. It does not change the user's default apps.
+An old per-user `Rendepth.exe` open command can override the machine-wide
+registration. If an older portable copy still opens, update the current
+Windows account's
+`HKCU\Software\Classes\Applications\Rendepth.exe\shell\open\command` value to
+`"<install directory>\Binary\Rendepth.exe" "%1"`.
+
 Windows x64 builds use a CPU runtime by default. GPU inference is selected in
 **AI Engine (Restart Required)**. **Installed Runtime Packs** reports files on
 disk; **GPU Support → Choose AI Engine** reports the selected runtime or CPU fallback

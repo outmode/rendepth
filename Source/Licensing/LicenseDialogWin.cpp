@@ -41,9 +41,7 @@ LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
         if (id == Buy || id == Support) {
             const auto& url = id == Buy ? current.purchaseUrl : current.supportUrl;
             if (!url.empty() && !SDL_OpenURL(url.c_str())) {
-                const auto error = url.starts_with("mailto:") ? "Could not open your email app. Please email " + url.substr(7) :
-                    std::string("Could not open your browser.");
-                SetWindowTextW(status, wide(error).c_str());
+                SetWindowTextW(status, L"Could not open your browser.");
             }
         }
         return 0;
@@ -110,7 +108,7 @@ void open(SDL_Window* parent, const DialogState& state, DialogAction action) {
     activate = control(L"BUTTON", L"Activate Rendepth Pro", Activate, 24, 250, 240, 32, WS_TABSTOP | BS_DEFPUSHBUTTON);
     deactivate = control(L"BUTTON", L"Deactivate This Computer", Deactivate, 24, 250, 240, 32, WS_TABSTOP);
     auto buy = control(L"BUTTON", L"Buy Rendepth Pro", Buy, 24, 294, 160, 30, WS_TABSTOP);
-    auto support = control(L"BUTTON", L"Contact Support", Support, 196, 294, 160, 30, WS_TABSTOP);
+    auto support = control(L"BUTTON", L"Join Community", Support, 196, 294, 160, 30, WS_TABSTOP);
     control(L"BUTTON", L"Close", Close, 368, 294, 146, 30, WS_TABSTOP);
     EnableWindow(buy, !state.purchaseUrl.empty()); EnableWindow(support, !state.supportUrl.empty());
     control(L"STATIC", L"Lost access to an old computer? Contact support to recover its activation slot.", 0, 24, 338, 490, 40, 0);

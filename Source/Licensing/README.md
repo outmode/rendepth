@@ -30,17 +30,16 @@ cmake -S . -B <build-directory> \
   -DRENDEPTH_LICENSE_STORE_ID=474981 \
   -DRENDEPTH_LICENSE_PRODUCT_ID=1373415 \
   -DRENDEPTH_LICENSE_VARIANT_ID=0 \
-  -DRENDEPTH_LICENSE_PURCHASE_URL=https://shop.rendepth.com/ \
-  -DRENDEPTH_LICENSE_SUPPORT_URL=mailto:support@outmode.com
-cmake --build <build-directory> --parallel 14
+  -DRENDEPTH_LICENSE_PURCHASE_URL=https://shop.rendepth.com/
+cmake --build <build-directory> --parallel 28
 ```
 
 Store and product IDs must be positive. Variant ID is optional: 0 accepts all
 variants of the configured product, so specify it when the product has multiple
-editions. Setting either store or product ID to 0 disables activation. Empty URLs disable the corresponding
-purchase/support buttons. Support defaults to `mailto:support@outmode.com`,
-which opens the customer's email application. A support HTTPS page can be
-configured later. The native dialog remains accessible for inspection.
+editions. Setting either store or product ID to 0 disables activation. An empty
+purchase URL disables its button. Join Community opens
+`https://discord.gg/wWGNtd8KS` on all platforms. The native dialog remains
+accessible for inspection.
 No seller API key or webhook secret belongs in these settings or the binary.
 
 Use the identifiers belonging to the actual test product during development,

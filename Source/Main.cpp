@@ -370,6 +370,7 @@ Style style;
 
 std::vector<FileInfo> fileList{};
 static std::vector<std::string> deferredMediaFiles{};
+static std::mutex deferredMediaFilesMutex;
 auto fileIndex = 0;
 // Translate a playback failure into a user-facing message and clear the failed source's UI state.
 static void failVideoLoad(const std::string& error, const char* fallbackText) {
@@ -2434,7 +2435,7 @@ static void changeInference(int option) {
 			"The engine will be selected after installation. Restart Rendepth to use it.";
 		const SDL_MessageBoxButtonData buttons[] = {
 			{ SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel" },
-			{ SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Download and Install" }
+			{ SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Download" }
 		};
 		const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_INFORMATION, context.window,
 			"Install GPU Runtime Pack", message.c_str(), static_cast<int>(std::size(buttons)), buttons, nullptr };
@@ -2448,7 +2449,7 @@ static void changeInference(int option) {
 		runtimePackInstall.progress.stage = RuntimePackDownloader::Stage::Checksum;
 		runtimePackInstall.progress.received = 0;
 		runtimePackInstall.progress.total = 0;
-		runtimePackInstall.thread = SDL_CreateThread([](void* data) -> int {
+		const auto installRuntimePack = [](void* data) -> int {
 			auto& state = *static_cast<RuntimePackInstallState*>(data);
 			try {
 				state.success = RuntimePackDownloader::install(
@@ -2464,7 +2465,8 @@ static void changeInference(int option) {
 			}
 			state.done.store(true, std::memory_order_release);
 			return state.success ? 0 : 1;
-		}, "RuntimePackInstall", &runtimePackInstall);
+		};
+		runtimePackInstall.thread = SDL_CreateThread(installRuntimePack, "RuntimePackInstall", &runtimePackInstall);
 		if (!runtimePackInstall.thread)
 			showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs",
 				"Could not start the GPU pack download thread.", context.window);
@@ -3991,7 +3993,10 @@ static void stopCapture() {
 	videoPlayer.close();
 	clearAudioAlbumArt();
 	context.chapterMarkers.clear();
-	deferredMediaFiles.clear();
+	{
+		std::lock_guard lock(deferredMediaFilesMutex);
+		deferredMediaFiles.clear();
+	}
 	resetRapidBrowseState();
 	stopVideoDepth();
 	screenCapture.stop();
@@ -4992,15 +4997,20 @@ static int loadImage(void* ptr) {
 // Queue a media selection for the main loop to load when current work permits it.
 static void deferMediaLoad(const std::vector<std::string>& files) {
 	if (files.empty()) return;
+	std::lock_guard lock(deferredMediaFilesMutex);
 	deferredMediaFiles = files;
 }
 
 // Apply a pending media selection after loading and conversion activity has settled.
 static void serviceDeferredMediaLoad() {
-	if (deferredMediaFiles.empty() || isConverting || doingPreload || context.loading)
-		return;
+	if (isConverting || doingPreload || context.loading) return;
+	std::vector<std::string> files;
+	{
+		std::lock_guard lock(deferredMediaFilesMutex);
+		if (deferredMediaFiles.empty()) return;
+		files.swap(deferredMediaFiles);
+	}
 	if (isPlayingSlideshow) cancelSlideshow();
-	auto files = std::move(deferredMediaFiles);
 	discTitleMenu.close();
 	Image::discMenuTexture = nullptr;
 	Image::discMenuDepthTexture = nullptr;

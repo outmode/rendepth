@@ -388,7 +388,10 @@ set(RENDEPTH_LICENSE_PRODUCT_ID "1373415" CACHE STRING "Rendepth Pro product ID"
 set(RENDEPTH_LICENSE_VARIANT_ID "0" CACHE STRING "Optional Pro variant ID (0 accepts all product variants)")
 # Current checkout is owner-supplied for Test Mode; verify live settings before release.
 set(RENDEPTH_LICENSE_PURCHASE_URL "https://shop.rendepth.com/" CACHE STRING "Rendepth Pro HTTPS checkout URL")
-set(RENDEPTH_LICENSE_SUPPORT_URL "mailto:support@outmode.com" CACHE STRING "Rendepth license support HTTPS or mailto URL")
+# Community support is an application-owned link. Drop the old cached email URL
+# so existing build profiles receive the current invite on reconfiguration.
+unset(RENDEPTH_LICENSE_SUPPORT_URL CACHE)
+set(RENDEPTH_LICENSE_SUPPORT_URL "https://discord.gg/wWGNtd8KS")
 foreach(field STORE_ID PRODUCT_ID VARIANT_ID)
     if(NOT "${RENDEPTH_LICENSE_${field}}" MATCHES "^(0|[1-9][0-9]*)$")
         message(FATAL_ERROR "RENDEPTH_LICENSE_${field} must be a non-negative integer")
@@ -400,13 +403,10 @@ foreach(field STORE_ID PRODUCT_ID VARIANT_ID)
 endforeach()
 foreach(field PURCHASE_URL SUPPORT_URL)
     set(license_url_scheme "^https://")
-    if(field STREQUAL "SUPPORT_URL")
-        set(license_url_scheme "^(https://|mailto:)")
-    endif()
     if(NOT "${RENDEPTH_LICENSE_${field}}" STREQUAL "" AND
        (NOT "${RENDEPTH_LICENSE_${field}}" MATCHES "${license_url_scheme}" OR
         "${RENDEPTH_LICENSE_${field}}" MATCHES "[\"\\\\\n\r;]"))
-        message(FATAL_ERROR "RENDEPTH_LICENSE_${field} must be a plain HTTPS URL (mailto is also allowed for support)")
+        message(FATAL_ERROR "RENDEPTH_LICENSE_${field} must be a plain HTTPS URL")
     endif()
 endforeach()
 configure_file(Source/Licensing/LicenseConfig.h.in generated/LicenseConfig.h @ONLY)
@@ -889,11 +889,22 @@ if(WIN32)
     endif()
 endif()
 include(GNUInstallDirs)
+if(WIN32)
+    set(RENDEPTH_LIBRARY_RUNTIME_DESTINATION libexec/rendepth/Binary)
+    if(MSVC)
+        # The installer should run on Windows machines without a separately
+        # installed Visual C++ Redistributable.
+        set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION libexec/rendepth/Binary)
+        include(InstallRequiredSystemLibraries)
+    endif()
+else()
+    set(RENDEPTH_LIBRARY_RUNTIME_DESTINATION libexec/rendepth/Library)
+endif()
 install(TARGETS Rendepth
         RUNTIME DESTINATION libexec/rendepth/Binary
         BUNDLE DESTINATION .)
 install(TARGETS SDL3-shared SDL3_image-shared SDL3_ttf-shared glm
-        RUNTIME DESTINATION libexec/rendepth/Library
+        RUNTIME DESTINATION ${RENDEPTH_LIBRARY_RUNTIME_DESTINATION}
         LIBRARY DESTINATION libexec/rendepth/Library
         ARCHIVE DESTINATION libexec/rendepth/Library)
 if(RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS)
@@ -910,7 +921,7 @@ if(RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS)
     endforeach()
     set_property(TARGET ${RENDEPTH_MODERN_IMAGE_TARGETS} PROPERTY PUBLIC_HEADER "")
     install(TARGETS ${RENDEPTH_MODERN_IMAGE_TARGETS}
-            RUNTIME DESTINATION libexec/rendepth/Library
+            RUNTIME DESTINATION ${RENDEPTH_LIBRARY_RUNTIME_DESTINATION}
             LIBRARY DESTINATION libexec/rendepth/Library
             ARCHIVE DESTINATION libexec/rendepth/Library)
 
@@ -919,7 +930,7 @@ if(TARGET tiff)
     # SDL_image's vendored TIFF target is not installed transitively.
     set_property(TARGET tiff PROPERTY PUBLIC_HEADER "")
     install(TARGETS tiff
-            RUNTIME DESTINATION libexec/rendepth/Library
+            RUNTIME DESTINATION ${RENDEPTH_LIBRARY_RUNTIME_DESTINATION}
             LIBRARY DESTINATION libexec/rendepth/Library
             ARCHIVE DESTINATION libexec/rendepth/Library)
 endif()
