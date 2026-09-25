@@ -148,9 +148,8 @@ def build_pack(ort_directory, library_directory, output):
             'This Fedora build requires the platform ABI versions listed in pack.json.\n'
             'It is not a validated Ubuntu-compatible build. AMD GPU hardware, the OS\n'
             'amdgpu/KFD driver, libdrm, libudev, and libnuma are required separately.\n\n'
-            'The Fedora MIOpen build has a fixed system database path. To use the\n'
-            'included database, launch with (adjust for another install location):\n'
-            'MIOPEN_SYSTEM_DB_PATH="$HOME/.Rendepth/Runtimes/rocm/share/miopen/db" rendepth\n'
+            'Rendepth uses this pack\'s MIOpen database automatically unless\n'
+            'MIOPEN_SYSTEM_DB_PATH is already set in the launch environment.\n'
             'No LD_LIBRARY_PATH override is required. rocBLAS and hipBLASLt kernel\n'
             'data are installed next to their libraries.\n\n'
             'GPU inference and clean-system portability require hardware validation.\n')

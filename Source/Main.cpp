@@ -90,7 +90,7 @@
 #include "DepthEstimator.h"
 #include "SuperResolution.h"
 #include "ModelDownloader.h"
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
 #include "RuntimePackDownloader.h"
 #endif
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
@@ -1690,7 +1690,7 @@ static std::string inferenceStartupError;
 static void refreshInferenceSettings();
 static void changeInference(int option);
 static void runtimeTools(int option);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
 struct RuntimePackInstallState {
 	RuntimePackDownloader::Progress progress;
 	std::atomic<bool> cancel{false};
@@ -2414,7 +2414,7 @@ static void changeInference(int option) {
 		committedInferenceOption = option;
 		return;
 	}
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
 	if (runtimePackInstall.thread != nullptr) {
 		menuSelection[ChoiceInference.label] = committedInferenceOption;
 		showAppSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "GPU Runtime Packs",
@@ -2423,8 +2423,12 @@ static void changeInference(int option) {
 	}
 	if (option != 0 && !InferenceRuntime::installed(inferenceProviderForOption(option))) {
 		menuSelection[ChoiceInference.label] = committedInferenceOption;
-		const char* label = option == 1 ? "Nvidia CUDA" : "DirectML";
+		const char* label = option == 1 ? "Nvidia CUDA" : secondaryInferenceButtonLabel;
+#ifdef _WIN32
 		const char* size = option == 1 ? "2.39 GiB" : "15 MiB";
+#else
+		const char* size = option == 1 ? "2.3 GiB" : "1.86 GiB";
+#endif
 		const std::string message = std::string(label) + " needs a GPU runtime pack (" + size +
 			" download). Download and install it from rendepth.com now?\n\n"
 			"The engine will be selected after installation. Restart Rendepth to use it.";
@@ -2448,7 +2452,11 @@ static void changeInference(int option) {
 			auto& state = *static_cast<RuntimePackInstallState*>(data);
 			try {
 				state.success = RuntimePackDownloader::install(
+#ifdef _WIN32
 					state.option == 1 ? RuntimePackDownloader::Pack::CUDA : RuntimePackDownloader::Pack::DirectML,
+#else
+					state.option == 1 ? RuntimePackDownloader::Pack::CUDA : RuntimePackDownloader::Pack::ROCM,
+#endif
 					state.root, state.cancel, state.progress, state.error);
 			} catch (const std::exception& exception) {
 				state.success = false;
@@ -2482,7 +2490,7 @@ static void changeInference(int option) {
 static void runtimeTools(int option) {
 	menuSelection[ChoiceRuntimeTools.label] = -1;
 	if (firstInit) return;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
 	if (runtimePackInstall.thread != nullptr) {
 		const auto stage = runtimePackInstall.progress.stage.load();
 		std::string message = stage == RuntimePackDownloader::Stage::Checksum ?
@@ -2535,11 +2543,7 @@ static void runtimeTools(int option) {
 	message += "\n" + std::string(secondaryInferenceLabel) + " pack: " +
 		std::string((menuSelection[ChoiceRuntimePacks.label] & 2) ? "Installed" : "Not installed");
 	message += "\n\nPack folder: " + directory.string();
-#ifdef _WIN32
 	message += "\n\nChoosing a missing engine downloads and installs its pack from rendepth.com.";
-#else
-	message += "\n\nGPU packs are installed separately. In-app downloads are not available yet.";
-#endif
 	message += "\nAn installed pack still needs a compatible GPU and driver."
 		"\nRestart Rendepth after installing a pack or changing the inference preference.";
 	if (menuSelection[ChoiceInference.label] != startupInferenceOption)
@@ -2558,7 +2562,7 @@ static void runtimeTools(int option) {
 		changeInference(selected);
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
 static void pollRuntimePackInstall() {
 	if (!runtimePackInstall.thread) return;
 	if (!runtimePackInstall.done.load(std::memory_order_acquire)) {
@@ -5058,7 +5062,7 @@ static std::string openBrowserImage(const BrowserBridge::Request& request) {
 
 // Service asynchronous work, advance playback and UI animations, and render the next application frame.
 SDL_AppResult SDL_AppIterate(void* appstate) {
-#if defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME) && defined(_WIN32)
+#if defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME) && (defined(_WIN32) || defined(__linux__))
 	pollRuntimePackInstall();
 #endif
 	MediaOpenDialog::poll();
@@ -7121,7 +7125,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
 // Stop workers and services, save preferences, and release session media and graphics resources.
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
-#if defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME) && defined(_WIN32)
+#if defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME) && (defined(_WIN32) || defined(__linux__))
 	if (runtimePackInstall.thread) {
 		runtimePackInstall.cancel = true;
 		SDL_WaitThread(runtimePackInstall.thread, nullptr);

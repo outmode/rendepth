@@ -72,8 +72,8 @@ with tempfile.TemporaryDirectory(prefix="rendepth-runtime-test-") as temporary:
         packs.mkdir()
         (packs / backend).symlink_to(pack.resolve(strict=True), target_is_directory=True)
         runtime_environment = os.environ.copy()
-        if backend == "rocm" and (pack / "share/miopen/db").is_dir():
-            runtime_environment["MIOPEN_SYSTEM_DB_PATH"] = str((pack / "share/miopen/db").resolve())
+        if backend == "rocm":
+            runtime_environment.pop("MIOPEN_SYSTEM_DB_PATH", None)
         run(f"{backend.upper()} depth and SR inference", backend, backend,
             ("ROCm runtime" if backend == "rocm" else "CUDA runtime"), "installed", True)
 

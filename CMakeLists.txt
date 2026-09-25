@@ -374,6 +374,11 @@ if(WIN32)
     target_link_libraries(RuntimePackDownloaderSmoke PRIVATE ${RENDEPTH_PACK_ZLIB} winhttp bcrypt)
 else()
     target_link_libraries(Rendepth PUBLIC CURL::libcurl)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND RENDEPTH_ENABLE_ONNX_RUNTIME)
+        find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+        target_sources(Rendepth PRIVATE Source/RuntimePackDownloaderLinux.cpp)
+        target_link_libraries(Rendepth PRIVATE OpenSSL::Crypto)
+    endif()
 endif()
 
 # Public Lemon Squeezy identifiers only; never put seller API credentials here.
@@ -981,14 +986,14 @@ set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 # runtime setup. These are the Debian-family libraries used by the Linux
 # executable itself; alternatives cover the current t64 transitions.
 set(CPACK_DEBIAN_PACKAGE_DEPENDS
-        "libc6, libstdc++6, libgcc-s1, libbluray2 | libbluray3, libdvdread8, libcurl4 | libcurl4t64, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-nice")
+        "libc6, libstdc++6, libgcc-s1, libbluray2 | libbluray3, libdvdread8, libcurl4 | libcurl4t64, libssl3 | libssl3t64, tar, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-nice")
 # Application-level license; component terms are retained in THIRD_PARTY_LICENSING.
 set(CPACK_RPM_PACKAGE_LICENSE "GPL-3.0-only")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
 # Increment the RPM release for rebuilds of the same application version so
 # package managers do not treat a freshly built artifact as the old package.
-set(CPACK_RPM_PACKAGE_RELEASE 18)
-set(RENDEPTH_RPM_REQUIRES gstreamer1-plugins-good gstreamer1-plugins-bad-free libnice-gstreamer1)
+set(CPACK_RPM_PACKAGE_RELEASE 22)
+set(RENDEPTH_RPM_REQUIRES gstreamer1-plugins-good gstreamer1-plugins-bad-free libnice-gstreamer1 tar)
 if(RENDEPTH_ENABLE_FFMPEG AND DAV1D_FOUND)
     list(APPEND RENDEPTH_RPM_REQUIRES "libdav1d >= 0.5.0")
 endif()

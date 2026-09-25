@@ -36,9 +36,12 @@ this Linux change.
 
 ## GPU pack contract (local installation)
 
-Selecting AMD ROCm in Settings does not install a runtime pack or import the
-previous system installation. If the log reports `GPU runtime pack is missing
-or incomplete`, the required files have not been placed in the directory below.
+Selecting a missing GPU engine in Settings downloads and installs its runtime
+pack from `https://rendepth.com/packs/`. Rendepth checks the published sidecar
+against a checksum pinned in the application, verifies the archive, and stages
+extraction before activating the pack. An existing pack is never overwritten.
+The Fedora 44 ROCm pack is hosted; the CUDA pack must be uploaded with its
+adjacent `.sha256` file before in-app CUDA installation can succeed.
 
 For development on a machine that already has ROCm-enabled ORT installed:
 
@@ -106,11 +109,9 @@ python3 Tools/test_linux_inference.py Binary/InferenceRuntimeTest \
 For local installation, close Rendepth and use
 `--output "$HOME/.Rendepth/Runtimes/cuda"` when building the pack. Select
 **Nvidia CUDA** through Settings → GPU Support → Choose AI Engine, then restart.
-The planned public download location is `https://rendepth.com/packs/`.
-Upload the final archives and their adjacent `.sha256` files there, preserving
-their basenames. Uploading and availability verification are still pending;
-the location is not yet wired into the application. In-app downloads remain
-a separate step.
+The in-app downloader uses the archive basename and checksum documented below.
+Upload the final CUDA archive and its adjacent `.sha256` file to
+`https://rendepth.com/packs/` with those exact basenames.
 
 ### Archive naming and checksum format
 
@@ -202,14 +203,9 @@ format as CUDA. Preserve relative symlinks. The ROCm version label represents th
 platform symbol versions, external dependencies, and file hashes are in `pack.json`.
 
 Close Rendepth, then extract the top-level `rocm/` directory into
-`~/.Rendepth/Runtimes/` (do not overwrite a running or existing pack). This Fedora
-MIOpen build uses an absolute system database path; point it at the included data:
-
-```sh
-MIOPEN_SYSTEM_DB_PATH="$HOME/.Rendepth/Runtimes/rocm/share/miopen/db" rendepth
-```
-
-Select **AMD ROCm** under GPU Support → Choose AI Engine and restart with that environment.
+`~/.Rendepth/Runtimes/` (do not overwrite a running or existing pack). Rendepth
+points MIOpen at the pack's included database unless `MIOPEN_SYSTEM_DB_PATH` is
+already set. Select **AMD ROCm** under GPU Support → Choose AI Engine and restart.
 No `LD_LIBRARY_PATH` override is needed. The OS supplies the AMD GPU driver/KFD,
 libdrm, libnuma, and standard C/C++ runtimes. This artifact requires **glibc 2.43**,
 **GLIBCXX_3.4.32**, and **CXXABI_1.3.15**. It is a Fedora 44 build, not a validated
@@ -226,7 +222,7 @@ python3 Tools/test_linux_inference.py Binary/InferenceRuntimeTest \
   --rocm-pack Distribution/rocm
 ```
 
-The test sets the included MIOpen database path and fails on CPU fallback.
+The app sets the included MIOpen database path, and the test fails on CPU fallback.
 
 ### Fedora ROCm pack validation (2026-09-08)
 
@@ -246,8 +242,8 @@ SHA-256: `e940a6c8c940e5bc3d337f99c5bbdcc2996ba021e4f42e508713595f39c8204a`.
 Its adjacent `.sha256` file records the checksum of the compressed archive.
 Clean-system portability and other GPU/driver combinations remain untested;
 the successful host test does not prove that every MIOpen JIT/compiler path is
-independent of the host's installed SDK. No pack was installed into Settings
-and no download endpoint was added.
+independent of the host's installed SDK. The Fedora archive and checksum are
+available at the public pack endpoint for in-app installation.
 
 ### Ubuntu CUDA pack validation (2026-09-08)
 
@@ -273,8 +269,8 @@ CUDA depth (`DA2-SMALL-280.onnx`) and SR (`RFDN_x4.onnx`) inference on this
 Ubuntu NVIDIA machine with driver 580.178.04. The test executable has no ORT or
 CUDA startup dependency. GPU access required running outside the agent sandbox.
 This validates this host; clean-system portability and the supported driver/OS
-matrix still need testing before release. No pack was installed into user
-Settings, and no download endpoint was added.
+matrix still need testing before release. The CUDA archive and sidecar still
+need to be uploaded to the public pack endpoint.
 
 The current loader expects these user-owned directories:
 
@@ -303,12 +299,12 @@ The loader checks the ORT C API version before using any C++ wrappers. For
 example, ORT 1.22 headers require API 22; newer compatible cores can provide
 that API, but an older core cannot satisfy newer headers. Matching the C API
 does not establish compatibility between different core/provider binaries.
-Release pack versions and OS/GPU/driver support matrices still need to be pinned
-and validated. No download URLs, manifests, or remote installers ship yet.
+Release OS/GPU/driver support matrices still need validation. The Linux app pins
+the two archive filenames and SHA-256 values used by its downloader.
 
-Install complete packs while the application is closed. Do not overwrite a
-loaded core or provider. A future installer must verify downloads, stage them,
-and activate them atomically with version/rollback metadata.
+The in-app installer downloads and stages a pack while Rendepth is open and
+requires a restart to load it. For manual installation, close Rendepth first.
+Do not overwrite a loaded core or provider.
 
 ## Settings and fallback
 

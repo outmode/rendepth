@@ -63,6 +63,18 @@ bool load(Provider backend, std::string& error) {
         error = "GPU runtime pack is missing or incomplete: " + path.parent_path().string();
         return false;
     }
+    if (backend == Provider::ROCM) {
+        const char* database = std::getenv("MIOPEN_SYSTEM_DB_PATH");
+        if (!database || !*database) {
+            const auto bundledDatabase = path.parent_path().parent_path() / "share/miopen/db";
+            std::error_code ec;
+            if (std::filesystem::is_directory(bundledDatabase, ec) &&
+                setenv("MIOPEN_SYSTEM_DB_PATH", bundledDatabase.c_str(), 0) != 0) {
+                error = "Could not configure the bundled MIOpen database.";
+                return false;
+            }
+        }
+    }
     // An absolute path keeps the CPU package independent of any ORT installed
     // on the host. Pack libraries must carry their own $ORIGIN dependency paths.
     void* handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
