@@ -174,6 +174,8 @@ struct VideoPlayer::Impl {
 #ifdef RENDEPTH_ENABLE_FFMPEG
 	AVIOContext* avioContext = nullptr;
 	std::unique_ptr<DiscReadAhead> discReadAhead;
+	// Limit demuxer scanning after a native Blu-ray seek until video resumes.
+	std::atomic<int64_t> bluraySeekReadRemaining{-1};
 	std::shared_ptr<std::mutex> discReadMutex;
 	AVBufferRef* hwDeviceContext = nullptr;
 	HardwareDecodeState hardwareDecodeState{};
@@ -226,6 +228,10 @@ struct VideoPlayer::Impl {
 	SwsContext* inferenceScaler = nullptr;
 	int streamIndex = -1;
 	double streamStart = 0.0;
+	// A new Blu-ray clip may restart transport-stream timestamps even though
+	// libbluray seeks on the continuous playlist timeline.
+	double blurayTimestampOffset = 0.0;
+	std::optional<double> bluraySeekTimestampTarget;
 	double fallbackFrameDuration = 1.0 / 30.0;
 	std::shared_ptr<AudioState> audioState = std::make_shared<AudioState>();
 	AVCodecContext* audioCodec = nullptr;
@@ -697,6 +703,7 @@ struct VideoPlayer::Impl {
 		const auto frameGeneration = playbackGeneration.load();
 		if (seekFloor.has_value() && position + fallbackFrameDuration < *seekFloor) return true;
 		seekFloor.reset();
+		bluraySeekReadRemaining = -1;
 		const bool pausedSeekFrame = seekPreviewPending;
 		const bool fastPreviewFrame = fastPreviewPending;
 		if (pausedSeekFrame) {
@@ -1151,19 +1158,46 @@ struct VideoPlayer::Impl {
 		}
 		const int64_t target = static_cast<int64_t>(
 			(request.seconds + streamStart) / av_q2d(stream->time_base));
+		double seekSeconds = request.seconds;
 		int result = 0;
 		if (blurayReader || dvdReader) {
+			SDL_Log("Video: disc seek to %.2f seconds started.", request.seconds);
+			// The MVC dependent-view reader shares the optical drive with the
+			// base-view read-ahead worker. Stop it before waiting for that worker
+			// or seeking, so it cannot keep issuing reads at the old position.
+			if (mvcDecoder) mvcDecoder->flush();
 			if (discReadAhead) discReadAhead->reset();
 			// Disc readers seek to access units. FFmpeg's arbitrary byte search
 			// can repeatedly land on the same packet and never make progress.
-			const bool sought = blurayReader ? blurayReader->seekTime(request.seconds) : dvdReader->seekTime(request.seconds);
+			bool sought = blurayReader ? blurayReader->seekTime(seekSeconds) : dvdReader->seekTime(seekSeconds);
 			if (sought) {
+				int64_t discPosition = blurayReader ? blurayReader->bytePosition() : dvdReader->bytePosition();
+				const int64_t discSize = blurayReader
+					? blurayReader->seek(0, AVSEEK_SIZE) : avio_size(avioContext);
+				if (blurayReader && discSize > 0 && discPosition >= discSize && seekSeconds > 0.0) {
+					// The final access unit can begin at EOF. Back up enough to
+					// decode a frame instead of immediately looping to the start.
+					seekSeconds = std::max(0.0, seekSeconds - 5.0);
+					sought = blurayReader->seekTime(seekSeconds);
+					if (sought) discPosition = blurayReader->bytePosition();
+				}
+				SDL_Log("Video: disc source repositioned to %.2f seconds (byte %lld of %lld, title %.2f seconds).",
+					seekSeconds, static_cast<long long>(discPosition),
+					static_cast<long long>(discSize), totalDuration.load());
+				if (!sought || discPosition < 0 || (discSize > 0 && discPosition >= discSize)) {
+					setRuntimeError("Disc seek did not reach playable data.");
+					return false;
+				}
+				if (blurayReader && !mvcDecoder) {
+					blurayTimestampOffset = 0.0;
+					bluraySeekTimestampTarget = seekSeconds;
+				}
 				if (dvdReader) {
-					dvdSeekTarget = request.seconds;
+					dvdSeekTarget = seekSeconds;
 					dvdTimestampOffset = 0.0;
 				}
 				avio_flush(avioContext);
-				avioContext->pos = blurayReader ? blurayReader->bytePosition() : dvdReader->bytePosition();
+				avioContext->pos = discPosition;
 				if (discReadAhead) discReadAhead->setPosition(avioContext->pos);
 				avioContext->eof_reached = 0;
 				avioContext->error = 0;
@@ -1182,7 +1216,6 @@ struct VideoPlayer::Impl {
 			return false;
 		}
 		if (codec != nullptr) avcodec_flush_buffers(codec);
-		if (mvcDecoder) mvcDecoder->flush();
 		if (audioCodec != nullptr) avcodec_flush_buffers(audioCodec);
 		if (subtitleCodec != nullptr) avcodec_flush_buffers(subtitleCodec);
 		if (audioResampler != nullptr) {
@@ -1216,14 +1249,15 @@ struct VideoPlayer::Impl {
 			pendingFrames.clear();
 		}
 		stateChanged.notify_all();
-		currentPosition = request.seconds;
-		presentedPosition = request.seconds;
-		audioQueuePosition = request.seconds;
+		currentPosition = seekSeconds;
+		presentedPosition = seekSeconds;
+		audioQueuePosition = seekSeconds;
 		audioQueuePositionValid = false;
 		atEnd = false;
 		audioState->buffering = true;
-		seekFloor = request.fastPreview ? std::nullopt : std::optional(request.seconds);
-		audioSeekFloor = audioCodec != nullptr ? std::optional(request.seconds) : std::nullopt;
+		seekFloor = request.fastPreview ? std::nullopt : std::optional(seekSeconds);
+		audioSeekFloor = audioCodec != nullptr ? std::optional(seekSeconds) : std::nullopt;
+		bluraySeekReadRemaining = blurayReader && !mvcDecoder ? 64LL * 1024 * 1024 : -1;
 		audioSeekPending = false;
 		return true;
 	}
@@ -1251,6 +1285,7 @@ struct VideoPlayer::Impl {
 		double mediaOrigin = 0.0;
 		std::optional<double> seekFloor;
 		std::optional<double> audioSeekFloor;
+		bool discSeekRecoveryAttempted = false;
 		bool seekPreviewPending = false;
 		bool fastPreviewPending = false;
 		bool discardAudio = false;
@@ -1293,6 +1328,7 @@ struct VideoPlayer::Impl {
 				}
 			}
 			if (seek.has_value()) {
+				discSeekRecoveryAttempted = false;
 				if (!applySeek(*seek, seekFloor, audioSeekFloor)) break;
 				// Fast previews are meaningful for video frames only. Audio-only
 				// seeks must still queue samples as soon as playback resumes, or the
@@ -1308,7 +1344,24 @@ struct VideoPlayer::Impl {
 			if (!isPlaying && !seekPreviewPending) continue;
 
 			const int readResult = av_read_frame(format, packet);
+			if (readResult < 0 && blurayReader && bluraySeekReadRemaining == 0 && !interrupted()) {
+				setRuntimeError("Blu-ray seek could not find a decodable frame after scanning 64 MiB.");
+				break;
+			}
 			if (readResult == AVERROR_EOF) {
+				if (blurayReader && !audioOnly && seekFloor.has_value()) {
+					if (!discSeekRecoveryAttempted && *seekFloor > 0.0) {
+						discSeekRecoveryAttempted = true;
+						const double retryTime = std::max(0.0, *seekFloor - 5.0);
+						SDL_Log("Video: disc seek reached EOF before a frame; retrying at %.2f seconds.", retryTime);
+						if (!applySeek({retryTime, false}, seekFloor, audioSeekFloor)) break;
+						clockValid = false;
+						continue;
+					}
+					setRuntimeError("Disc seek reached the end before a frame was decoded at " +
+						std::to_string(*seekFloor) + " seconds.");
+					break;
+				}
 				if (audioOnly) {
 					const int flushResult = audioCodec != nullptr
 						? avcodec_send_packet(audioCodec, nullptr) : AVERROR(EIO);
@@ -1382,6 +1435,10 @@ struct VideoPlayer::Impl {
 				continue;
 			}
 			if (readResult < 0) {
+				if (interrupted()) {
+					av_packet_unref(packet);
+					continue;
+				}
 				setRuntimeError("FFmpeg could not read the video: " + ffmpegError(readResult));
 				break;
 			}
@@ -1414,6 +1471,28 @@ struct VideoPlayer::Impl {
                 if (packet->pts != AV_NOPTS_VALUE) packet->pts += offset;
                 if (packet->dts != AV_NOPTS_VALUE) packet->dts += offset;
             }
+			if (blurayReader && !mvcDecoder) {
+				if (bluraySeekTimestampTarget && packet->stream_index == streamIndex) {
+					const int64_t timestamp = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
+					if (timestamp != AV_NOPTS_VALUE) {
+						const double packetPosition = timestamp *
+							av_q2d(format->streams[packet->stream_index]->time_base) - streamStart;
+						if (std::abs(packetPosition - *bluraySeekTimestampTarget) > 30.0) {
+							blurayTimestampOffset = *bluraySeekTimestampTarget - packetPosition;
+							SDL_Log("Video: Blu-ray transport timestamp reset; adjusted by %.2f seconds.",
+								blurayTimestampOffset);
+							}
+						bluraySeekTimestampTarget.reset();
+					}
+				}
+				if (blurayTimestampOffset != 0.0) {
+					const auto timeBase = format->streams[packet->stream_index]->time_base;
+					const int64_t offset = static_cast<int64_t>(std::llround(
+						blurayTimestampOffset / av_q2d(timeBase)));
+					if (packet->pts != AV_NOPTS_VALUE) packet->pts += offset;
+					if (packet->dts != AV_NOPTS_VALUE) packet->dts += offset;
+				}
+			}
 
 			if (!audioOnly && packet->stream_index == streamIndex) {
 				if (mvcDecoder) {
@@ -1506,6 +1585,7 @@ VideoPlayer::~VideoPlayer() { close(); }
 // Open a file or disc source, select its streams and decoding path, and start the decode worker.
 bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, int discTitle) {
 	close();
+	impl->stopRequested = false;
 #ifndef RENDEPTH_ENABLE_FFMPEG
 	error = "FFmpeg video playback was not enabled in this build.";
 	(void)path;
@@ -1542,9 +1622,11 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 					close(); return false;
 				}
 			}
-			// MVC reads two interleaved files on the same optical drive. Read
-            // ahead in larger chunks instead of alternating tiny reads.
-            impl->avioContext = impl->blurayReader->createAVIOContext(impl->mvcDecoder ? 2 * 1024 * 1024 : 32768);
+			// Bound each MVC refill so a seek does not wait behind a multi-megabyte
+			// optical read, while still batching the two interleaved views.
+			constexpr int mvcReadBlockSize = 256 * 1024;
+			impl->avioContext = impl->blurayReader->createAVIOContext(
+				impl->mvcDecoder ? mvcReadBlockSize : 32768);
 			if (impl->mvcDecoder && impl->avioContext) {
 				auto* reader = impl->blurayReader.get();
 				impl->discReadAhead = std::make_unique<DiscReadAhead>(
@@ -1553,13 +1635,29 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 						return BlurayReader::readPacket(reader, data, size);
 					},
 					[reader](int64_t offset, int whence) { return BlurayReader::seekPacket(reader, offset, whence); },
-					2 * 1024 * 1024, reader->bytePosition());
+					mvcReadBlockSize, reader->bytePosition());
 				impl->avioContext->opaque = impl->discReadAhead.get();
 				impl->avioContext->read_packet = [](void* p, uint8_t* data, int size) {
 					return static_cast<DiscReadAhead*>(p)->read(data, size);
 				};
 				impl->avioContext->seek = [](void* p, int64_t offset, int whence) {
 					return static_cast<DiscReadAhead*>(p)->seek(offset, whence);
+				};
+			} else if (impl->avioContext) {
+				impl->avioContext->opaque = impl.get();
+				impl->avioContext->read_packet = [](void* p, uint8_t* data, int size) {
+					auto* player = static_cast<Impl*>(p);
+					if (player->stopRequested || player->bluraySeekReadRemaining == 0)
+						return AVERROR_EXIT;
+					const int count = BlurayReader::readPacket(player->blurayReader.get(), data, size);
+					if (count > 0 && player->bluraySeekReadRemaining > 0) {
+						const int64_t remaining = player->bluraySeekReadRemaining.fetch_sub(count);
+						if (remaining <= count) player->bluraySeekReadRemaining = 0;
+					}
+					return count;
+				};
+				impl->avioContext->seek = [](void* p, int64_t offset, int whence) {
+					return BlurayReader::seekPacket(static_cast<Impl*>(p)->blurayReader.get(), offset, whence);
 				};
 			}
 		} else {
@@ -1577,6 +1675,10 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 		}
 		impl->format->pb = impl->avioContext;
 		impl->format->flags |= AVFMT_FLAG_CUSTOM_IO;
+		impl->format->interrupt_callback = {[](void* opaque) {
+			auto* player = static_cast<Impl*>(opaque);
+			return player->interrupted() ? 1 : 0;
+		}, impl.get()};
 		impl->format->skip_estimate_duration_from_pts = 1;
 		// Opening initializes the demuxer's private state and reads its header.
 		result = avformat_open_input(&impl->format, nullptr, inputFormat, nullptr);
@@ -1750,8 +1852,8 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 		impl->totalDuration = static_cast<double>(impl->format->duration) / AV_TIME_BASE;
 	else if (impl->stream->duration != AV_NOPTS_VALUE && impl->stream->duration > 0)
 		impl->totalDuration = impl->stream->duration * av_q2d(impl->stream->time_base);
-	if (impl->blurayReader != nullptr)
-		impl->totalDuration = std::max(impl->totalDuration.load(), impl->blurayReader->duration());
+	if (impl->blurayReader != nullptr && impl->blurayReader->duration() > 0.0)
+		impl->totalDuration = impl->blurayReader->duration();
 	if (impl->dvdReader != nullptr)
 		impl->totalDuration = std::max(impl->totalDuration.load(), impl->dvdReader->duration());
 	// The UI must not acquire a disc I/O mutex merely to display chapter labels.
@@ -1897,6 +1999,9 @@ void VideoPlayer::close() {
 		impl->subtitleCues.clear();
 	}
 	impl->streamStart = 0.0;
+	impl->bluraySeekReadRemaining = -1;
+	impl->blurayTimestampOffset = 0.0;
+	impl->bluraySeekTimestampTarget.reset();
 	impl->fallbackFrameDuration = 1.0 / 30.0;
 	impl->hardwareDecodeState.failed = false;
 #endif
@@ -2225,6 +2330,8 @@ void VideoPlayer::seek(double seconds, bool fastPreview) {
 	seconds = std::clamp(seconds, 0.0,
 		impl->totalDuration > 0.0 ? impl->totalDuration.load() : seconds);
 	#ifdef RENDEPTH_ENABLE_FFMPEG
+	if (impl->blurayReader && impl->totalDuration > 1.0)
+		seconds = std::min(seconds, impl->totalDuration.load() - 1.0);
 	const bool hasAudioPlayback = impl->audioOnly || !impl->audioStreamIndices.empty();
 	#endif
 	{

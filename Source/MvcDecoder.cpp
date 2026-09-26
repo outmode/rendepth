@@ -226,7 +226,9 @@ struct MvcDecoder::Impl {
         fileSize = file->tell(file);
         if (fileSize <= 0) { error = "MVC dependent-view stream is empty."; return false; }
         position = 0;
-        constexpr int bufferSize = 2 * 1024 * 1024;
+		// Release the shared optical-drive lock between bounded refills so
+		// base-view seeks and cancellation are not held behind a long read.
+		constexpr int bufferSize = 256 * 1024;
         auto* buffer = static_cast<uint8_t*>(av_malloc(bufferSize));
         if (!buffer) { error = "Could not allocate MVC input buffer."; return false; }
         io = avio_alloc_context(buffer, bufferSize, 0, this, read, nullptr, seek);
