@@ -3758,13 +3758,11 @@ static void refreshDisplay3D(StereoFormat type) {
 			setStereoMode(type == Color_Only ? Native : Mono);
 			return;
 		}
-		const bool isLenticular2View = (Image::nativeDisplayConfig.viewCount == 2);
 		const bool supportedSource = type == Color_Plus_Depth ||
-			type == Light_Field_LKG || (isLenticular2View && type != Color_Only);
+			type == Light_Field_LKG || isNativeStereoSource(type);
 		Image::setNativeOutputActive(&context, true);
 		if (!display3D || !supportedSource) {
-			// Native stereo and other tagged sources are intentionally shown as
-			// mono on the light-field output, but remain in the user's 3D state
+			// Keep the user's 3D state when a source cannot provide stereo views,
 			// so loading another compatible source does not reset the mode.
 			if (!supportedSource && type == Color_Only) setDisplay3D(false);
 			setStereoMode(type == Color_Only ? Native : Mono);
@@ -7067,6 +7065,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		if (event->button.button == SDL_BUTTON_LEFT) {
 			finishSliderDrag();
 			auto timeNow = getTimeNow();
+			// A touchpad may not send motion after release. Restore hover at the
+			// release position so a slider does not fade while still under the pointer.
+			context.mouse = mousePositionForUI(event->button.x, event->button.y);
+			mouseLastActive = timeNow;
+			checkMouseState();
 			if (leftClickConsumedByUI) {
 				lastClick = 0.0;
 				leftClickConsumedByUI = false;
@@ -7115,6 +7118,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			if (currentSlider->callback) currentSlider->callback();
 		} else if (currentSlider != nullptr) {
 			finishSliderDrag();
+			checkMouseState();
 		}
 	} else if (event->type == SDL_EVENT_MOUSE_WHEEL) {
 		if (context.displayMenu) {

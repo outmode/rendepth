@@ -68,6 +68,13 @@ enum StereoFormat {
 	Unknown_Format
 };
 
+constexpr bool isNativeStereoSource(StereoFormat type) {
+	return type == Color_Anaglyph || type == Side_By_Side_Full ||
+		type == Side_By_Side_Swap || type == Side_By_Side_Half ||
+		type == Stereo_Free_View_Grid || type == Stereo_Free_View_LRL ||
+		type == Top_And_Bottom_Full || type == Top_And_Bottom_Half;
+}
+
 enum EyesFormat {
 	Left_Right,
 	Right_Left

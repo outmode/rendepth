@@ -19,6 +19,8 @@ one CubeVi C1 and one Looking Glass (including LKG Go). Each output uses its own
 model's calibration and shares the loaded image/depth source. Additional displays
 of the same type are skipped because calibration is shared within each model.
 Connecting or disconnecting a display refreshes the outputs automatically.
+Native stereo sources use two views on each supported lightfield display;
+RGB-D images and quilts keep their multiview paths.
 
 `RENDEPTH_NATIVE_DISPLAY` still restricts selection to matching display names when set.
 

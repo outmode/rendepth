@@ -36,6 +36,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <limits>
+#include <string_view>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -315,6 +316,15 @@ void updateVideoSolidColor() {
 		}
 		loaded.calibrated = true;
 		if (loaded.screenSize == glm::ivec2(1440, 2560) && loaded.viewCount == 2) {
+			loaded.quiltGrid = {11.0f, 6.0f};
+			loaded.viewCount = 66;
+		}
+		// The LKG-J 16-inch landscape calibration omits a view count. Use the
+		// multiview layout already used by the Go for RGB-D light field output.
+		if (const auto serial = document.FindMember("serial");
+			serial != document.MemberEnd() && serial->value.IsString() &&
+			std::string_view(serial->value.GetString()).starts_with("LKG-J") &&
+			loaded.screenSize == glm::ivec2(3840, 2160) && loaded.viewCount == 2) {
 			loaded.quiltGrid = {11.0f, 6.0f};
 			loaded.viewCount = 66;
 		}
@@ -3513,7 +3523,10 @@ int Image::draw(Context* context) {
 						imageDataFrag.windowSize = windowSize;
 						imageDataFrag.imageSize = context->imageSize;
 						imageDataFrag.gridSize = context->gridSize;
-						imageDataFrag.mode = context->mode;
+						// The native output uses both eyes, while this window previews one
+						// eye at the aspect ratio stored in context->imageSize.
+						imageDataFrag.mode = context->mode == Lenticular &&
+							isNativeStereoSource(context->imageType) ? Mono : context->mode;
 						imageDataFrag.type = context->imageType;
 						imageDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;
 						imageDataFrag.swapLeftRight = context->swapLeftRight;
@@ -4109,15 +4122,30 @@ void Image::updateInterlacerUniforms(Context* context, int width, int height, Na
 		(int)(config.quiltGrid.x * config.quiltGrid.y));
 	interlacerDataFrag.gridColumns = (int)interlacerDataFrag.quiltSize.x;
 	interlacerDataFrag.gridRows = (int)interlacerDataFrag.quiltSize.y;
+	// Stereo sources contain two actual eye images, so use two views on every
+	// native display regardless of its RGB-D or quilt view count.
+	const bool nativeStereoSource = isNativeStereoSource(context->imageType);
+	if (nativeStereoSource) {
+		interlacerDataFrag.quiltSize = {2.0f, 1.0f};
+		interlacerDataFrag.tileSize = {0.5f, 1.0f};
+		interlacerDataFrag.viewCount = 2;
+		interlacerDataFrag.gridColumns = 2;
+		interlacerDataFrag.gridRows = 1;
+	}
 	interlacerDataFrag.output2D = (!config.calibrated || context->mode != Lenticular || !context->display3D) ? 1 : 0;
-	const bool isLenticular2View = (config.viewCount == 2);
+	const bool isLenticular2View = config.viewCount == 2 || nativeStereoSource;
 	if (isLenticular2View) {
 		interlacerDataFrag.sourceFlat = (context->imageType == Color_Only) ? 1 : 0;
 	} else {
 		interlacerDataFrag.sourceFlat = (context->imageType != Color_Plus_Depth &&
 			context->imageType != Light_Field_LKG) ? 1 : 0;
 	}
-	interlacerDataFrag.invertView = config.invertView ? 1 : 0;
+	// invView orders supplied views. RGB-D views are generated from depth in
+	// screen-phase order, so reversing their indices flips the parallax.
+	const bool generatedLightField = !config.cubeViC1 && config.viewCount > 2 &&
+		context->imageType == Color_Plus_Depth;
+	interlacerDataFrag.invertView =
+		generatedLightField ? 0 : (config.invertView ? 1 : 0);
 	interlacerDataFrag.flipImageX = config.flipImageX ? 1 : 0;
 	interlacerDataFrag.flipImageY = config.flipImageY ? 1 : 0;
 	interlacerDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;
