@@ -27,6 +27,9 @@
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_hints.h>
 #include <SDL3_image/SDL_image.h>
+#if RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
+#include <jxl/encode.h>
+#endif
 #define QOI_NO_STDIO
 #define QOI_IMPLEMENTATION
 #define QOI_MALLOC SDL_malloc
@@ -352,6 +355,8 @@ std::string upscaleResolution = "1920";
 std::string depthSize = "540";
 StereoFormat exportFormat = Color_Anaglyph;
 std::string exportTag = "anaglyph";
+enum class SaveFormat { JPG, JXL, AVIF };
+static SaveFormat saveFormat = SaveFormat::JPG;
 EyesFormat eyesFormat = Left_Right;
 SortOrder sortOrder = Alpha_Ascending;
 
@@ -1655,6 +1660,15 @@ Choice ChoiceEyes {
 	{ "Left / Right", "Right / Left" },
 };
 
+Choice ChoiceSaveFormat {
+	"Save Format",
+#if RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
+	{ "JPG", "JXL", "AVIF" },
+#else
+	{ "JPG" },
+#endif
+};
+
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 #ifdef _WIN32
 static constexpr auto secondaryInferenceProvider = DepthEstimator::Provider::DirectML;
@@ -1728,7 +1742,7 @@ Choice ChoiceCredit {
 };
 
 static std::vector menuChoices = { ChoiceStereo, ChoiceExport, ChoiceModel, ChoiceResolution,
-	ChoiceBackground, ChoiceSorting, ChoiceSlideshow,ChoiceEyes, ChoiceTags
+	ChoiceBackground, ChoiceSorting, ChoiceSlideshow, ChoiceEyes, ChoiceSaveFormat, ChoiceTags
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	, ChoiceInference, ChoiceRuntimePacks, ChoiceRuntimeTools
 #endif
@@ -1746,6 +1760,7 @@ static std::unordered_map<std::string, int> menuSelection = {
 #endif
 	{ ChoiceStereo.label, 10 }, // Disabled
 	{ ChoiceExport.label, 0 },
+	{ ChoiceSaveFormat.label, 0 },
 	{ ChoiceModel.label, 0 },
 	{ ChoiceResolution.label, 0 },
 	{ ChoiceBackground.label, 0 },
@@ -1766,6 +1781,7 @@ static std::unordered_map<std::string, int> menuRollover = {
 #endif
 	{ ChoiceStereo.label, -1 },
 	{ ChoiceExport.label, -1 },
+	{ ChoiceSaveFormat.label, -1 },
 	{ ChoiceModel.label, -1 },
 	{ ChoiceResolution.label, -1 },
 	{ ChoiceBackground.label, -1 },
@@ -1864,6 +1880,10 @@ static void changeExport(int option) {
 	exportFormat = exportFormats[option];
 	exportTag = exportTags[option];
 	checkMouseState();
+}
+
+static void changeSaveFormat(int option) {
+	saveFormat = static_cast<SaveFormat>(option);
 }
 
 // Find the user-facing label for the current export format.
@@ -2335,6 +2355,7 @@ static std::unordered_map<std::string, std::function<void(int)>> menuCallback = 
 #endif
 	{ ChoiceStereo.label, [](int option) { changeStereo(option); } },
 	{ ChoiceExport.label, [](int option) { changeExport(option); } },
+	{ ChoiceSaveFormat.label, [](int option) { changeSaveFormat(option); } },
 	{ ChoiceModel.label, [](int option) { changeModel(option, firstInit); } },
 	{ ChoiceResolution.label, [](int option) { changeResolution(option, firstInit); } },
 	{ ChoiceBackground.label,[](int option) { changeBackground(option); } },
@@ -3221,6 +3242,196 @@ static std::string exportBaseName(const std::string& sourceName) {
 	return base.empty() ? "Disc" : base;
 }
 
+static const char* saveExtension() {
+	switch (saveFormat) {
+	case SaveFormat::JPG: return ".jpg";
+	case SaveFormat::JXL: return ".jxl";
+	case SaveFormat::AVIF: return ".avif";
+	}
+	return ".jpg";
+}
+
+#if RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
+// libjxl is already bundled for JXL loading, but SDL_image has no JXL save API.
+static bool saveJXL(SDL_Surface* surface, const char* path) {
+	SDL_Surface* rgb = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGB24);
+	if (!rgb) return false;
+	JxlEncoder* encoder = JxlEncoderCreate(nullptr);
+	if (!encoder) {
+		SDL_DestroySurface(rgb);
+		return SDL_SetError("Could not create JPEG XL encoder");
+	}
+	bool saved = false;
+	SDL_IOStream* output = nullptr;
+	do {
+		JxlBasicInfo info;
+		JxlEncoderInitBasicInfo(&info);
+		info.xsize = rgb->w;
+		info.ysize = rgb->h;
+		info.bits_per_sample = 8;
+		info.num_color_channels = 3;
+		if (JxlEncoderSetBasicInfo(encoder, &info) != JXL_ENC_SUCCESS) break;
+		JxlColorEncoding color;
+		JxlColorEncodingSetToSRGB(&color, JXL_FALSE);
+		if (JxlEncoderSetColorEncoding(encoder, &color) != JXL_ENC_SUCCESS) break;
+		JxlEncoderFrameSettings* frame = JxlEncoderFrameSettingsCreate(encoder, nullptr);
+		if (!frame || JxlEncoderSetFrameDistance(frame, 1.0f) != JXL_ENC_SUCCESS ||
+			JxlEncoderFrameSettingsSetOption(frame, JXL_ENC_FRAME_SETTING_EFFORT, 5) != JXL_ENC_SUCCESS) break;
+		std::vector<uint8_t> pixels(static_cast<size_t>(rgb->w) * rgb->h * 3);
+		for (int y = 0; y < rgb->h; ++y) {
+			std::memcpy(pixels.data() + static_cast<size_t>(y) * rgb->w * 3,
+				static_cast<const uint8_t*>(rgb->pixels) + static_cast<size_t>(y) * rgb->pitch,
+				static_cast<size_t>(rgb->w) * 3);
+		}
+		const JxlPixelFormat format = { 3, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0 };
+		if (JxlEncoderAddImageFrame(frame, &format, pixels.data(), pixels.size()) != JXL_ENC_SUCCESS) break;
+		JxlEncoderCloseInput(encoder);
+		output = SDL_IOFromFile(path, "wb");
+		if (!output) break;
+		std::array<uint8_t, 65536> buffer;
+		JxlEncoderStatus status;
+		do {
+			uint8_t* next = buffer.data();
+			size_t available = buffer.size();
+			status = JxlEncoderProcessOutput(encoder, &next, &available);
+			const size_t produced = buffer.size() - available;
+			if (produced && SDL_WriteIO(output, buffer.data(), produced) != produced) {
+				status = JXL_ENC_ERROR;
+				break;
+			}
+		} while (status == JXL_ENC_NEED_MORE_OUTPUT);
+		saved = status == JXL_ENC_SUCCESS;
+	} while (false);
+	if (output && !SDL_CloseIO(output)) saved = false;
+	if (!saved) {
+		if (output) SDL_RemovePath(path);
+		SDL_SetError("Could not encode or write JPEG XL image");
+	}
+	JxlEncoderDestroy(encoder);
+	SDL_DestroySurface(rgb);
+	return saved;
+}
+#endif
+
+static bool saveExportImage(SDL_Surface* surface, const char* path, SaveFormat format) {
+	switch (format) {
+	case SaveFormat::JPG: return IMG_SaveJPG(surface, path, 90);
+#if RENDEPTH_ENABLE_MODERN_IMAGE_FORMATS
+	case SaveFormat::JXL: return saveJXL(surface, path);
+	case SaveFormat::AVIF: return IMG_SaveAVIF(surface, path, 90);
+#endif
+	default: return SDL_SetError("Unsupported save format");
+	}
+}
+
+struct ExportSaveJob {
+	SDL_Surface* surface = nullptr;
+	SaveFormat format = SaveFormat::JPG;
+	std::vector<std::pair<std::filesystem::path, std::string>> destinations;
+	std::string displayName;
+	bool batch = false;
+};
+
+struct ExportSaveResult {
+	bool saved = false;
+	bool batch = false;
+	std::string displayName;
+	std::string location;
+};
+
+static std::mutex exportSaveMutex;
+static std::condition_variable exportSaveReady;
+static std::deque<ExportSaveJob> exportSaveQueue;
+static std::deque<ExportSaveResult> exportSaveResults;
+static SDL_Thread* exportSaveThread = nullptr;
+static bool stopExportSaveThread = false;
+// Accessed only on the main thread; includes jobs awaiting completion notices.
+static int pendingExportSaves = 0;
+
+static int exportSaveWorker(void*) {
+	SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_LOW);
+	for (;;) {
+		ExportSaveJob job;
+		{
+			std::unique_lock lock(exportSaveMutex);
+			exportSaveReady.wait(lock, [] { return stopExportSaveThread || !exportSaveQueue.empty(); });
+			if (exportSaveQueue.empty()) return 0;
+			job = std::move(exportSaveQueue.front());
+			exportSaveQueue.pop_front();
+		}
+		ExportSaveResult result{ false, job.batch, std::move(job.displayName), {} };
+		try {
+			for (const auto& [path, location] : job.destinations) {
+				std::error_code error;
+				std::filesystem::create_directories(path.parent_path(), error);
+				if (error) {
+					SDL_Log("Could not create export directory %s: %s",
+						path.parent_path().string().c_str(), error.message().c_str());
+					continue;
+				}
+				const auto utf8Path = path.u8string();
+				const std::string pathString(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
+				if (!saveExportImage(job.surface, pathString.c_str(), job.format)) {
+					SDL_Log("Could not save export to %s: %s", pathString.c_str(), SDL_GetError());
+					continue;
+				}
+				SDL_Log("Saved export to %s", pathString.c_str());
+				result.saved = true;
+				result.location = location;
+				break;
+			}
+		} catch (const std::exception& error) {
+			SDL_Log("Could not save export: %s", error.what());
+		} catch (...) {
+			SDL_Log("Could not save export: unknown error");
+		}
+		SDL_DestroySurface(job.surface);
+		{
+			std::lock_guard lock(exportSaveMutex);
+			exportSaveResults.push_back(std::move(result));
+		}
+	}
+}
+
+// Transfer ownership of a readback surface to the encoder thread.
+static bool queueExportSave(ExportSaveJob job) {
+	std::lock_guard lock(exportSaveMutex);
+	if (!exportSaveThread) {
+		exportSaveThread = SDL_CreateThread(exportSaveWorker, "ExportSave", nullptr);
+		if (!exportSaveThread) return false;
+	}
+	exportSaveQueue.push_back(std::move(job));
+	++pendingExportSaves;
+	exportSaveReady.notify_one();
+	return true;
+}
+
+static void pollExportSaves() {
+	std::deque<ExportSaveResult> completed;
+	{
+		std::lock_guard lock(exportSaveMutex);
+		completed.swap(exportSaveResults);
+	}
+	for (const auto& result : completed) {
+		--pendingExportSaves;
+		if (result.batch) {
+			if (!result.saved) SDL_Log("Could not save batch export %s", result.displayName.c_str());
+			continue;
+		}
+		std::string message;
+		if (result.saved) {
+			message = result.location.empty() ? "Saved " + result.displayName :
+				"Saved to " + result.location + "/" + exportFolderName;
+		} else {
+			message = "Could Not Save Export";
+		}
+		Core::drawText(&context, message, Image::helpFont, Image::helpTexture,
+			Image::helpTextSize, "Help Texture");
+		Image::displayTip = true;
+		displayTipTime = getTimeNow();
+	}
+}
+
 static bool isOpticalDiscPath(const std::filesystem::path& path) {
 #ifdef _WIN32
 	const auto root = path.root_path();
@@ -3232,6 +3443,13 @@ static bool isOpticalDiscPath(const std::filesystem::path& path) {
 
 // Render and save the current media in the selected export format, then show the result.
 static void saveFile() {
+	if (pendingExportSaves >= 4) {
+		Core::drawText(&context, "Save Queue Full", Image::helpFont, Image::helpTexture,
+			Image::helpTextSize, "Help Texture");
+		Image::displayTip = true;
+		displayTipTime = getTimeNow();
+		return;
+	}
 	doingFileOp = true;
 	// The save callback can run between video-frame updates. Refresh the GPU
 	// source from the frame currently being presented so export reads the
@@ -3261,8 +3479,9 @@ static void saveFile() {
 	}
 
 	std::string outFileName;
-	std::string savedLocation;
-	bool saved = false;
+	ExportSaveJob job;
+	job.surface = data;
+	job.format = saveFormat;
 	try {
 		std::string gridInfo;
 		if (exportFormat == Light_Field_LKG) {
@@ -3277,7 +3496,7 @@ static void saveFile() {
 			outFileName += formatVideoTimeTag(lastVideoFrame->presentationTime);
 		}
 		const std::filesystem::path outFilePath = outFileName + "_" + exportTag +
-			gridInfo + ".jpg";
+			gridInfo + saveExtension();
 
 		const auto sourcePath = std::filesystem::path(context.fileLink);
 		// Disc, capture, and browser photo sources have no persistent writable folder.
@@ -3299,36 +3518,17 @@ static void saveFile() {
 		addExportDirectory(exportUserFolder(SDL_FOLDER_HOME), "Home");
 		addExportDirectory(homeDir, "Home");
 
-		for (const auto& [exportDir, location] : exportDirectories) {
-			std::error_code directoryError;
-			std::filesystem::create_directories(exportDir, directoryError);
-			if (directoryError) {
-				SDL_Log("Could not create export directory %s: %s", exportDir.string().c_str(),
-					directoryError.message().c_str());
-				continue;
-			}
-			const auto outputPath = exportDir / outFilePath;
-			const auto utf8Path = outputPath.u8string();
-			const std::string outputPathString(
-				reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
-			if (!IMG_SaveJPG(data, outputPathString.c_str(), 65)) {
-				SDL_Log("Could not save export to %s: %s", outputPathString.c_str(), SDL_GetError());
-				continue;
-			}
-			savedLocation = location;
-			saved = true;
-			SDL_Log("Saved export to %s", outputPathString.c_str());
-			break;
-		}
+		for (const auto& [exportDir, location] : exportDirectories)
+			job.destinations.emplace_back(exportDir / outFilePath, location);
 	} catch (const std::exception& error) {
 		SDL_Log("Could not prepare export path: %s", error.what());
 	} catch (...) {
 		SDL_Log("Could not prepare export path: unknown filesystem error");
 	}
 
-	SDL_DestroySurface(data);
-	if (!saved) {
-		SDL_Log("Could not find a writable export destination");
+	if (job.destinations.empty()) {
+		SDL_DestroySurface(data);
+		SDL_Log("Could not prepare an export destination");
 		Core::drawText(&context, "Could Not Save Export",
 			Image::helpFont, Image::helpTexture,
 			Image::helpTextSize, "Help Texture");
@@ -3338,36 +3538,29 @@ static void saveFile() {
 		return;
 	}
 
-	auto nameMaxLen = 26;
-	auto displayName = outFileName;
-	if (displayName.length() > nameMaxLen) {
-		displayName = displayName.substr(0, nameMaxLen - 3) + "...";
-	}
-	std::string toType = " to 3D";
-	if (exportFormat == Color_Only) toType = " to 2D";
-	const std::string savedMessage = !savedLocation.empty() ?
-		"Saved to " + savedLocation + "/" + exportFolderName :
-		"Saved " + displayName + toType;
-	Core::drawText(&context, savedMessage,
+	job.displayName = (outFileName.length() > 26 ? outFileName.substr(0, 23) + "..." : outFileName) +
+		(exportFormat == Color_Only ? " to 2D" : " to 3D");
+	if (!queueExportSave(std::move(job))) {
+		SDL_DestroySurface(data);
+		SDL_Log("Could not start export save worker: %s", SDL_GetError());
+		Core::drawText(&context, "Could Not Save Export", Image::helpFont,
+			Image::helpTexture, Image::helpTextSize, "Help Texture");
+		doingFileOp = false;
+	} else {
+		Core::drawText(&context, "Exporting Image...",
 		Image::helpFont, Image::helpTexture,
 		Image::helpTextSize, "Help Texture");
+		doingFileOp = false;
+	}
 	Image::displayTip = true;
 	displayTipTime = getTimeNow();
 }
 
-// Save a batch-rendered surface with the chosen stereo or quilt filename tags.
+// Queue a batch-rendered surface with the chosen stereo or quilt filename tags.
 static bool saveExportSurface(SDL_Surface* data, const std::filesystem::path& sourcePath,
 		const std::filesystem::path& exportDir) {
 	if (data == nullptr) return false;
 	try {
-		std::error_code directoryError;
-		std::filesystem::create_directories(exportDir, directoryError);
-		if (directoryError) {
-			SDL_Log("Could not create batch export directory %s: %s",
-				exportDir.string().c_str(), directoryError.message().c_str());
-			return false;
-		}
-
 		std::string gridInfo;
 		if (exportFormat == Light_Field_LKG) {
 			const std::string aspect = std::format("{:.3f}",
@@ -3377,8 +3570,14 @@ static bool saveExportSurface(SDL_Surface* data, const std::filesystem::path& so
 
 		const auto outFileName = removeFileTags(sourcePath.stem().string());
 		const auto outputPath = exportDir /
-			(outFileName + "_" + exportTag + gridInfo + ".jpg");
-		return IMG_SaveJPG(data, outputPath.string().c_str(), 65);
+			(outFileName + "_" + exportTag + gridInfo + saveExtension());
+		ExportSaveJob job;
+		job.surface = data;
+		job.format = saveFormat;
+		job.destinations.emplace_back(outputPath, "");
+		job.displayName = outFileName;
+		job.batch = true;
+		return queueExportSave(std::move(job));
 	} catch (const std::exception& error) {
 		SDL_Log("Could not prepare batch export path: %s", error.what());
 	} catch (...) {
@@ -3389,6 +3588,7 @@ static bool saveExportSurface(SDL_Surface* data, const std::filesystem::path& so
 
 // Export the next completed batch item and report when the batch has finished.
 static void processBatchExport() {
+	if (pendingExportSaves > 0) return;
 	if (!batchExportActive || context.loading || batchExportIndex >= batchInputPaths.size()) {
 		if (batchExportActive && batchExportIndex >= batchInputPaths.size()) {
 			batchExportActive = false;
@@ -3433,8 +3633,8 @@ static void processBatchExport() {
 	}
 	SDL_Surface* data = Image::getExportTexture(&batchContext);
 	if (data != nullptr) {
-		saveExportSurface(data, inputPath, batchFolderPath / exportFolderName);
-		SDL_DestroySurface(data);
+		if (!saveExportSurface(data, inputPath, batchFolderPath / exportFolderName))
+			SDL_DestroySurface(data);
 	}
 	SDL_ReleaseGPUTexture(context.device, batchTexture);
 }
@@ -5294,7 +5494,9 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		context.effectRandom = randEffect(randGen);
 		switchedImage = false;
 		lastSlideshowTime = timeNow;
-		menuChoices[8].active = true;
+		auto tagChoice = std::find_if(menuChoices.begin(), menuChoices.end(),
+			[](const Choice& choice) { return choice.label == ChoiceTags.label; });
+		if (tagChoice != menuChoices.end()) tagChoice->active = true;
 		menuSelection[ChoiceTags.label] = 4;
 		if (Core::defaultImportFormat == Side_By_Side_Full) menuSelection[ChoiceTags.label] = 0;
 		else if (Core::defaultImportFormat == Side_By_Side_Half) menuSelection[ChoiceTags.label] = 1;
@@ -5464,6 +5666,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		}
 	}
 
+	pollExportSaves();
 	if (Image::displayTip) {
 		if (timeNow - displayTipTime > displayTipWait) {
 			Image::displayTip = false;
@@ -7150,6 +7353,15 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
 // Stop workers and services, save preferences, and release session media and graphics resources.
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
+	if (exportSaveThread) {
+		{
+			std::lock_guard lock(exportSaveMutex);
+			stopExportSaveThread = true;
+		}
+		exportSaveReady.notify_one();
+		SDL_WaitThread(exportSaveThread, nullptr);
+		exportSaveThread = nullptr;
+	}
 #if defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME) && (defined(_WIN32) || defined(__linux__))
 	if (runtimePackInstall.thread) {
 		runtimePackInstall.cancel = true;
