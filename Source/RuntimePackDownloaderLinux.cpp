@@ -39,12 +39,12 @@ struct PackInfo {
 
 // These are release inputs, not hashes supplied by the download server.
 constexpr PackInfo rocmPack{
-    "rocm", "rendepth-rocm-linux-x64-ort1.22.2-rocm7.1.1-fedora44.tar.gz",
-    "e940a6c8c940e5bc3d337f99c5bbdcc2996ba021e4f42e508713595f39c8204a"
+    "rocm", "rendepth-rocm-linux-x64-ort1.22.2-rocm7.1.1.tar.gz",
+    "ee446200d262beabc432acd207efbcbc598620986b3e5aaef27a767ff76fd2fd"
 };
 constexpr PackInfo cudaPack{
-    "cuda", "rendepth-cuda-linux-x64-ort1.22.0-cuda12.8-cudnn9.25.1.tar.gz",
-    "12e103c2d20933011eda811f86a0832b44ec0336e643493f1bc6197d5ecc5b5a"
+    "cuda", "rendepth-cuda-linux-x64-ort1.22.0-cuda12-cudnn9.tar.gz",
+    "a365a3a2668041d78722eb9883555c83ef3f7278680e891681970cc3e6949dd3"
 };
 const PackInfo& infoFor(Pack pack) { return pack == Pack::CUDA ? cudaPack : rocmPack; }
 

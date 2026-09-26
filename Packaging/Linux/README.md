@@ -41,7 +41,8 @@ pack from `https://rendepth.com/packs/`. Rendepth checks the published sidecar
 against a checksum pinned in the application, verifies the archive, and stages
 extraction before activating the pack. An existing pack is never overwritten.
 The Fedora 44 ROCm pack is hosted; the CUDA pack must be uploaded with its
-adjacent `.sha256` file before in-app CUDA installation can succeed.
+adjacent `.sha256` file before in-app CUDA installation can succeed. The exact
+CUDA archive name and hash are pinned in `Source/RuntimePackDownloaderLinux.cpp`.
 
 For development on a machine that already has ROCm-enabled ORT installed:
 
@@ -124,9 +125,10 @@ rendepth-cuda-linux-<arch>-ort<ort-version>-cuda<cuda-version>-cudnn<cudnn-versi
 
 Use `x64` for x86-64 and `arm64` for AArch64. Version fields describe the
 libraries packaged, not the maximum CUDA version reported by `nvidia-smi`.
-The current artifact uses CUDA's toolkit release `12.8`; individual component
-patch versions may differ. The filename is a label, not a complete dependency
-lock: preserve the exact SDK/library inputs and notices when rebuilding.
+The current Fedora CUDA artifact contains CUDA 12 and cuDNN 9 components;
+individual component minor and patch versions differ. The filename is a label,
+not a complete dependency lock: preserve the exact SDK/library inputs and
+notices when rebuilding.
 The Fedora ROCm extension to this convention is documented below; other
 platforms do not yet have a validated archive convention here.
 
@@ -137,7 +139,7 @@ create the archive and sidecar checksum from inside `Distribution`:
 
 ```sh
 cd Distribution
-archive=rendepth-cuda-linux-x64-ort1.22.0-cuda12.8-cudnn9.25.1.tar.gz
+archive=rendepth-cuda-linux-x64-ort1.22.0-cuda12-cudnn9.tar.gz
 tar -czf "$archive" cuda
 gzip -t "$archive"
 sha256sum "$archive" > "$archive.sha256"
@@ -149,7 +151,7 @@ It hashes the final compressed archive bytes. Transfer both files together;
 on another Linux computer, verify them from their containing directory:
 
 ```sh
-sha256sum -c rendepth-cuda-linux-x64-ort1.22.0-cuda12.8-cudnn9.25.1.tar.gz.sha256
+sha256sum -c rendepth-cuda-linux-x64-ort1.22.0-cuda12-cudnn9.tar.gz.sha256
 ```
 
 `pack.json` separately maps relative file paths to hashes of the unpacked file
@@ -162,6 +164,60 @@ patching/compression output. The same naming convention and library versions
 can therefore produce a different archive hash. To obtain exactly the recorded
 hash on another computer, copy the existing archive and verify its sidecar;
 for a new build, generate a new checksum rather than reusing the old one.
+
+### Build packs for an older Linux baseline on Fedora
+
+The CUDA builder above accepts explicit SDK directories and has no Fedora RPM
+dependency. `build_linux_rocm_pack_portable.py` does the same for ROCm. Give it
+matching ORT/ROCm binaries from the intended older Linux baseline, not Fedora
+RPM libraries. The source files can be extracted from Ubuntu packages or staged
+by an Ubuntu build container; the assembly script itself runs on Fedora.
+Install `patchelf` and `readelf` on the assembly host first.
+For the current release, retain ORT 1.22.2 and ROCm 7.1.1. An Ubuntu-compatible
+pack of that stack needs Ubuntu-compatible builds of the same versions; copying
+the Fedora 44 binaries retains their glibc 2.43 requirement.
+
+```sh
+python3 Tools/build_linux_rocm_pack_portable.py \
+  --ort-directory /path/to/ubuntu-ort/lib \
+  --library-directory /path/to/ubuntu-rocm/lib \
+  --library-directory /path/to/ubuntu-dependencies/lib \
+  --rocblas-data /path/to/ubuntu-rocm/lib/rocblas \
+  --hipblaslt-data /path/to/ubuntu-rocm/lib/hipblaslt \
+  --miopen-db /path/to/ubuntu-miopen/db \
+  --ort-notices-directory /path/to/ort-notices \
+  --notices-directory /path/to/rocm-notices \
+  --target-library /path/to/oldest-target/libc.so.6 \
+  --target-library /path/to/oldest-target/libstdc++.so.6 \
+  --target-library /path/to/oldest-target/libgcc_s.so.1 \
+  --output Distribution/rocm-portable
+```
+
+Repeat `--library-directory` and `--notices-directory` for every needed input
+location. The builder recursively collects ELF dependencies from the supplied
+directories, includes ROCm kernel data and the MIOpen database, adds SONAME
+aliases, sets `$ORIGIN` RPATHs, and checks the libraries' GLIBC, GLIBCXX,
+CXXABI, and GCC symbol requirements against the three target runtime libraries.
+It refuses a missing packaged dependency or a newer platform ABI. No RPM database or
+Fedora library path is consulted. The separately bundled files and notices
+still require review; an ABI pass alone does not prove GPU or driver support.
+
+Run the same target ABI check on a CUDA pack assembled with the CUDA builder:
+
+```sh
+python3 Tools/check_linux_gpu_pack_abi.py Distribution/cuda \
+  --target-library /path/to/oldest-target/libc.so.6 \
+  --target-library /path/to/oldest-target/libstdc++.so.6 \
+  --target-library /path/to/oldest-target/libgcc_s.so.1
+```
+
+Build and test the Rendepth executable against that older Linux baseline too.
+A portable GPU pack cannot make an executable built against newer Fedora glibc
+run on Ubuntu. Validate real depth and super-resolution inference on both
+target distributions before pinning a shared archive in the downloader.
+The current Rendepth ROCm API uses ONNX Runtime's ROCm Execution Provider;
+upstream removed that provider after ORT 1.22, so use a matching older ORT/ROCm
+SDK or change the app to MIGraphX before adopting newer ORT releases.
 
 ### Build a Linux ROCm pack (Fedora RPM inputs)
 
@@ -176,7 +232,7 @@ Install `patchelf`, `readelf`, and the matching ROCm/ORT RPMs first:
 python3 Tools/build_linux_rocm_pack.py \
   --ort-directory /usr/lib64/rocm/lib \
   --library-directory /usr/lib64 \
-  --output Distribution/rocm
+  --output Distribution/rocm-fedora44
 ```
 
 This builder is specifically for Fedora's installed RPM layout, including its
@@ -191,7 +247,7 @@ ROCm archives follow the same layout/checksum rules above, with a top-level
 ```sh
 cd Distribution
 archive=rendepth-rocm-linux-x64-ort1.22.2-rocm7.1.1-fedora44.tar.gz
-tar -czf "$archive" rocm
+tar -czf "$archive" --transform='s,^rocm-fedora44,rocm,' rocm-fedora44
 gzip -t "$archive"
 sha256sum "$archive" > "$archive.sha256"
 sha256sum -c "$archive.sha256"
@@ -219,20 +275,20 @@ python3 Tools/test_linux_inference.py Binary/InferenceRuntimeTest \
   Runtimes/cpu/lib/libonnxruntime.so.1 \
   --depth-model /path/to/DA2-SMALL-280.onnx \
   --sr-model /path/to/RFDN_x4.onnx \
-  --rocm-pack Distribution/rocm
+  --rocm-pack Distribution/rocm-fedora44
 ```
 
 The app sets the included MIOpen database path, and the test fails on CPU fallback.
 
 ### Fedora ROCm pack validation (2026-09-08)
 
-Assembled `Distribution/rocm` from ORT 1.22.2 and the installed Fedora 44 ROCm
+Assembled the pack now preserved at `Distribution/rocm-fedora44` from ORT 1.22.2 and the installed Fedora 44 ROCm
 7.1.x packages. Validated ELF dependency closure and `$ORIGIN` RPATHs. The isolated
 runtime suite passed CPU inference, missing/corrupt/incomplete-pack checks,
 session failure recovery, and actual **ROCm depth and SR inference** on an
 **AMD Radeon RX 7900 XTX (gfx1100)**. GPU testing required host access outside the
 agent sandbox. A loader trace confirmed the exercised ORT/ROCm libraries loaded
-from `Distribution/rocm/lib`. `InferenceRuntimeTest` has no ORT or ROCm startup
+from its `lib/` directory. `InferenceRuntimeTest` has no ORT or ROCm startup
 dependency.
 
 The archive is `Distribution/rendepth-rocm-linux-x64-ort1.22.2-rocm7.1.1-fedora44.tar.gz`.
@@ -244,6 +300,37 @@ Clean-system portability and other GPU/driver combinations remain untested;
 the successful host test does not prove that every MIOpen JIT/compiler path is
 independent of the host's installed SDK. The Fedora archive and checksum are
 available at the public pack endpoint for in-app installation.
+
+### Portable Linux ROCm pack (2026-09-26)
+
+`Distribution/rocm` is the release candidate for Fedora and Ubuntu. It was
+assembled from ONNX Runtime **1.22.2** built inside the official Ubuntu 22.04
+ROCm **7.1.1** image, plus that image's ROCm libraries, rocBLAS/hipBLASLt
+kernel data, MIOpen database, and notices. The small source compatibility
+changes are recorded in `Packaging/Linux/ort-1.22.2-rocm-7.1.1.patch`.
+The build used GCC 12, CMake 3.31, 14 jobs, disabled unit-test binaries and
+the optional Composable Kernel component, and targeted gfx908, gfx90a,
+gfx1030, gfx1100, gfx1101, gfx942, gfx1200, and gfx1201. It did not change
+the ORT or ROCm versions.
+
+The archive and adjacent checksum sidecar are:
+
+```text
+Distribution/rendepth-rocm-linux-x64-ort1.22.2-rocm7.1.1.tar.gz
+Distribution/rendepth-rocm-linux-x64-ort1.22.2-rocm7.1.1.tar.gz.sha256
+```
+
+The compressed archive is about 2.7 GiB; the unpacked pack is about 7.7 GiB.
+Its SHA-256 is `ee446200d262beabc432acd207efbcbc598620986b3e5aaef27a767ff76fd2fd`.
+The portable builder clears executable-stack requests in the copied ELF
+libraries; Fedora refused to load the uncorrected ORT core.
+All 5,072 inventory hashes and the archive checksum passed. The 24 ELF
+libraries' 53 platform-version requirements are provided by Ubuntu 22.04's
+glibc, libstdc++, and libgcc. The provider initialized in an Ubuntu 22.04
+container with the local AMD GPU exposed. Rendepth's isolated runtime test
+passed actual ROCm depth and SR inference on the Fedora host's RX 7900 XTX.
+Full app inference on a separate Ubuntu installation remains to be checked.
+The old Fedora-only pack is preserved at `Distribution/rocm-fedora44`.
 
 ### Ubuntu CUDA pack validation (2026-09-08)
 
@@ -269,8 +356,30 @@ CUDA depth (`DA2-SMALL-280.onnx`) and SR (`RFDN_x4.onnx`) inference on this
 Ubuntu NVIDIA machine with driver 580.178.04. The test executable has no ORT or
 CUDA startup dependency. GPU access required running outside the agent sandbox.
 This validates this host; clean-system portability and the supported driver/OS
-matrix still need testing before release. The CUDA archive and sidecar still
-need to be uploaded to the public pack endpoint.
+matrix still need testing before release. This earlier Ubuntu archive and
+sidecar were not uploaded to the public pack endpoint.
+
+### Linux CUDA pack (2026-09-26)
+
+The updated app source requests
+`rendepth-cuda-linux-x64-ort1.22.0-cuda12-cudnn9.tar.gz` and checks
+SHA-256 `a365a3a2668041d78722eb9883555c83ef3f7278680e891681970cc3e6949dd3`.
+Its adjacent `.sha256` sidecar contains that hash and exact basename. The pack
+contains ORT 1.22.0, CUDA 12 components, and cuDNN 9 components. It was
+assembled from the local `cuda-unvalidated-20260924` directory. All 36
+`pack.json` file hashes, 22 library dependency sets and `$ORIGIN` RPATHs,
+archive layout, gzip integrity, and archive checksum passed checks. The 22
+ELF libraries require only glibc, libstdc++, and libgcc symbols available in
+the Ubuntu 22.04 target runtime. Driver libraries are supplied by the target
+machine.
+
+CUDA depth and super-resolution inference on an NVIDIA machine are still to be
+verified before treating this as a validated release. The previous
+Ubuntu CUDA validation above applies to a different archive and checksum.
+A direct provider-initialization probe on this AMD host without an NVIDIA
+driver segfaulted inside the CUDA provider's load-time initialization. This
+does not establish how the pack behaves with an NVIDIA driver; it leaves the
+NVIDIA-machine test essential before release verification.
 
 The current loader expects these user-owned directories:
 

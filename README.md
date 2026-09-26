@@ -2,7 +2,7 @@
 
 Free and Open Source Stereoscopic 3D Media Player.
 
-Converts Any Standard Image to 3D and Supports SBS Stereo Photos.
+Converts Any Standard Image/Video to 3D and Supports Native Stereo Media.
 
 Visit https://rendepth.com to Download the App.
 
@@ -11,18 +11,6 @@ The combined application is distributed under [GNU GPL version 3](Legal/RENDEPTH
 Dependencies retain their own licenses; the collected texts and attributions are in
 [THIRD_PARTY_LICENSING](Legal/THIRD_PARTY_LICENSING). See the
 [licensing maintenance guide](Tools/Legal/README.md) for release-source and notice requirements.
-
-Lightfield Displays
-------
-In lightfield mode, Rendepth automatically selects up to two connected displays:
-one CubeVi C1 and one Looking Glass (including LKG Go). Each output uses its own
-model's calibration and shares the loaded image/depth source. Additional displays
-of the same type are skipped because calibration is shared within each model.
-Connecting or disconnecting a display refreshes the outputs automatically.
-Native stereo sources use two views on each supported lightfield display;
-RGB-D images and quilts keep their multiview paths.
-
-`RENDEPTH_NATIVE_DISPLAY` still restricts selection to matching display names when set.
 
 Stereo 3D Samples
 ------
@@ -38,18 +26,54 @@ Stereo 3D Samples
 
 Build Instructions
 ------
-- Clone this repository: `git clone https://github.com/outmode/rendepth.git`
-- Go to the root folder: `cd rendepth`
-- Initialize submodules: `git submodule update --init --recursive`
-- After pulling Rendepth updates, run the same command to synchronize the pinned dependencies, including nested submodules. Do not add `--remote`: that follows upstream branches instead of Rendepth's recorded commits.
-- Check `ThirdParty` folder and install dependencies for each library.
-- Build and Install `SDL_shadercross` needed for compiling shaders.
-- Navigate to the root folder of the repo: `rendepth`
-- Make build directory: `mkdir build`
-- Navigate to directory: `cd build`
-- Build for Release: `cmake -S .. -B . -DCMAKE_BUILD_TYPE=Release`
-- Compile project: `cmake --build .`
-- App will be built in `Binary` folder.
+Use CMake 3.22 or newer, a C++20 compiler, and Git. Clone with the pinned
+dependencies, or initialize them after cloning:
+
+```sh
+git clone --recurse-submodules https://github.com/outmode/rendepth.git
+cd rendepth
+```
+
+After pulling Rendepth updates, run `git submodule update --init --recursive`
+to synchronize nested dependencies with the recorded commits. Do not use
+`--remote`, which follows upstream branches instead.
+
+On Linux, install development files for libcurl, OpenSSL, GTK 3, GLib/GIO,
+GStreamer 1.0 (core, app, video, WebRTC, and SDP; WebRTC requires 1.22 or
+newer), libbluray, and libdvdread, plus pkg-config and GNU Make. Supply a
+CPU-only ONNX Runtime shared library, its `LICENSE` and
+`ThirdPartyNotices.txt`, and compatible ONNX Runtime headers. From the
+repository root, configure and build a Release executable:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DRENDEPTH_ONNXRUNTIME_INCLUDE_DIR=/path/to/ort-headers/include/onnxruntime \
+  -DRENDEPTH_CPU_RUNTIME_LIBRARY=/path/to/cpu-sdk/lib/libonnxruntime.so.1 \
+  -DRENDEPTH_CPU_RUNTIME_NOTICES_DIR=/path/to/cpu-sdk
+cmake --build build --parallel 14 --target Rendepth
+```
+
+Point `RENDEPTH_ONNXRUNTIME_INCLUDE_DIR` to the directory containing
+`onnxruntime_cxx_api.h`. See [Linux inference packaging](Packaging/Linux/README.md)
+for CPU runtime requirements and GPU pack assembly.
+
+On Windows, use an x64 MSVC build and an x64 MinGW GCC toolchain for the bundled
+MVC decoder. Provide a CPU-only x64 ONNX Runtime SDK with headers and notices
+(`RENDEPTH_CPU_RUNTIME_DIR`), plus an MSVC-compatible FFmpeg SDK
+(`RENDEPTH_FFMPEG_ROOT`). The FFmpeg SDK needs `include`, `lib`,
+`debug/lib`, `bin`, and `debug/bin`; install libbluray and libdvdread in that
+same SDK, or set `RENDEPTH_DISC_ROOT` to their SDK. For example, configure with
+`-DRENDEPTH_CPU_RUNTIME_DIR=C:/SDKs/onnxruntime-win-x64 -DRENDEPTH_FFMPEG_ROOT=C:/SDKs/vcpkg/installed/x64-windows`,
+then run `cmake --build build --config Release --parallel 14 --target Rendepth`.
+See [Windows inference packaging](Packaging/Windows/README.md) for pack details.
+On macOS, provide an ONNX Runtime SDK via `RENDEPTH_ONNXRUNTIME_DIR` and the
+libbluray and libdvdread development packages; see the disc playback notes below.
+
+The Release executable is written to `Binary` in the repository root. Keep
+`Assets`, `Binary`, `Library`, `Runtimes`, and `Shaders` together when running or
+packaging it. FFmpeg and the SDL libraries are built from the pinned sources on
+Linux and macOS. Precompiled shaders are included, so a normal build does not
+require a separate SDL_shadercross installation.
 
 Dependency versions are pinned by Git submodule commits. The SDL and SyLC pins are:
 
@@ -60,26 +84,33 @@ Dependency versions are pinned by Git submodule commits. The SDL and SyLC pins a
 | SDL_ttf | `release-3.2.2` |
 | SDL_shadercross | `1ff05bec573988a98ef9e0260b4da44f512b8367` (no upstream release tags) |
 | SyLC | `v5.3.1` |
-- Folders `Assets` `Binary` `Library` `Shaders` must remain together.
 
-- Linux/macOS can use g++/clang. Windows builds use MSVC.
+- Linux/macOS can use GCC/Clang. Windows builds use MSVC.
 - Windows builds bundle a CPU inference runtime and offer optional NVIDIA CUDA
   and DirectML (AMD, Intel Arc, NVIDIA) packs. Configure a CPU-only x64 SDK with
   `RENDEPTH_CPU_RUNTIME_DIR`; select the engine in Settings and restart.
   See [Windows inference packaging](Packaging/Windows/README.md) for pack
-  assembly, installation, and validation. Keep `Runtimes` beside `Binary`.
+  assembly, installation, and validation.
 - Linux builds use one executable with a bundled CPU inference runtime. Settings
   selects CPU, NVIDIA CUDA, or AMD ROCm on the next launch. GPU runtime packs
   live separately in `~/.Rendepth/Runtimes`; missing or failing packs fall back
   to CPU. See [Linux inference packaging](Packaging/Linux/README.md) for build
-  inputs, pack layout, and validation. GPU downloads are not yet integrated.
-- To enable Windows video playback, install an MSVC-compatible FFmpeg SDK (for
-  example with vcpkg) and configure with
-  `-DRENDEPTH_ENABLE_FFMPEG=ON -DRENDEPTH_FFMPEG_ROOT=<vcpkg>/installed/x64-windows`.
-  FFmpeg's runtime DLLs are copied next to `Rendepth.exe` automatically.
-- `RENDEPTH_DLL_DIR` points to the MinGW shared library folder for legacy
-  MinGW builds.
+  inputs, pack layout, and validation. Selecting a missing GPU pack downloads
+  it from `rendepth.com/packs` when that pack has been published there.
+- Windows FFmpeg runtime DLLs are copied next to `Rendepth.exe` automatically.
 - `RENDEPTH_MAC_BUNDLE` set `ON` to create macOS bundle after building.
+
+Lightfield Displays
+------
+In lightfield mode, Rendepth automatically selects up to two connected displays:
+one CubeVi C1 and one Looking Glass (including LKG Go). Each output uses its own
+model's calibration and shares the loaded image/depth source. Additional displays
+of the same type are skipped because calibration is shared within each model.
+Connecting or disconnecting a display refreshes the outputs automatically.
+Native stereo sources use two views on each supported lightfield display;
+RGB-D images and quilts keep their multiview paths.
+
+`RENDEPTH_NATIVE_DISPLAY` still restricts selection to matching display names when set.
 
 Disc playback
 ------

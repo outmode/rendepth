@@ -20,6 +20,9 @@ changes are incorporated; use a system temporary directory for disposable experi
 - **`export_lightweight_sr.py`**: Exports lightweight super-resolution architectures (such as RFDN and ECBSR) to dynamic ONNX models with normalized float inputs `[0.0, 1.0]`.
 - **`build_linux_cuda_pack.py`**: Assembles a separate Linux CUDA runtime pack from ORT, CUDA, and cuDNN SDKs. See [Linux packaging](../Packaging/Linux/README.md#build-a-linux-cuda-pack) for inputs and validation.
 - **`test_build_linux_cuda_pack.py`**: Checks pack assembly with small ELF fixtures (`gcc`, `readelf`, and `patchelf`).
+- **`build_linux_rocm_pack_portable.py`**: Assembles a ROCm pack from explicit ORT/ROCm SDK, data, and notice directories, with an older target OS ABI check. See [Linux packaging](../Packaging/Linux/README.md#build-packs-for-an-older-linux-baseline-on-fedora).
+- **`check_linux_gpu_pack_abi.py`**: Checks a CUDA or ROCm pack's platform symbols against target OS libc, libstdc++, and libgcc libraries.
+- **`test_build_linux_rocm_pack_portable.py`**: Checks ROCm dependency and ABI rejection with small ELF fixtures; full assembly tests require `patchelf`.
 - **`test_linux_inference.py`**: Checks runtime loading and CPU fallback; `--cuda-pack` additionally requires CUDA depth and super-resolution inference on NVIDIA hardware.
 
 ## Release path audit
