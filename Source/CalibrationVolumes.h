@@ -8,6 +8,22 @@
 #endif
 
 namespace CalibrationVolumes {
+// Looking Glass USB volumes use an LKG-prefixed name on macOS. Inspect only
+// those volumes so an unrelated optical disc is never probed for calibration.
+inline std::filesystem::path lookingGlassCalibration(const std::filesystem::path& root) {
+    std::error_code error;
+    if (!std::filesystem::is_directory(root, error)) return {};
+    for (const auto& volume : std::filesystem::directory_iterator(root, error)) {
+        if (error) break;
+        const auto name = volume.path().filename().string();
+        if (name.rfind("LKG-", 0) != 0 && name.rfind("Looking Glass", 0) != 0) continue;
+        const auto candidate = volume.path() / "LKG_calibration" / "visual.json";
+        if (std::filesystem::is_regular_file(candidate, error)) return candidate;
+        error.clear();
+    }
+    return {};
+}
+
 // Read mount metadata, never the mounted media. Even stat() on an optical
 // volume can wake the drive; exclude it before inspecting calibration files.
 #ifdef __linux__

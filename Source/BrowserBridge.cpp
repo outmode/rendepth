@@ -13,11 +13,12 @@
 #define NOMINMAX
 #include <windows.h>
 #endif
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <fcntl.h>
 #endif
 
 // Close the browser bridge and its current session on destruction.
@@ -25,7 +26,7 @@ BrowserBridge::~BrowserBridge() { stop(); }
 
 // Choose a per-user runtime directory for the local browser bridge.
 std::filesystem::path BrowserBridge::runtimeDirectory() {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 	if (const char* runtime = std::getenv("XDG_RUNTIME_DIR"); runtime && *runtime)
 		return std::filesystem::path(runtime) / "rendepth-browser";
 	return std::filesystem::path("/tmp") / ("rendepth-browser-" + std::to_string(getuid()));
@@ -41,7 +42,7 @@ std::filesystem::path BrowserBridge::runtimeDirectory() {
 
 // Validate a private runtime directory and bind the nonblocking browser-request socket.
 bool BrowserBridge::start(const std::filesystem::path& directory, std::string& error) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 	stop();
 	if (mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST) {
 		error = std::strerror(errno);
@@ -61,8 +62,21 @@ bool BrowserBridge::start(const std::filesystem::path& directory, std::string& e
 		return false;
 	}
 	std::strcpy(address.sun_path, path.c_str());
+	#if defined(__APPLE__)
+	socket = ::socket(AF_UNIX, SOCK_DGRAM, 0);
+	#else
 	socket = ::socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+	#endif
 	if (socket < 0) { error = std::strerror(errno); return false; }
+	#if defined(__APPLE__)
+	if (fcntl(socket, F_SETFL, fcntl(socket, F_GETFL) | O_NONBLOCK) < 0 ||
+		fcntl(socket, F_SETFD, FD_CLOEXEC) < 0) {
+		error = std::strerror(errno);
+		::close(socket);
+		socket = -1;
+		return false;
+	}
+	#endif
 	// A stale socket with our PID can only belong to a previous process.
 	unlink(path.c_str());
 	if (bind(socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
@@ -105,7 +119,7 @@ bool BrowserBridge::start(const std::filesystem::path& directory, std::string& e
 
 // Validate one incoming browser request, dispatch it to the application, and send an acknowledgement.
 void BrowserBridge::poll(const std::function<std::string(const Request&)>& handler) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 	if (socket < 0) return;
 	char buffer[4096];
 	sockaddr_un sender{};
@@ -154,7 +168,12 @@ void BrowserBridge::poll(const std::function<std::string(const Request&)>& handl
 	if (!error.empty()) { writer.Key("error"); writer.String(error.c_str()); }
 	else { writer.Key("pid"); writer.Int(getpid()); }
 	writer.EndObject();
-	sendto(socket, response.GetString(), response.GetSize(), MSG_NOSIGNAL,
+	#if defined(__APPLE__)
+	constexpr int sendFlags = 0;
+	#else
+	constexpr int sendFlags = MSG_NOSIGNAL;
+	#endif
+	sendto(socket, response.GetString(), response.GetSize(), sendFlags,
 		reinterpret_cast<sockaddr*>(&sender), senderSize);
 #elif defined(_WIN32)
 	if (endpoint.empty()) return;
@@ -239,7 +258,7 @@ void BrowserBridge::endSession() {
 // End the active session and remove the bridge's socket endpoint.
 void BrowserBridge::stop() {
 	endSession();
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 	if (socket >= 0) { ::close(socket); socket = -1; }
 	if (!endpoint.empty()) { unlink(endpoint.c_str()); endpoint.clear(); }
 #elif defined(_WIN32)

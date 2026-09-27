@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Register Rendepth's shared native host for Chrome on Windows or Linux."""
+"""Register Rendepth's shared native host for Chrome on Windows, Linux or macOS."""
 import argparse
 import base64
 import hashlib
@@ -70,8 +70,15 @@ if __name__ == '__main__':
         directory = args.directory or Path(os.environ['LOCALAPPDATA']) / 'Rendepth' / 'Chrome'
     elif sys.platform.startswith('linux'):
         directory = args.directory or Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / args.browser / 'NativeMessagingHosts'
+    elif sys.platform == 'darwin':
+        browser_directories = {
+            'google-chrome': 'Google/Chrome',
+            'google-chrome-for-testing': 'Google/ChromeForTesting',
+            'chromium': 'Chromium',
+        }
+        directory = args.directory or Path.home() / 'Library/Application Support' / browser_directories[args.browser] / 'NativeMessagingHosts'
     else:
-        parser.error('The Rendepth browser bridge currently supports Windows and Linux only')
+        parser.error('Unsupported browser bridge platform')
     try:
         manifest = install(args.rendepth, directory, args.extension_id, args.launcher, register=True)
     except (ValueError, OSError) as error:

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -14,7 +15,7 @@ class InstallerTest(unittest.TestCase):
     @unittest.skipIf(os.name == 'nt', 'POSIX launcher test')
     def test_manifest_scope_and_launcher(self):
         with tempfile.TemporaryDirectory(prefix='rendepth chrome ') as temporary:
-            path = install.install(Path('/bin/true'), Path(temporary), install.extension_id())
+            path = install.install(Path(sys.executable), Path(temporary), install.extension_id())
             manifest = json.loads(path.read_text())
             self.assertEqual(manifest['allowed_origins'], [f'chrome-extension://{install.extension_id()}/'])
             self.assertNotIn('allowed_extensions', manifest)

@@ -178,7 +178,7 @@ class ProtocolTest(unittest.TestCase):
                     for format_name, swap in (("2d", False), ("sbs-full", True), ("sbs-half", False)):
                         environment = dict(os.environ, XDG_RUNTIME_DIR=str(directory))
                         process = subprocess.Popen([sys.executable, "-u", str(Path(host.__file__)),
-                                                    "--rendepth", "/bin/false"], env=environment,
+                                                    "--rendepth", sys.executable], env=environment,
                                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE)
                         try:
                             offer = "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n"

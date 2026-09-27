@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include "rapidjson/document.h"
+#include "CalibrationVolumes.h"
 
 #include <algorithm>
 #include <cctype>
@@ -98,6 +99,9 @@ namespace {
 		if (const char* requested = std::getenv("RENDEPTH_NATIVE_CALIBRATION"))
 			return requested;
 
+	#ifdef __APPLE__
+		return CalibrationVolumes::lookingGlassCalibration("/Volumes");
+	#else
 		std::error_code error;
 		for (const auto& root : {std::filesystem::path("/run/media"),
 				 std::filesystem::path("/media")}) {
@@ -112,6 +116,7 @@ namespace {
 			}
 		}
 		return {};
+	#endif
 	}
 
 	// Load calibration for the visual test while retaining fallback settings if it is unavailable.

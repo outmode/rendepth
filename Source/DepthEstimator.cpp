@@ -13,6 +13,9 @@
 
 #ifdef RENDEPTH_ENABLE_ONNX_RUNTIME
 #include <onnxruntime_cxx_api.h>
+#ifdef RENDEPTH_ENABLE_COREML
+#include "CoreMLInference.h"
+#endif
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 #include "InferenceRuntime.h"
 #endif
@@ -72,7 +75,11 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 	const auto provider = config.provider == DepthEstimator::Provider::CPU
 		? DepthEstimator::Provider::CPU : InferenceRuntime::provider();
 #else
+#ifdef RENDEPTH_ENABLE_COREML
+	const auto provider = CoreMLInference::resolve(config.provider);
+#else
 	const auto provider = config.provider;
+#endif
 #endif
 	std::string sessionStage = "creating ONNX Runtime session";
 	std::unique_ptr<State> nextState;
@@ -88,7 +95,14 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 		}
 		nextState->sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
-		if (provider == Provider::CUDA) {
+		if (provider == Provider::CoreML) {
+#ifdef RENDEPTH_ENABLE_COREML
+			CoreMLInference::append(nextState->sessionOptions);
+#else
+			error = "Core ML requires a macOS build with Core ML support.";
+			return false;
+#endif
+		} else if (provider == Provider::CUDA) {
 #if defined(RENDEPTH_ENABLE_CUDA) || defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME)
 			OrtCUDAProviderOptions cudaOptions{};
 			nextState->sessionOptions.AppendExecutionProvider_CUDA(cudaOptions);
@@ -139,6 +153,15 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 		nextState->inputWidth = config.processSize;
 	} catch (const Ort::Exception& exception) {
 		error = exception.what();
+#ifdef RENDEPTH_ENABLE_COREML
+		if (provider == Provider::CoreML) {
+			SDL_Log("Core ML depth model unavailable; using CPU: %s", error.c_str());
+			nextState.reset();
+			auto cpuConfig = config;
+			cpuConfig.provider = Provider::CPU;
+			return load(cpuConfig, error);
+		}
+#endif
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 		if (provider != DepthEstimator::Provider::CPU) {
 			InferenceRuntime::useCpuFallback(error);
@@ -156,6 +179,7 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 	}
 
 	switch (provider) {
+		case Provider::CoreML: activeProvider = "Core ML (CPU + GPU)"; break;
 		case Provider::CUDA: activeProvider = "CUDA"; break;
 		case Provider::ROCM: activeProvider = "ROCm"; break;
 		case Provider::DirectML: activeProvider = "DirectML"; break;
