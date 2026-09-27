@@ -26,6 +26,9 @@
 #include "NativeDisplaySelection.h"
 #include "LookingGlassCalibration.h"
 #include "CalibrationVolumes.h"
+#if defined(_WIN32) && defined(_MSC_VER)
+#include "LenticularBridge.h"
+#endif
 #ifdef __APPLE__
 #include "MacFullscreenMouse.h"
 #endif
@@ -1286,6 +1289,7 @@ void Image::updateVideoSubtitle(Context* context,
 		}
 		subtitleTextSize = {};
 		subtitleBitmap = false;
+		subtitleBitmapStereoPacked = false;
 		subtitleBitmapPosition = {};
 		subtitleBitmapCanvasSize = {};
 	};
@@ -1310,6 +1314,30 @@ void Image::updateVideoSubtitle(Context* context,
 		SDL_DestroySurface(surface);
 		if (result < 0) return;
 		subtitleBitmap = true;
+		const bool verticalStereo = context->imageType == Top_And_Bottom_Full ||
+			context->imageType == Top_And_Bottom_Half;
+		const bool horizontalStereo = context->imageType == Side_By_Side_Full ||
+			context->imageType == Side_By_Side_Half ||
+			context->imageType == Side_By_Side_Swap;
+		if (verticalStereo || horizontalStereo) {
+			const int canvasLength = verticalStereo ? subtitle->canvasHeight : subtitle->canvasWidth;
+			const int split = canvasLength / 2;
+			int firstEnd = -1;
+			int secondStart = canvasLength;
+			for (int y = 0; y < subtitle->height; ++y) {
+				for (int x = 0; x < subtitle->width; ++x) {
+					const auto alpha = subtitle->rgba[
+						(static_cast<size_t>(y) * subtitle->width + x) * 4 + 3];
+					if (alpha == 0) continue;
+					const int coordinate = verticalStereo ? subtitle->y + y : subtitle->x + x;
+					if (coordinate < split) firstEnd = std::max(firstEnd, coordinate);
+					else secondStart = std::min(secondStart, coordinate);
+				}
+			}
+			// Distinct occupied regions indicate separate captions for the two eyes.
+			subtitleBitmapStereoPacked = firstEnd >= 0 && secondStart < canvasLength &&
+				secondStart - firstEnd > canvasLength / 8;
+		}
 		subtitleBitmapPosition = { subtitle->x, subtitle->y };
 		subtitleBitmapCanvasSize = { subtitle->canvasWidth, subtitle->canvasHeight };
 		subtitleTextSize = { subtitle->width, subtitle->height };
@@ -3261,6 +3289,58 @@ void drawGettingStartedCursor(Context* context, SDL_GPUCommandBuffer* command,
 }
 
 // Present the guide in the same fullscreen packing layout as the media and controls.
+#if defined(_WIN32) && defined(_MSC_VER)
+SDL_GPUTexture* lenticularFrame = nullptr;
+Uint32 lenticularWidth = 0, lenticularHeight = 0;
+SDL_GPUTextureFormat lenticularFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
+
+SDL_GPUTexture* lenticularTarget(Context* context, SDL_GPUTexture* backbuffer,
+                                  Uint32 width, Uint32 height) {
+    if (!context->lenticular || !context->fullscreen ||
+        !LenticularBridge::supported(context->device, context->window)) {
+        if (lenticularFrame) {
+            SDL_ReleaseGPUTexture(context->device, lenticularFrame);
+            lenticularFrame = nullptr;
+        }
+        return backbuffer;
+    }
+    const auto format = SDL_GetGPUSwapchainTextureFormat(context->device, context->window);
+    if (!lenticularFrame || lenticularWidth != width || lenticularHeight != height ||
+        lenticularFormat != format) {
+        if (lenticularFrame) SDL_ReleaseGPUTexture(context->device, lenticularFrame);
+        SDL_GPUTextureCreateInfo info{};
+        info.type = SDL_GPU_TEXTURETYPE_2D;
+        info.format = format;
+        info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        info.width = width;
+        info.height = height;
+        info.layer_count_or_depth = 1;
+        info.num_levels = 1;
+        info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        lenticularFrame = SDL_CreateGPUTexture(context->device, &info);
+        lenticularWidth = width;
+        lenticularHeight = height;
+        lenticularFormat = format;
+    }
+    if (!lenticularFrame) LenticularBridge::stop();
+    return lenticularFrame ? lenticularFrame : backbuffer;
+}
+
+void presentLenticular(SDL_GPUCommandBuffer* command, Context* context,
+                       SDL_GPUTexture* rendered, SDL_GPUTexture* backbuffer,
+                       Uint32 width, Uint32 height) {
+    if (rendered == backbuffer) return;
+    if (LenticularBridge::weave(command, context->window, rendered, backbuffer,
+                               width, height)) return;
+    SDL_GPUBlitInfo info{};
+    info.source = {rendered, 0, 0, 0, 0, width, height};
+    info.destination = {backbuffer, 0, 0, 0, 0, width, height};
+    info.load_op = SDL_GPU_LOADOP_DONT_CARE;
+    info.filter = SDL_GPU_FILTER_NEAREST;
+    SDL_BlitGPUTexture(command, &info);
+}
+#endif
+
 int drawGettingStarted(Context* context) {
 	int width = 0, height = 0;
 	SDL_GetWindowSizeInPixels(context->window, &width, &height);
@@ -3289,13 +3369,19 @@ int drawGettingStarted(Context* context) {
 	auto* command = SDL_AcquireGPUCommandBuffer(context->device);
 	if (!command) return -1;
 	SDL_GPUTexture* swapchain = nullptr;
-	if (!SDL_AcquireGPUSwapchainTexture(command, context->window, &swapchain, nullptr, nullptr)) {
+	Uint32 swapchainWidth = 0, swapchainHeight = 0;
+	if (!SDL_AcquireGPUSwapchainTexture(command, context->window, &swapchain,
+			&swapchainWidth, &swapchainHeight)) {
 		SDL_CancelGPUCommandBuffer(command);
 		return -1;
 	}
 	if (!swapchain) return SDL_SubmitGPUCommandBuffer(command) ? 0 : -1;
 	SDL_GPUColorTargetInfo target{};
+#if defined(_WIN32) && defined(_MSC_VER)
+	target.texture = lenticularTarget(context, swapchain, swapchainWidth, swapchainHeight);
+#else
 	target.texture = swapchain;
+#endif
 	target.load_op = SDL_GPU_LOADOP_CLEAR;
 	target.store_op = SDL_GPU_STOREOP_STORE;
 	auto* pass = SDL_BeginGPURenderPass(command, &target, 1, nullptr);
@@ -3309,6 +3395,17 @@ int drawGettingStarted(Context* context) {
 	Image::drawSprite(command, pass);
 	drawGettingStartedCursor(context, command, pass, width, height, layout);
 	SDL_EndGPURenderPass(pass);
+#if defined(_WIN32) && defined(_MSC_VER)
+	presentLenticular(command, context, target.texture, swapchain,
+		swapchainWidth, swapchainHeight);
+	if (target.texture != swapchain) {
+		auto* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(command);
+		if (!fence) return -1;
+		SDL_WaitForGPUFences(context->device, true, &fence, 1);
+		SDL_ReleaseGPUFence(context->device, fence);
+		return 0;
+	}
+#endif
 	return SDL_SubmitGPUCommandBuffer(command) ? 0 : -1;
 }
 }
@@ -3368,6 +3465,10 @@ int Image::draw(Context* context) {
 
 		SDL_GPUColorTargetInfo colorTargetInfo{};
 		colorTargetInfo.texture = swapchainTexture;
+#if defined(_WIN32) && defined(_MSC_VER)
+		colorTargetInfo.texture = lenticularTarget(context, swapchainTexture,
+			swapchainWidth, swapchainHeight);
+#endif
 		colorTargetInfo.clear_color = SDL_FColor{ clearColorCurrent.r, clearColorCurrent.g, clearColorCurrent.b, clearColorCurrent.a };
 		colorTargetInfo.load_op = SDL_GPU_LOADOP_CLEAR;
 		colorTargetInfo.store_op = SDL_GPU_STOREOP_STORE;
@@ -3419,7 +3520,7 @@ int Image::draw(Context* context) {
 
 		// Choose calibrated interlacing only when the main window is presenting a usable native-display
 		// source.
-		const bool isMainInterlaced = (context->mode == Lenticular && context->display3D &&
+		const bool isMainInterlaced = (context->mode == Light_Field && context->display3D &&
 			context->fullscreen && (nativeDisplayOnMainWindow || context->nativeOutputWindow == nullptr) && interlacerPipeline != nullptr &&
 			imageTexture != nullptr);
 
@@ -3545,7 +3646,7 @@ int Image::draw(Context* context) {
 						imageDataFrag.gridSize = context->gridSize;
 						// The native output uses both eyes, while this window previews one
 						// eye at the aspect ratio stored in context->imageSize.
-						imageDataFrag.mode = context->mode == Lenticular &&
+						imageDataFrag.mode = context->mode == Light_Field &&
 							isNativeStereoSource(context->imageType) ? Mono : context->mode;
 						imageDataFrag.type = context->imageType;
 						imageDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;
@@ -3987,19 +4088,48 @@ int Image::draw(Context* context) {
 				SDL_GPUTextureSamplerBinding subtitleBindings[1] = {{ .texture = subtitleTexture, .sampler = imageSampler }};
 				SDL_BindGPUFragmentSamplers(renderPass, 0, &subtitleBindings[0], 1);
 				if (subtitleBitmap) {
-					const auto canvasSize = glm::vec2(subtitleBitmapCanvasSize);
+					auto canvasSize = glm::vec2(subtitleBitmapCanvasSize);
 					const auto bitmapSize = subtitleTextSize;
-					const auto subtitleScale = context->safeSize / canvasSize *
-						static_cast<float>(context->currentZoom);
-					const auto bitmapCenter = glm::vec2(subtitleBitmapPosition) + bitmapSize * 0.5f;
-					const auto sourceCenter = bitmapCenter - canvasSize * 0.5f;
-					const auto screenCenter = windowSize * 0.5f +
-						glm::vec2(context->offset.x, -context->offset.y) + sourceCenter * subtitleScale;
-					setSpriteUniforms(glm::vec3(screenCenter, 0.0f),
-						glm::vec3(bitmapSize * subtitleScale, 1.0f), viewColorWhiteSolid,
-						1.0f, 1, {0.0f, 0.0f}, {1.0f, 1.0f},
-						glm::vec2(0.5f), glm::vec3(aspectScale, 1.0f));
-					drawSprite(commandBuffer, renderPass);
+					glm::vec2 eyeOrigin(0.0f);
+					int eye = context->display3D && viewsX > 1 ? view : 0;
+					if (context->display3D && viewsX > 1 && context->swapLeftRight) eye ^= 1;
+					if (subtitleBitmapStereoPacked &&
+						(context->imageType == Top_And_Bottom_Full ||
+						context->imageType == Top_And_Bottom_Half)) {
+						canvasSize.y *= 0.5f;
+						eyeOrigin.y = eye * canvasSize.y;
+					} else if (subtitleBitmapStereoPacked &&
+						(context->imageType == Side_By_Side_Full ||
+						context->imageType == Side_By_Side_Half ||
+						context->imageType == Side_By_Side_Swap)) {
+						if (context->imageType == Side_By_Side_Swap) eye ^= 1;
+						canvasSize.x *= 0.5f;
+						eyeOrigin.x = eye * canvasSize.x;
+					}
+					// A packed stereo subtitle can contain both eyes in one bitmap. Clip
+					// to the eye used by the video shader and place it in that eye's canvas.
+					const auto bitmapOrigin = glm::vec2(subtitleBitmapPosition);
+					const auto visibleMin = glm::max(bitmapOrigin, eyeOrigin);
+					const auto visibleMax = glm::min(bitmapOrigin + bitmapSize,
+						eyeOrigin + canvasSize);
+					const auto visibleSize = visibleMax - visibleMin;
+					if (visibleSize.x > 0.0f && visibleSize.y > 0.0f) {
+						const auto subtitleScale = context->safeSize / canvasSize *
+							static_cast<float>(context->currentZoom);
+						const auto sourceCenter = visibleMin - eyeOrigin + visibleSize * 0.5f -
+							canvasSize * 0.5f;
+						// Subtitle coordinates start at the top left; sprite positions use
+						// a bottom-left origin.
+						const auto screenCenter = windowSize * 0.5f +
+							glm::vec2(context->offset.x, -context->offset.y) +
+							glm::vec2(sourceCenter.x, -sourceCenter.y) * subtitleScale;
+						setSpriteUniforms(glm::vec3(screenCenter, 0.0f),
+							glm::vec3(visibleSize * subtitleScale, 1.0f), viewColorWhiteSolid,
+							1.0f, 1, (visibleMin - bitmapOrigin) / bitmapSize,
+							visibleSize / bitmapSize, glm::vec2(0.5f),
+							glm::vec3(aspectScale, 1.0f));
+						drawSprite(commandBuffer, renderPass);
+					}
 				} else if (subtitleShadowTexture != nullptr) {
 					const auto subtitleMargin = 24.0f * context->displayScale;
 					const auto subtitleCenter = glm::vec3(windowSize.x * 0.5f, windowSize.y, 0.0f) -
@@ -4093,6 +4223,10 @@ int Image::draw(Context* context) {
 		}
 
 		SDL_EndGPURenderPass(renderPass);
+#if defined(_WIN32) && defined(_MSC_VER)
+		presentLenticular(commandBuffer, context, colorTargetInfo.texture,
+			swapchainTexture, swapchainWidth, swapchainHeight);
+#endif
 	}
 
 	SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
@@ -4152,7 +4286,7 @@ void Image::updateInterlacerUniforms(Context* context, int width, int height, Na
 		interlacerDataFrag.gridColumns = 2;
 		interlacerDataFrag.gridRows = 1;
 	}
-	interlacerDataFrag.output2D = (!config.calibrated || context->mode != Lenticular || !context->display3D) ? 1 : 0;
+	interlacerDataFrag.output2D = (!config.calibrated || context->mode != Light_Field || !context->display3D) ? 1 : 0;
 	const bool isLenticular2View = config.viewCount == 2 || nativeStereoSource;
 	if (isLenticular2View) {
 		interlacerDataFrag.sourceFlat = (context->imageType == Color_Only) ? 1 : 0;
@@ -4182,7 +4316,7 @@ void Image::updateInterlacerUniforms(Context* context, int width, int height, Na
 void Image::drawNativeCalibrationWarning(Context* context, SDL_GPUCommandBuffer* commandBuffer,
 	SDL_GPURenderPass* renderPass, int width, int height, const NativeDisplayConfig& config) {
 	if (!nativeOutputEnabled || !config.usingDefaultCalibration ||
-		context->mode != Lenticular || !context->display3D || nativeCalibrationTexture == nullptr) return;
+		context->mode != Light_Field || !context->display3D || nativeCalibrationTexture == nullptr) return;
 
 	// Session-only state: display reconnects and 3D toggles must not restart the notice.
 	static bool shown = false;
@@ -4369,6 +4503,11 @@ int Image::drawNativeOutput(Context* context, NativeOutput& output, NativeDispla
 // Wait for outstanding GPU work and release rendering resources, fonts, and windows.
 void Image::quit(Context* context){
 	if (context->device != nullptr) SDL_WaitForGPUIdle(context->device);
+#if defined(_WIN32) && defined(_MSC_VER)
+	LenticularBridge::stop();
+	if (lenticularFrame) SDL_ReleaseGPUTexture(context->device, lenticularFrame);
+	lenticularFrame = nullptr;
+#endif
 	if (gettingStartedTexture) SDL_ReleaseGPUTexture(context->device, gettingStartedTexture);
 	gettingStartedTexture = nullptr;
 	GettingStarted::release();

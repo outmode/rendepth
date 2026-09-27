@@ -49,8 +49,10 @@ enum ViewMode {
 	Vertical,
 	Checkerboard,
 	Depth_Zoom,
-	Lenticular,
-	Light_Field = Lenticular
+	Light_Field,
+#if defined(_WIN32) && defined(_MSC_VER)
+	Lenticular
+#endif
 };
 
 enum StereoFormat {
@@ -216,6 +218,9 @@ struct Context {
 	glm::vec2 safeSize;
 	glm::vec2 displayAspect;
 	bool fullscreen;
+#if defined(_WIN32) && defined(_MSC_VER)
+	bool lenticular;
+#endif
 	bool maximized;
 	float visibility;
 	bool loading;

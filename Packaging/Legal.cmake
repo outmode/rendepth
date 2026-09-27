@@ -47,6 +47,15 @@ if(RENDEPTH_ENABLE_ONNX_RUNTIME)
 else()
     string(APPEND RENDEPTH_LEGAL_NOTICES "ONNX Runtime is disabled in this build.\n")
 endif()
+if(WIN32 AND MSVC)
+    set(sr_sdk_notice "${CMAKE_SOURCE_DIR}/ThirdParty/SimulatedRealitySDK-1.34.10/LICENSE")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${sr_sdk_notice}")
+    file(READ "${sr_sdk_notice}" sr_sdk_notice_text)
+    string(APPEND RENDEPTH_LEGAL_NOTICES
+        "\n--- Simulated Reality SDK 1.34.10 build interfaces ---\n"
+        "Source: https://github.com/bo3b/SR-lib/tree/master/SR-SDK-1.34.10\n\n"
+        "${sr_sdk_notice_text}\n")
+endif()
 if(WIN32 AND RENDEPTH_MVC_RUNTIME_LICENSES_DIR)
     if(EXISTS "${RENDEPTH_MVC_RUNTIME_LICENSES_DIR}/crt/COPYING.MinGW-w64-runtime.txt")
         set(mvc_crt_notice crt/COPYING.MinGW-w64-runtime.txt)

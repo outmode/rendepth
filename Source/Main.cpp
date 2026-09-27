@@ -47,6 +47,9 @@
 #include "AIEngineSettings.h"
 #include "SettingsFile.h"
 #include "GettingStarted.h"
+#if defined(_WIN32) && defined(_MSC_VER)
+#include "LenticularBridge.h"
+#endif
 #include "BlurayReader.h"
 #include "DiscTitleMenu.h"
 #include <utility>
@@ -131,6 +134,15 @@ static VideoDepthProcessor videoDepthProcessor;
 static ModelDownloader::Progress stillDepthModelDownload;
 static ModelDownloader::Progress videoDepthModelDownload;
 static ModelDownloader::Progress superResolutionModelDownload;
+static bool modelDownloadActive() {
+	return stillDepthModelDownload.active.load() || videoDepthModelDownload.active.load() ||
+		superResolutionModelDownload.active.load();
+}
+static bool downloadBlocksInput();
+static bool downloadControl(IconType type) {
+	return type == IconType::Close || type == IconType::Minimize ||
+		type == IconType::Fullscreen || type == IconType::Info;
+}
 static std::shared_ptr<VideoFrame> lastVideoFrame;
 static LiveVideoBuffer<VideoFrame> liveVideoBuffer;
 struct BufferedVideoFrame {
@@ -765,6 +777,7 @@ std::filesystem::path exePath = std::filesystem::path(
 std::filesystem::path homeDir = Core::getHomeDirectory();
 std::filesystem::path homePath = homeDir / ".Rendepth";
 static std::string modelDirectory;
+static std::string runtimeDirectory;
 static SDL_Surface* windowIcon = nullptr;
 
 static std::random_device randDevice;
@@ -879,6 +892,26 @@ static Icon& getIcon(IconType type);
 static void setDisplay3D(bool display);
 static int loadImage(void* ptr = nullptr);
 
+// Video browsing does not need image preloading or fade gating. In particular,
+// a format change may still be waiting for its first decoded frame when the
+// user asks to move to the next file.
+static bool navigateToAdjacentVideo(int targetIndex) {
+	if (!activeVideo || targetIndex < 0 || targetIndex == fileIndex ||
+		getMediaType(fileList[targetIndex].link) != MediaType::Video) return false;
+	if (doingFileOp) return true;
+	if (isPlayingSlideshow) cancelSlideshow();
+	lastSwitchTime = getTimeNow();
+	context.offset = { 0, 0 };
+	fileIndex = targetIndex;
+	switchedImage = false;
+	context.gotoPrev = false;
+	context.gotoNext = false;
+	context.gotoRand = false;
+	navigationLoadingIndicator = false;
+	loadImage(nullptr);
+	return true;
+}
+
 // Clear the navigation burst state so normal preloading and depth conversion can resume.
 static void resetRapidBrowseState() {
 	rapidBrowseClicks = 0;
@@ -911,6 +944,7 @@ void gotoPreviousImage(bool seekActiveVideo = true) {
 	if (activeScreenCapture) return;
 	if (seekActiveVideo && skipVideoBy(-15.0)) return;
 	if (fileList.empty()) return;
+	if (navigateToAdjacentVideo(previousFileIndex())) return;
 
 	if (rapidBrowseMode) {
 		lastRapidBrowseNavigation = getTimeNow();
@@ -975,6 +1009,7 @@ void gotoNextImage(bool seekActiveVideo = true) {
 	if (activeScreenCapture) return;
 	if (seekActiveVideo && skipVideoBy(15.0)) return;
 	if (fileList.empty()) return;
+	if (navigateToAdjacentVideo(nextFileIndex())) return;
 
 	if (rapidBrowseMode) {
 		lastRapidBrowseNavigation = getTimeNow();
@@ -1338,7 +1373,7 @@ Icon IconFullscreen = {
 			topRightControlsBottomRight()};
 	},
 	[]() {
-		if (isConverting) return;
+		if (isConverting && !downloadBlocksInput()) return;
 		toggleFullscreen();
 	},
 	1.0,
@@ -1625,7 +1660,11 @@ Icon IconSettings = {
 Choice ChoiceStereo {
 	"3D Mode",
 	{ "Natural Color", "Vivid Color", "SBS Full", "SBS Half", "Color + Depth",
-		"Horizontal", "Vertical", "Checkerboard", "Free View", "Light Field", "Disabled" },
+		"Horizontal", "Vertical", "Checkerboard", "Free View",
+#if defined(_WIN32) && defined(_MSC_VER)
+		"Lenticular",
+#endif
+		"Light Field", "Disabled" },
 };
 
 Choice ChoiceExport {
@@ -1661,7 +1700,7 @@ Choice ChoiceSlideshow {
 
 Choice ChoiceTags {
 	"Force 3D Format",
-	{ "SBS Full", "SBS Half", "TAB Full", "TAB Half", "Color Only", "Anaglyph" },
+	{ "SBS Full", "SBS Half", "TAB Full", "TAB Half", "Standard Media", "Anaglyph" },
 };
 
 Choice ChoiceEyes {
@@ -1730,6 +1769,15 @@ static void pollRuntimePackInstall();
 #endif
 #endif
 
+static bool downloadBlocksInput() {
+	if (modelDownloadActive()) return true;
+#if defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME) && (defined(_WIN32) || defined(__linux__))
+	return runtimePackInstall.thread != nullptr;
+#else
+	return false;
+#endif
+}
+
 Choice ChoiceVersion {
 	.label = "Rendepth 3.0.0 (Free Version)",
 	.options = {},
@@ -1767,7 +1815,11 @@ static std::unordered_map<std::string, int> menuSelection = {
 	{ ChoiceRuntimePacks.label, 0 },
 	{ ChoiceRuntimeTools.label, -1 },
 #endif
+#if defined(_WIN32) && defined(_MSC_VER)
+	{ ChoiceStereo.label, 11 }, // Disabled
+#else
 	{ ChoiceStereo.label, 10 }, // Disabled
+#endif
 	{ ChoiceExport.label, 0 },
 	{ ChoiceSaveFormat.label, 0 },
 	{ ChoiceModel.label, 0 },
@@ -1804,7 +1856,19 @@ static void setPreferredStereo(ViewMode mode, bool saveMode = true);
 static void setShowStereoSettings(bool show);
 static std::array stereoModes = {
 	Anaglyph_Accurate, Anaglyph_Vivid, SBS_Full, SBS_Half, RGB_Depth,
-	Horizontal, Vertical, Checkerboard, Free_View_Grid, Lenticular, Mono };
+	Horizontal, Vertical, Checkerboard, Free_View_Grid,
+#if defined(_WIN32) && defined(_MSC_VER)
+	Lenticular,
+#endif
+	Light_Field, Mono };
+
+static constexpr bool isHalfSbsPreference(ViewMode mode) {
+#if defined(_WIN32) && defined(_MSC_VER)
+	return mode == SBS_Half || mode == Lenticular;
+#else
+	return mode == SBS_Half;
+#endif
+}
 // All interactive Pro entry points use the same locally persisted activation.
 static constexpr const char* proUpgradeMessage = "Upgrade to Pro to Unlock Feature";
 // Check the saved Pro activation and show the upgrade prompt when a feature is locked.
@@ -1820,13 +1884,8 @@ static bool requirePro() {
 	return false;
 }
 
-// Apply the selected stereo output format and start or stop depth conversion as required.
+// Change only the output format; depth work starts when 3D is explicitly enabled.
 static void changeStereo(int option) {
-	// Output format selection is free; only generating video depth needs Pro.
-	const bool monoVideo = (activeVideo && !videoPlayer.audioOnly() && !fileList.empty() &&
-		fileList[fileIndex].type == Color_Only) ||
-		(activeScreenCapture && captureSourceType == Color_Only);
-	const bool conversionLocked = monoVideo && !Licensing::Service::isLicensed();
 	if (stereoModes[option] == Mono) {
 		setDisplay3D(false);
 		if (activeVideo || activeScreenCapture) {
@@ -1839,39 +1898,8 @@ static void changeStereo(int option) {
 			waitForDepthThread();
 			isConverting = false;
 		}
-		for (auto& file : fileList) {
-			if (Core::getImageType(file.link) == Color_Only ||
-				(!isSupportedMedia(file.link) && file.path != file.link)) {
-				file.path = file.link;
-				file.type = Color_Only;
-				SDL_DestroySurface(file.preload);
-				file.preload = nullptr;
-			}
-		}
-		if (!fileList.empty()) {
-			if (activeVideo && videoPlayer.audioOnly() && audioAlbumArt != nullptr) {
-				auto* artwork = SDL_DuplicateSurface(audioAlbumArt);
-				if (artwork != nullptr) {
-					Image::load(&context, fileList[fileIndex], artwork, Color_Only);
-				}
-			} else if (!activeVideo && !activeScreenCapture) {
-				loadImage(nullptr);
-			}
-		}
-	} else {
-		setDisplay3D(!conversionLocked);
 	}
 	setPreferredStereo(stereoModes[option], true);
-	if (!fileList.empty() && stereoModes[option] != Mono) {
-		if (activeVideo) {
-			if (!conversionLocked && fileList[fileIndex].type == Color_Only && !videoDepthProcessor.running()) {
-				startVideoDepth();
-			}
-		} else if (!activeScreenCapture && fileList[fileIndex].type == Color_Only && !isConverting) {
-			keep3DForDepthReload = display3D && context.imageType == Color_Plus_Depth;
-			callDepthGen(fileIndex);
-		}
-	}
 	Image::saveMenuLayout(&context);
 	setShowStereoSettings(false);
 	checkMouseState();
@@ -2031,7 +2059,7 @@ static constexpr std::array<double, 3> videoDepthRates = { 20.0, 15.0, 12.0 };
 
 // Choose a usable presentation mode while video depth is unavailable.
 static void setVideoDepthFallbackMode() {
-	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
+	if (preferredStereoMode == SBS_Full || isHalfSbsPreference(preferredStereoMode) ||
 		preferredStereoMode == Anaglyph_Accurate || preferredStereoMode == Anaglyph_Vivid ||
 		preferredStereoMode == RGB_Depth)
 		setStereoMode(preferredStereoMode);
@@ -2600,8 +2628,12 @@ static void runtimeTools(int option) {
 #if defined(_WIN32) || defined(__linux__)
 static void pollRuntimePackInstall() {
 	if (!runtimePackInstall.thread) return;
+	// The menu covers the help area and input is blocked during installation.
+	const bool closedOptions = context.displayMenu;
+	if (closedOptions) toggleOptions();
 	if (!runtimePackInstall.done.load(std::memory_order_acquire)) {
 		static double nextUpdate = 0.0;
+		if (closedOptions) nextUpdate = 0.0;
 		if (getTimeNow() >= nextUpdate) {
 			const auto stage = runtimePackInstall.progress.stage.load();
 			std::string status = stage == RuntimePackDownloader::Stage::Checksum ?
@@ -2657,15 +2689,24 @@ static void pollModelDownloadProgress() {
 		trackedProgress = nullptr;
 		return;
 	}
+	// The menu covers the help area and model downloads block menu clicks.
+	const bool closedOptions = context.displayMenu;
+	if (closedOptions) toggleOptions();
 	const double now = getTimeNow();
 	const auto sequence = progress->sequence.load();
 	if (progress != trackedProgress || sequence != trackedSequence) {
 		trackedProgress = progress;
 		trackedSequence = sequence;
 		unknownSizeShown = false;
-		// Let the initial model-loading tip finish its normal display interval.
-		showProgressAt = Image::displayTip ? displayTipTime + displayTipWait : now;
+		// Keep the initial loading tip unless it was hidden behind the menu.
+		showProgressAt = closedOptions ? now :
+			(Image::displayTip ? displayTipTime + displayTipWait : now);
 		nextUpdate = 0.0;
+	}
+	if (closedOptions) {
+		showProgressAt = now;
+		nextUpdate = 0.0;
+		unknownSizeShown = false;
 	}
 	if (now < showProgressAt) return;
 	const auto total = progress->total.load();
@@ -3782,12 +3823,18 @@ void saveOptions() {
 	rapidjson::Value modelDirValue;
 	modelDirValue.SetString(modelDirectory.c_str(), allocator);
 	document.AddMember(rapidjson::StringRef("modelDirectory"), modelDirValue, allocator);
+	rapidjson::Value runtimeDirValue;
+	runtimeDirValue.SetString(runtimeDirectory.c_str(), allocator);
+	document.AddMember(rapidjson::StringRef("runtimeDirectory"), runtimeDirValue, allocator);
 	document.AddMember(rapidjson::StringRef("videoVolume"), currentVideoVolume, allocator);
 	document.AddMember(rapidjson::StringRef("losslessDepthmaps"), losslessDepthmaps, allocator);
 	document.AddMember(rapidjson::StringRef("hideGettingStarted"), GettingStarted::dontShowAgain, allocator);
 	const auto lastStereo = std::find(stereoModes.begin(), stereoModes.end(), lastUsedStereoMode);
 	document.AddMember(rapidjson::StringRef("Last 3D Mode"),
 		static_cast<int>(lastStereo - stereoModes.begin()), allocator);
+#if defined(_WIN32) && defined(_MSC_VER)
+	document.AddMember(rapidjson::StringRef("3D Mode Layout Version"), 2, allocator);
+#endif
 
     rapidjson::StringBuffer output;
     rapidjson::PrettyWriter writer(output);
@@ -3822,8 +3869,19 @@ void loadOptions() {
 	if (!document.IsObject()) return;
 	if (document.HasMember("hideGettingStarted") && document["hideGettingStarted"].IsBool())
 		GettingStarted::dontShowAgain = document["hideGettingStarted"].GetBool();
+#if defined(_WIN32) && defined(_MSC_VER)
+	const bool oldStereoModeLayout = !document.HasMember("3D Mode Layout Version") ||
+		!document["3D Mode Layout Version"].IsInt() ||
+		document["3D Mode Layout Version"].GetInt() < 2;
+	const auto migrateStereoOption = [oldStereoModeLayout](int option) {
+		return oldStereoModeLayout && option >= 9 ? option + 1 : option;
+	};
+#endif
 	if (document.HasMember("Last 3D Mode") && document["Last 3D Mode"].IsInt()) {
-		const int option = document["Last 3D Mode"].GetInt();
+		int option = document["Last 3D Mode"].GetInt();
+#if defined(_WIN32) && defined(_MSC_VER)
+		option = migrateStereoOption(option);
+#endif
 		if (option >= 0 && option < static_cast<int>(stereoModes.size()) && stereoModes[option] != Mono)
 			lastUsedStereoMode = stereoModes[option];
 	}
@@ -3843,7 +3901,10 @@ void loadOptions() {
 #endif
 		auto settingName = setting.first.c_str();
 		if (document.HasMember(settingName) && document[settingName].IsInt()) {
-			const int value = document[settingName].GetInt();
+			int value = document[settingName].GetInt();
+#if defined(_WIN32) && defined(_MSC_VER)
+			if (setting.first == ChoiceStereo.label) value = migrateStereoOption(value);
+#endif
 			const auto choice = std::find_if(menuChoices.begin(), menuChoices.end(),
 				[&](const Choice& entry) { return entry.label == setting.first; });
 			if (choice == menuChoices.end() || value < 0 || value >= static_cast<int>(choice->options.size())) continue;
@@ -3874,6 +3935,9 @@ void loadOptions() {
 	}
 	if (document.HasMember("modelDirectory") && document["modelDirectory"].IsString()) {
 		modelDirectory = document["modelDirectory"].GetString();
+	}
+	if (document.HasMember("runtimeDirectory") && document["runtimeDirectory"].IsString()) {
+		runtimeDirectory = document["runtimeDirectory"].GetString();
 	}
 	if (document.HasMember("videoVolume") && document["videoVolume"].IsNumber()) {
 		currentVideoVolume = glm::clamp(document["videoVolume"].GetDouble(), 0.0, 1.0);
@@ -4017,7 +4081,7 @@ static void setDisplay3D(bool display) {
 
 // Resolve the requested presentation against the loaded source format and output display.
 static void refreshDisplay3D(StereoFormat type) {
-	if (preferredStereoMode == Lenticular) {
+	if (preferredStereoMode == Light_Field) {
 		if (startupNativeDiscoveryPending) {
 			setStereoMode(type == Color_Only ? Native : Mono);
 			return;
@@ -4032,10 +4096,10 @@ static void refreshDisplay3D(StereoFormat type) {
 			setStereoMode(type == Color_Only ? Native : Mono);
 			return;
 		}
-		setStereoMode(Lenticular);
+		setStereoMode(Light_Field);
 		return;
 	}
-	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
+	if (preferredStereoMode == SBS_Full || isHalfSbsPreference(preferredStereoMode) ||
 		preferredStereoMode == RGB_Depth) {
 		// SBS and RGB_Depth are two-view presentations and are only valid in fullscreen. On
 		// the initial load the window is still windowed, so keep the normal
@@ -4055,7 +4119,7 @@ static void refreshDisplay3D(StereoFormat type) {
 			? preferredStereoMode : Native);
 	} else {
 		if (display3D) {
-			if (preferredStereoMode == Lenticular && !Image::nativeOutputAvailable())
+			if (preferredStereoMode == Light_Field && !Image::nativeOutputAvailable())
 				setStereoMode(Mono);
 			else
 				setStereoMode(preferredStereoMode);
@@ -4068,8 +4132,16 @@ static void refreshDisplay3D(StereoFormat type) {
 // Apply the active render mode and recalculate image sizing.
 static void setStereoMode(ViewMode mode) {
 	currentStereoMode = mode;
-	context.mode = currentStereoMode;
-	if (mode == Lenticular && !startupNativeDiscoveryPending)
+	// The monitor handles the lenticular conversion; Rendepth draws the same
+	// two half-width views, guide, controls, and cursor as SBS Half.
+#if defined(_WIN32) && defined(_MSC_VER)
+	if (mode != Lenticular) LenticularBridge::stop();
+	context.lenticular = mode == Lenticular;
+	context.mode = mode == Lenticular ? SBS_Half : mode;
+#else
+	context.mode = mode;
+#endif
+	if (mode == Light_Field && !startupNativeDiscoveryPending)
 		Image::setNativeOutputActive(&context, true);
 	Image::updateSize(&context);
 }
@@ -4081,7 +4153,7 @@ static void setPreferredStereo(ViewMode mode, bool saveMode) {
 	if (saveMode) defaultStereoMode = mode;
 	preferredStereoMode = mode;
 	showCustomCursor(shouldShowCustomCursor());
-	if (saveMode && mode != Lenticular)
+	if (saveMode && mode != Light_Field)
 		Image::setNativeOutputActive(&context, false);
 	updateStereoIcon();
 	if (activeScreenCapture) {
@@ -4213,13 +4285,16 @@ static void updateFullscreenButton() {
 // Reconcile fullscreen state with UI icons, image sizing, and stereo presentation.
 static void updateFullscreenState() {
 	isFullscreen = (SDL_GetWindowFlags(context.window) & SDL_WINDOW_FULLSCREEN) != 0;
+#if defined(_WIN32) && defined(_MSC_VER)
+	if (!isFullscreen) LenticularBridge::stop();
+#endif
 	updateFullscreenButton();
 	context.offset = glm::vec2(0.0f);
 	targetZoom = 1.0f;
 	context.fullscreen = isFullscreen;
 	context.maximized = isMaximized;
 	Image::updateSize(&context);
-	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
+	if (preferredStereoMode == SBS_Full || isHalfSbsPreference(preferredStereoMode) ||
 		preferredStereoMode == RGB_Depth)
 		refreshDisplay3D(context.imageType);
 }
@@ -4454,7 +4529,7 @@ void toggleStereo() {
 			// viewing the video in 2D, so returning to 3D does not reload the model.
 			setDisplay3D(false);
 			setStereoMode((isFullscreen && (preferredStereoMode == SBS_Full ||
-				preferredStereoMode == SBS_Half || preferredStereoMode == RGB_Depth))
+				isHalfSbsPreference(preferredStereoMode) || preferredStereoMode == RGB_Depth))
 				? preferredStereoMode : Native);
 		} else if (videoDepthProcessor.running() || videoDepthFrameLoaded) {
 			setDisplay3D(true);
@@ -4894,7 +4969,8 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	startupInferenceOption = menuSelection[ChoiceInference.label];
 	const auto preferred = inferenceProviderForOption(startupInferenceOption);
-	InferenceRuntime::configure(exePath, homePath / "Runtimes", preferred);
+	InferenceRuntime::configure(exePath, runtimeDirectory.empty()
+		? homePath / "Runtimes" : std::filesystem::path(runtimeDirectory), preferred);
 	inferenceRuntimeLoaded = InferenceRuntime::initialize(DepthEstimator::Provider::Auto, inferenceStartupError);
 	if (!inferenceRuntimeLoaded) SDL_Log("%s", inferenceStartupError.c_str());
 	refreshInferenceSettings();
@@ -4960,15 +5036,15 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 
 	// Native display discovery can read calibration from a slow USB volume. Let
 	// the welcome page or initial media reach the screen before doing that work.
-	if (preferredStereoMode == Lenticular) {
+	if (preferredStereoMode == Light_Field) {
 		setStereoMode(fileList.empty() || fileIndex < 0 ||
 			fileList[fileIndex].type == Color_Only ? Native : Mono);
 	} else if (!fileList.empty() && fileList.size() > fileIndex) {
 		refreshDisplay3D(fileList[fileIndex].type);
-		if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
+		if (preferredStereoMode == SBS_Full || isHalfSbsPreference(preferredStereoMode) ||
 			preferredStereoMode == RGB_Depth)
 			setStereoMode(fileList[fileIndex].type == Color_Only ? Native : Mono);
-	} else if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
+	} else if (preferredStereoMode == SBS_Full || isHalfSbsPreference(preferredStereoMode) ||
 		preferredStereoMode == RGB_Depth) {
 		setStereoMode(Native);
 	}
@@ -4995,19 +5071,24 @@ static void finishStartupNativeDiscovery() {
 	const char* requestedNative = std::getenv("RENDEPTH_NATIVE_OUTPUT");
 	const bool forceNative = requestedNative && std::string(requestedNative) == "1" &&
 		Image::nativeOutputAvailable();
-	if ((Image::isNativeDisplayOnMainWindow() && preferredStereoMode != Mono) || forceNative) {
-		preferredStereoMode = Lenticular;
-		lastUsedStereoMode = Lenticular;
-		currentStereoMode = Lenticular;
-		context.mode = Lenticular;
+	bool useNativeOutput = Image::isNativeDisplayOnMainWindow() && preferredStereoMode != Mono;
+#if defined(_WIN32) && defined(_MSC_VER)
+	// An explicit Game Bridge choice must not be replaced by native Light Field discovery.
+	useNativeOutput = useNativeOutput && preferredStereoMode != Lenticular;
+#endif
+	if (useNativeOutput || forceNative) {
+		preferredStereoMode = Light_Field;
+		lastUsedStereoMode = Light_Field;
+		currentStereoMode = Light_Field;
+		context.mode = Light_Field;
 		if (forceNative && !fileList.empty() && fileIndex >= 0 &&
 			(fileList[fileIndex].type == Light_Field_LKG || fileList[fileIndex].type == Color_Plus_Depth))
 			setDisplay3D(true);
 	}
-	if (preferredStereoMode == Lenticular && Image::nativeOutputAvailable() &&
+	if (preferredStereoMode == Light_Field && Image::nativeOutputAvailable() &&
 		!fileList.empty() && fileIndex >= 0 && fileList.size() > fileIndex)
 		refreshDisplay3D(context.imageType);
-	if (preferredStereoMode != Lenticular)
+	if (preferredStereoMode != Light_Field)
 		Image::setNativeOutputActive(&context, false);
 }
 
@@ -5679,11 +5760,11 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		}
 	}
 	context.fullscreen = isFullscreen;
-	if (preferredStereoMode == SBS_Full || preferredStereoMode == SBS_Half ||
+	if (preferredStereoMode == SBS_Full || isHalfSbsPreference(preferredStereoMode) ||
 		preferredStereoMode == RGB_Depth) {
 		const auto fullscreenMode = isFullscreen ? preferredStereoMode :
 			(context.imageType == Color_Only ? Native : Mono);
-		if (context.mode != fullscreenMode) setStereoMode(fullscreenMode);
+		if (currentStereoMode != fullscreenMode) setStereoMode(fullscreenMode);
 	}
 	context.maximized = isMaximized;
 	context.visibility = (float)currentVisibility;
@@ -5696,7 +5777,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	context.safeSize = Image::updateRatio(&context, windowSize);
 
 	auto visibleSize = windowSize;
-	if (preferredStereoMode == SBS_Half || preferredStereoMode == RGB_Depth)
+	if (isHalfSbsPreference(preferredStereoMode) || preferredStereoMode == RGB_Depth)
 		visibleSize.x *= 0.5;
 #ifdef __APPLE__
 	pollMacFullscreenMouse();
@@ -5889,6 +5970,7 @@ static double getSliderPercentAtMouse(const Icon& icon, const glm::vec2& aspectS
 void checkMouseState() {
 	if (GettingStarted::visible) return;
 	isIconCaptured = false;
+	const bool blockingInputForDownload = downloadBlocksInput();
 	auto aspectScale = glm::vec2(1.0);
 	if (preferredStereoMode == SBS_Full && isFullscreen)
 		aspectScale = glm::vec2(2.0, 1.0);
@@ -5945,11 +6027,13 @@ void checkMouseState() {
 			&& fileList.empty() && !activeScreenCapture);
 		auto displayMenu = !(context.displayMenu && (icon.type == IconType::Forward || icon.type == IconType::Back ||
 			icon.type == IconType::File || icon.type == IconType::Folder || icon.type == IconType::Save || icon.type == IconType::Window ||
-			icon.type == IconType::Fullscreen || icon.type == IconType::Play || icon.type == IconType::Pause ||
+			(icon.type == IconType::Fullscreen && !blockingInputForDownload) ||
+			icon.type == IconType::Play || icon.type == IconType::Pause ||
 			icon.type == IconType::Crop ||
 			icon.type == IconType::VideoSeek || icon.type == IconType::VideoVolume ||
 			icon.type == IconType::VideoAudio || icon.type == IconType::VideoCaption ||
-			icon.type == IconType::Settings || icon.type == IconType::Info));
+			icon.type == IconType::Settings ||
+			(icon.type == IconType::Info && !blockingInputForDownload)));
 		auto displayXD = !((context.displayMenu || preferredStereoMode == Mono ||
 			(activeVideo && videoPlayer.audioOnly())) && icon.type == IconType::Stereo_3D);
 		auto displaySave = true;
@@ -6955,7 +7039,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 	static bool resumeAfterGuide = false;
 	if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
 	if (event->type == SDL_EVENT_DISPLAY_ADDED || event->type == SDL_EVENT_DISPLAY_REMOVED) {
-		if (!startupNativeDiscoveryPending && preferredStereoMode == Lenticular)
+		if (!startupNativeDiscoveryPending && preferredStereoMode == Light_Field)
 			Image::initNativeOutput(&context);
 		return SDL_APP_CONTINUE;
 	}
@@ -6971,6 +7055,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		eventWindow != nullptr && eventWindow != context.window) {
 		return SDL_APP_CONTINUE;
 	}
+	const bool blockingInputForDownload = downloadBlocksInput();
+	// During downloads, keep hover and the window/tooltip controls responsive.
     // Global window/menu shortcuts must run before the guide consumes keyboard input.
     auto dismissGuide = [&]() {
         GettingStarted::visible = false;
@@ -6987,6 +7073,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             if (!event->key.repeat) toggleFullscreen();
             return SDL_APP_CONTINUE;
         }
+		if (blockingInputForDownload) return SDL_APP_CONTINUE;
         if (key == SDLK_TAB && !GettingStarted::visible &&
             !(event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
             if (!event->key.repeat) {
@@ -6998,6 +7085,47 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
             return SDL_APP_CONTINUE;
         }
     }
+	if (blockingInputForDownload) {
+		if (currentSlider != nullptr || isDragging) finishSliderDrag(false);
+		if (event->type == SDL_EVENT_KEY_UP) {
+			prevNextKeyDown = false;
+			return SDL_APP_CONTINUE;
+		}
+		if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+			if (event->button.button == SDL_BUTTON_LEFT) {
+				// Consume the matching release even if the download finishes first.
+				leftClickConsumedByUI = true;
+				lastClick = 0.0;
+				context.mouse = mousePositionForUI(event->button.x, event->button.y);
+				mouseLastActive = getTimeNow();
+				showCustomCursor(true);
+				checkMouseState();
+				for (auto& icon : appIcons) {
+					if (icon.state == IconState::Over && icon.active &&
+						downloadControl(icon.type)) {
+						if (icon.callback) icon.callback();
+						if (icon.type == IconType::Info) checkMouseState();
+						break;
+					}
+				}
+			}
+			return SDL_APP_CONTINUE;
+		}
+		if (event->type == SDL_EVENT_MOUSE_BUTTON_UP) {
+			if (event->button.button == SDL_BUTTON_LEFT) {
+				context.mouse = mousePositionForUI(event->button.x, event->button.y);
+				mouseLastActive = getTimeNow();
+				checkMouseState();
+				mouseIsDown = false;
+				leftClickConsumedByUI = false;
+				lastClick = 0.0;
+			}
+			return SDL_APP_CONTINUE;
+		}
+		if (event->type == SDL_EVENT_MOUSE_WHEEL || event->type == SDL_EVENT_DROP_FILE ||
+			event->type == SDL_EVENT_TEXT_INPUT || event->type == SDL_EVENT_TEXT_EDITING)
+			return SDL_APP_CONTINUE;
+	}
 	if (event->type == SDL_EVENT_KEY_DOWN &&
 		(event->key.key == SDLK_F1 || event->key.key == SDLK_F2) &&
 		!event->key.repeat && !GettingStarted::visible) {
@@ -7069,7 +7197,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		auto pixelDensity = SDL_GetWindowPixelDensity(context.window);
 		context.pixelDensity = pixelDensity;
 		updateDisplayScale();
-		if (!startupNativeDiscoveryPending && preferredStereoMode == Lenticular)
+		if (!startupNativeDiscoveryPending && preferredStereoMode == Light_Field)
 			Image::initNativeOutput(&context);
 	} else if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
 		event->type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
@@ -7080,7 +7208,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		if (isFullscreen) {
 			Image::configureFullscreenMode(context.window, SDL_GetDisplayForWindow(context.window));
 		}
-		if (!startupNativeDiscoveryPending && preferredStereoMode == Lenticular) {
+		if (!startupNativeDiscoveryPending && preferredStereoMode == Light_Field) {
 			Image::initNativeOutput(&context);
 		}
 	} else if (event->type == SDL_EVENT_WINDOW_RESIZED) {

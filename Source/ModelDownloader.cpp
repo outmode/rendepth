@@ -3,6 +3,12 @@
 
 #include "ModelDownloader.h"
 
+#include <unzip.h>
+#ifdef _WIN32
+#include <iowin32.h>
+#endif
+
+#include <array>
 #include <charconv>
 #include <cctype>
 #include <cstdio>
@@ -20,6 +26,66 @@
 namespace {
 
 constexpr const char* modelBaseUrl = "https://rendepth.com/models/";
+constexpr std::uint64_t maxModelBytes = 8ull * 1024 * 1024 * 1024;
+
+// Only install the expected model file from the archive, through a temporary path.
+bool extractModel(const std::filesystem::path& archivePath,
+	const std::filesystem::path& temporaryModel, const std::string& filename,
+	ModelDownloader::Progress* progress, std::string& error) {
+#ifdef _WIN32
+	zlib_filefunc64_def fileFunctions{};
+	fill_win32_filefunc64W(&fileFunctions);
+	unzFile archive = unzOpen2_64(archivePath.c_str(), &fileFunctions);
+#else
+	const std::string archiveName = archivePath.string();
+	unzFile archive = unzOpen64(archiveName.c_str());
+#endif
+	if (!archive) { error = "Could not open downloaded model ZIP."; return false; }
+	if (unzLocateFile(archive, filename.c_str(), 1) != UNZ_OK) {
+		error = "Model ZIP does not contain " + filename + ".";
+		unzClose(archive);
+		return false;
+	}
+	unz_file_info64 entry{};
+	if (unzGetCurrentFileInfo64(archive, &entry, nullptr, 0, nullptr, 0, nullptr, 0) != UNZ_OK ||
+		entry.uncompressed_size == 0 || entry.uncompressed_size > maxModelBytes ||
+		(entry.flag & 1) || (entry.compression_method != 0 && entry.compression_method != 8) ||
+		((entry.external_fa >> 16) & 0170000) == 0120000) {
+		error = "Model ZIP contains an unsafe or unsupported model file.";
+		unzClose(archive);
+		return false;
+	}
+	if (unzOpenCurrentFile(archive) != UNZ_OK) {
+		error = "Could not extract model from ZIP.";
+		unzClose(archive);
+		return false;
+	}
+#ifdef _WIN32
+	FILE* output = _wfopen(temporaryModel.c_str(), L"wb");
+#else
+	FILE* output = std::fopen(temporaryModel.c_str(), "wb");
+#endif
+	std::array<char, 64 * 1024> buffer{};
+	int count = 0;
+	std::uint64_t extracted = 0;
+	bool written = output != nullptr;
+	while (written && (!progress || !progress->cancel.load()) &&
+		(count = unzReadCurrentFile(archive, buffer.data(), static_cast<unsigned>(buffer.size()))) > 0) {
+		extracted += count;
+		written = extracted <= entry.uncompressed_size &&
+			std::fwrite(buffer.data(), 1, count, output) == static_cast<size_t>(count);
+	}
+	const bool closedOutput = output && std::fclose(output) == 0;
+	const int closeResult = unzCloseCurrentFile(archive);
+	const bool valid = written && count == 0 && extracted == entry.uncompressed_size &&
+		closedOutput && (!progress || !progress->cancel.load()) && closeResult == UNZ_OK;
+	if (!valid) {
+		error = progress && progress->cancel.load() ? "Model download cancelled." :
+			"Model ZIP failed extraction or its integrity check.";
+	}
+	unzClose(archive);
+	return valid;
+}
 
 // Hostinger's model ETag starts with the file size in hex. Use it when the
 // response omits Content-Length; otherwise leave progress indeterminate.
@@ -86,6 +152,12 @@ bool downloadFile(const std::string& filename, FILE* output, Progress* progress)
 		WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
 	bool success = request != nullptr && WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS,
 		0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(request, nullptr);
+	DWORD status = 0;
+	DWORD statusLength = sizeof(status);
+	if (success && (!WinHttpQueryHeaders(request,
+		WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+		&status, &statusLength, WINHTTP_NO_HEADER_INDEX) || status != 200))
+		success = false;
 	if (success && progress != nullptr) {
 		DWORD total = 0;
 		DWORD length = sizeof(total);
@@ -138,8 +210,9 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 		progress->received = 0;
 		progress->total = 0;
 	}
-	if (directory.empty() || filename.empty()) {
-		error = "Model directory or filename is empty.";
+	const std::filesystem::path modelName(filename);
+	if (directory.empty() || modelName.filename() != modelName || modelName.extension() != ".onnx") {
+		error = "Model directory or ONNX filename is invalid.";
 		return {};
 	}
 
@@ -154,11 +227,18 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 	if (std::filesystem::is_regular_file(destination, filesystemError) && !filesystemError)
 		return destination;
 
-	const auto temporary = directory / (filename + ".download");
-	std::filesystem::remove(temporary, filesystemError);
-	FILE* output = std::fopen(temporary.string().c_str(), "wb");
+	const auto archiveFilename = std::filesystem::path(filename).replace_extension(".zip").string();
+	const auto temporaryArchive = directory / (archiveFilename + ".download");
+	const auto temporaryModel = directory / (filename + ".download");
+	std::filesystem::remove(temporaryArchive, filesystemError);
+	std::filesystem::remove(temporaryModel, filesystemError);
+#ifdef _WIN32
+	FILE* output = _wfopen(temporaryArchive.c_str(), L"wb");
+#else
+	FILE* output = std::fopen(temporaryArchive.c_str(), "wb");
+#endif
 	if (output == nullptr) {
-		error = "Could not create temporary model file: " + temporary.string();
+		error = "Could not create temporary model ZIP: " + temporaryArchive.string();
 		return {};
 	}
 	if (progress != nullptr) {
@@ -166,15 +246,15 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 		progress->active = true;
 	}
 
-	#ifdef _WIN32
-	const bool downloadSucceeded = downloadFile(filename, output, progress);
-	#else
+#ifdef _WIN32
+	const bool downloadSucceeded = downloadFile(archiveFilename, output, progress);
+#else
 	const auto curlGlobal = curl_global_init(CURL_GLOBAL_DEFAULT);
 	CURLcode result = CURLE_FAILED_INIT;
 	if (curlGlobal == CURLE_OK) {
 		CURL* curl = curl_easy_init();
 		if (curl != nullptr) {
-			const std::string url = std::string(modelBaseUrl) + filename;
+			const std::string url = std::string(modelBaseUrl) + archiveFilename;
 			curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
 			curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 			curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
@@ -199,34 +279,48 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 	}
 	curl_global_cleanup();
 	const bool downloadSucceeded = result == CURLE_OK;
-	#endif
+#endif
 	const bool closeSucceeded = std::fclose(output) == 0;
-	if (progress != nullptr) progress->active = false;
 
 	if (!downloadSucceeded || !closeSucceeded) {
-		std::filesystem::remove(temporary, filesystemError);
-		#ifdef _WIN32
-		error = "Could not download depth model.";
-		#else
-		error = curl_easy_strerror(result);
-		#endif
+		if (progress != nullptr) progress->active = false;
+		std::filesystem::remove(temporaryArchive, filesystemError);
+#ifdef _WIN32
+		error = "Could not download model ZIP.";
+#else
+		error = closeSucceeded ? curl_easy_strerror(result) : "Could not finish writing model ZIP.";
+#endif
 		return {};
 	}
 	const auto expectedSize = progress != nullptr ? progress->total.load() : 0;
 	if (expectedSize != 0) {
 		std::error_code sizeError;
-		const auto actualSize = std::filesystem::file_size(temporary, sizeError);
+		const auto actualSize = std::filesystem::file_size(temporaryArchive, sizeError);
 		if (sizeError || actualSize != expectedSize) {
-			std::filesystem::remove(temporary, filesystemError);
-			error = "The depth model download ended before the complete file was received.";
+			if (progress != nullptr) progress->active = false;
+			std::filesystem::remove(temporaryArchive, filesystemError);
+			error = "The model ZIP download ended before the complete file was received.";
 			return {};
 		}
 	}
 
-	std::filesystem::rename(temporary, destination, filesystemError);
+	const bool extracted = extractModel(temporaryArchive, temporaryModel, filename, progress, error);
+	std::filesystem::remove(temporaryArchive, filesystemError);
+	if (progress != nullptr) progress->active = false;
 	if (filesystemError) {
-		std::filesystem::remove(temporary, filesystemError);
-		error = "Could not install downloaded model: " + filesystemError.message();
+		std::filesystem::remove(temporaryModel, filesystemError);
+		error = "Could not remove downloaded model ZIP.";
+		return {};
+	}
+	if (!extracted) {
+		std::filesystem::remove(temporaryModel, filesystemError);
+		return {};
+	}
+	std::filesystem::rename(temporaryModel, destination, filesystemError);
+	if (filesystemError) {
+		const std::string reason = filesystemError.message();
+		std::filesystem::remove(temporaryModel, filesystemError);
+		error = "Could not install downloaded model: " + reason;
 		return {};
 	}
 	return destination;

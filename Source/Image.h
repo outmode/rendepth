@@ -58,6 +58,7 @@ public:
 	inline static SDL_GPUTexture* subtitleTexture = nullptr;
 	inline static SDL_GPUTexture* subtitleShadowTexture = nullptr;
 	inline static bool subtitleBitmap = false;
+	inline static bool subtitleBitmapStereoPacked = false;
 	inline static glm::ivec2 subtitleBitmapPosition{};
 	inline static glm::ivec2 subtitleBitmapCanvasSize{};
 	inline static SDL_GPUTexture* menuTexture = nullptr;

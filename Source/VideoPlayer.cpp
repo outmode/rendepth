@@ -25,6 +25,7 @@ extern "C" {
 #include <libavutil/pixfmt.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
+#include <zlib.h>
 }
 #endif
 
@@ -466,9 +467,38 @@ struct VideoPlayer::Impl {
 	// Decode subtitle packets into timed text or bitmap cues for presentation.
 	void decodeSubtitlePacket(AVPacket* subtitlePacket) {
 		if (subtitleCodec == nullptr) return;
+		// Some Matroska subtitle tracks compress each packet with zlib. FFmpeg builds
+		// without zlib pass those bytes through unchanged, so inflate them here.
+		std::vector<std::uint8_t> inflated;
+		AVPacket unpacked = *subtitlePacket;
+		if (subtitlePacket->size >= 2) {
+			const auto cmf = subtitlePacket->data[0];
+			const auto flg = subtitlePacket->data[1];
+			const bool zlibHeader = (cmf & 0x0f) == Z_DEFLATED && (cmf >> 4) <= 7 &&
+				((static_cast<int>(cmf) << 8) | flg) % 31 == 0;
+			if (zlibHeader) {
+				constexpr size_t maxSubtitlePacket = 16 * 1024 * 1024;
+				size_t capacity = std::min(maxSubtitlePacket,
+					std::max<size_t>(64 * 1024, static_cast<size_t>(subtitlePacket->size) * 4));
+				while (capacity <= maxSubtitlePacket) {
+					inflated.resize(capacity + AV_INPUT_BUFFER_PADDING_SIZE);
+					uLongf size = static_cast<uLongf>(capacity);
+					const int result = uncompress(inflated.data(), &size, subtitlePacket->data,
+						static_cast<uLong>(subtitlePacket->size));
+					if (result == Z_OK) {
+						std::fill_n(inflated.data() + size, AV_INPUT_BUFFER_PADDING_SIZE, 0);
+						unpacked.data = inflated.data();
+						unpacked.size = static_cast<int>(size);
+						break;
+					}
+					if (result != Z_BUF_ERROR || capacity == maxSubtitlePacket) break;
+					capacity = std::min(maxSubtitlePacket, capacity * 2);
+				}
+			}
+		}
 		AVSubtitle subtitle{};
 		int gotSubtitle = 0;
-		if (avcodec_decode_subtitle2(subtitleCodec, &subtitle, &gotSubtitle, subtitlePacket) >= 0 && gotSubtitle) {
+		if (avcodec_decode_subtitle2(subtitleCodec, &subtitle, &gotSubtitle, &unpacked) >= 0 && gotSubtitle) {
 			const auto* streamInfo = format->streams[subtitleStreamIndex];
 			const double packetStart = subtitle.pts != AV_NOPTS_VALUE
 				? subtitle.pts / static_cast<double>(AV_TIME_BASE) - streamStart
@@ -495,12 +525,12 @@ struct VideoPlayer::Impl {
 				avsubtitle_free(&subtitle);
 				return;
 			}
-			double duration = std::numeric_limits<double>::infinity();
-			if (!bitmapSubtitle)
-				duration = (subtitle.end_display_time - subtitle.start_display_time) / 1000.0;
+			double duration = (subtitle.end_display_time - subtitle.start_display_time) / 1000.0;
 			if (!bitmapSubtitle && duration <= 0.0 && subtitlePacket->duration > 0)
 				duration = subtitlePacket->duration * av_q2d(streamInfo->time_base);
-			if (!bitmapSubtitle && duration <= 0.0) {
+			if (bitmapSubtitle && duration <= 0.0)
+				duration = std::numeric_limits<double>::infinity();
+			else if (duration <= 0.0) {
 				const auto readableDuration = decodedSubtitle->format == VideoSubtitle::Format::Bitmap
 					? 7.0 : 1.5 + decodedSubtitle->text.size() * 0.045;
 				duration = std::clamp(readableDuration, 2.0, 7.0);

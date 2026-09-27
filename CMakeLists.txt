@@ -346,27 +346,51 @@ if(UNIX AND NOT APPLE)
     target_compile_definitions(Rendepth PRIVATE RENDEPTH_GTK_MEDIA_DIALOG)
 endif()
 
+if(TARGET zlibstatic)
+    set(RENDEPTH_MODEL_ZLIB zlibstatic)
+else()
+    find_package(ZLIB REQUIRED)
+    set(RENDEPTH_MODEL_ZLIB ZLIB::ZLIB)
+endif()
+target_sources(Rendepth PRIVATE
+    ThirdParty/SDL_image/external/zlib/contrib/minizip/unzip.c
+    ThirdParty/SDL_image/external/zlib/contrib/minizip/ioapi.c)
+target_include_directories(Rendepth PRIVATE
+    ThirdParty/SDL_image/external/zlib/contrib/minizip)
+target_link_libraries(Rendepth PRIVATE ${RENDEPTH_MODEL_ZLIB})
+
 if(WIN32)
+    target_sources(Rendepth PRIVATE
+        ThirdParty/SDL_image/external/zlib/contrib/minizip/iowin32.c)
     target_link_libraries(Rendepth PUBLIC winhttp ole32 shell32 uuid bcrypt crypt32)
+    if(MSVC)
+        target_sources(Rendepth PRIVATE Source/LenticularBridge.cpp)
+        target_include_directories(Rendepth PRIVATE ThirdParty/SimulatedRealitySDK-1.34.10/include)
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            set(RENDEPTH_SR_LIB_DIR "${CMAKE_SOURCE_DIR}/ThirdParty/SimulatedRealitySDK-1.34.10/lib")
+            set(RENDEPTH_SR_DLL_SUFFIX "")
+        else()
+            set(RENDEPTH_SR_LIB_DIR "${CMAKE_SOURCE_DIR}/ThirdParty/SimulatedRealitySDK-1.34.10/lib/x86")
+            set(RENDEPTH_SR_DLL_SUFFIX "32")
+        endif()
+        target_link_libraries(Rendepth PRIVATE
+                "${RENDEPTH_SR_LIB_DIR}/SimulatedRealityCore${RENDEPTH_SR_DLL_SUFFIX}.lib"
+                "${RENDEPTH_SR_LIB_DIR}/SimulatedRealityDirectX${RENDEPTH_SR_DLL_SUFFIX}.lib"
+                "${RENDEPTH_SR_LIB_DIR}/SimulatedRealityDisplays${RENDEPTH_SR_DLL_SUFFIX}.lib"
+                "${RENDEPTH_SR_LIB_DIR}/opencv_world343.lib" delayimp.lib)
+        target_link_options(Rendepth PRIVATE
+                /DELAYLOAD:SimulatedRealityCore${RENDEPTH_SR_DLL_SUFFIX}.dll
+                /DELAYLOAD:SimulatedRealityDirectX${RENDEPTH_SR_DLL_SUFFIX}.dll
+                /DELAYLOAD:SimulatedRealityDisplays${RENDEPTH_SR_DLL_SUFFIX}.dll
+                /DELAYLOAD:opencv_world343.dll)
+    endif()
     add_executable(FirefoxNativeHost EXCLUDE_FROM_ALL Source/FirefoxNativeHost.cpp)
     add_executable(ChromeNativeHost EXCLUDE_FROM_ALL Source/FirefoxNativeHost.cpp)
     target_compile_definitions(ChromeNativeHost PRIVATE RENDEPTH_CHROME_NATIVE_HOST=1)
     add_executable(BrowserBridgeTest EXCLUDE_FROM_ALL
         Source/BrowserBridgeWindowsTest.cpp Source/BrowserBridge.cpp)
     target_include_directories(BrowserBridgeTest PRIVATE ThirdParty/rapidjson/include)
-    if(TARGET zlibstatic)
-        set(RENDEPTH_PACK_ZLIB zlibstatic)
-    else()
-        find_package(ZLIB REQUIRED)
-        set(RENDEPTH_PACK_ZLIB ZLIB::ZLIB)
-    endif()
-    target_sources(Rendepth PRIVATE Source/RuntimePackDownloader.cpp
-        ThirdParty/SDL_image/external/zlib/contrib/minizip/unzip.c
-        ThirdParty/SDL_image/external/zlib/contrib/minizip/ioapi.c
-        ThirdParty/SDL_image/external/zlib/contrib/minizip/iowin32.c)
-    target_include_directories(Rendepth PRIVATE
-        ThirdParty/SDL_image/external/zlib/contrib/minizip)
-    target_link_libraries(Rendepth PRIVATE ${RENDEPTH_PACK_ZLIB})
+    target_sources(Rendepth PRIVATE Source/RuntimePackDownloader.cpp)
     add_executable(RuntimePackDownloaderSmoke EXCLUDE_FROM_ALL
         Source/RuntimePackDownloaderSmoke.cpp Source/RuntimePackDownloader.cpp
         ThirdParty/SDL_image/external/zlib/contrib/minizip/unzip.c
@@ -380,7 +404,7 @@ if(WIN32)
         RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/tests")
     target_include_directories(RuntimePackDownloaderSmoke PRIVATE
         ThirdParty/SDL_image/external/zlib/contrib/minizip)
-    target_link_libraries(RuntimePackDownloaderSmoke PRIVATE ${RENDEPTH_PACK_ZLIB} winhttp bcrypt)
+    target_link_libraries(RuntimePackDownloaderSmoke PRIVATE ${RENDEPTH_MODEL_ZLIB} winhttp bcrypt)
 else()
     target_link_libraries(Rendepth PUBLIC CURL::libcurl)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND RENDEPTH_ENABLE_ONNX_RUNTIME)
