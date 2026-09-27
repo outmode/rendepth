@@ -5,6 +5,7 @@
 #define RENDEPTH_VIDEO_DEPTH_PROCESSOR_H
 
 #include "DepthEstimator.h"
+#include "ModelDownloader.h"
 #include "VideoPlayer.h"
 
 #include <atomic>
@@ -35,6 +36,7 @@ public:
 	struct Config {
 		std::filesystem::path modelDirectory;
 		std::string modelFilename;
+		ModelDownloader::Progress* downloadProgress = nullptr;
 		DepthEstimator::Provider provider = DepthEstimator::Provider::Auto;
 		int processSize = 560;
 		unsigned int intraOpThreads = 0;

@@ -103,6 +103,9 @@
 #include "VideoDepthProcessor.h"
 #include "ScreenCapture.h"
 #include "BrowserBridge.h"
+#ifdef __APPLE__
+#include "MacFullscreenMouse.h"
+#endif
 
 Context context{};
 Image imageView{};
@@ -125,6 +128,9 @@ static bool blurayMediaActive = false;
 static ScreenCapture screenCapture;
 static BrowserBridge browserBridge;
 static VideoDepthProcessor videoDepthProcessor;
+static ModelDownloader::Progress stillDepthModelDownload;
+static ModelDownloader::Progress videoDepthModelDownload;
+static ModelDownloader::Progress superResolutionModelDownload;
 static std::shared_ptr<VideoFrame> lastVideoFrame;
 static LiveVideoBuffer<VideoFrame> liveVideoBuffer;
 struct BufferedVideoFrame {
@@ -191,6 +197,9 @@ static Icon& getIcon(IconType type);
 static void checkMouseState();
 static glm::vec2 mousePositionForUI(float x, float y);
 static bool shouldShowCustomCursor();
+#ifdef __APPLE__
+static void pollMacFullscreenMouse();
+#endif
 static void refreshDisplay3D(StereoFormat type);
 
 // Release the current album artwork and reset the audio-only visualization.
@@ -1969,6 +1978,8 @@ static auto depthRegenerated = false;
 // Join the depth worker while servicing its GPU requests to avoid blocking it on the render thread.
 static void waitForDepthThread() {
 	if (depthGenThread != nullptr) {
+		stillDepthModelDownload.cancel = true;
+		superResolutionModelDownload.cancel = true;
 		while (depthGenAlive.load(std::memory_order_acquire)) {
 			serviceNativeGpuUpscale();
 			SDL_Delay(1);
@@ -2085,6 +2096,7 @@ static bool startVideoDepth(bool preserveTexture) {
 	config.modelDirectory = modelDirectory.empty()
 		? homePath / "Models" : std::filesystem::path(modelDirectory);
 	config.modelFilename = videoDepthModelFiles[modelOption];
+	config.downloadProgress = &videoDepthModelDownload;
 	config.processSize = videoDepthProcessSizes[modelOption];
 	config.targetFramesPerSecond = videoDepthRates[modelOption];
 	#ifdef RENDEPTH_ENABLE_CUDA
@@ -2621,6 +2633,58 @@ static void pollRuntimePackInstall() {
 }
 #endif
 #endif
+
+// Show model transfers in the same help-text area as GPU pack download progress.
+static void pollModelDownloadProgress() {
+	const ModelDownloader::Progress* progress = nullptr;
+	const char* label = nullptr;
+	if (stillDepthModelDownload.active.load()) {
+		progress = &stillDepthModelDownload;
+		label = "Downloading Depth Model...";
+	} else if (videoDepthModelDownload.active.load()) {
+		progress = &videoDepthModelDownload;
+		label = "Downloading Video Depth Model...";
+	} else if (superResolutionModelDownload.active.load()) {
+		progress = &superResolutionModelDownload;
+		label = "Downloading Super Resolution Model...";
+	}
+	static const ModelDownloader::Progress* trackedProgress = nullptr;
+	static std::uint64_t trackedSequence = 0;
+	static bool unknownSizeShown = false;
+	static double showProgressAt = 0.0;
+	static double nextUpdate = 0.0;
+	if (progress == nullptr) {
+		trackedProgress = nullptr;
+		return;
+	}
+	const double now = getTimeNow();
+	const auto sequence = progress->sequence.load();
+	if (progress != trackedProgress || sequence != trackedSequence) {
+		trackedProgress = progress;
+		trackedSequence = sequence;
+		unknownSizeShown = false;
+		// Let the initial model-loading tip finish its normal display interval.
+		showProgressAt = Image::displayTip ? displayTipTime + displayTipWait : now;
+		nextUpdate = 0.0;
+	}
+	if (now < showProgressAt) return;
+	const auto total = progress->total.load();
+	if (total == 0 && unknownSizeShown) return;
+	if (total != 0 && now < nextUpdate) return;
+	std::string status = label;
+	if (total == 0) {
+		unknownSizeShown = true;
+	} else {
+		const auto received = progress->received.load();
+		status += " " + std::to_string(static_cast<int>(
+			std::min(100.0, 100.0 * static_cast<double>(received) / total))) + "%";
+	}
+	Core::drawText(&context, status, Image::helpFont,
+		Image::helpTexture, Image::helpTextSize, "Help Texture");
+	Image::displayTip = true;
+	displayTipTime = now;
+	nextUpdate = now + 0.25;
+}
 
 static double sliderStart = 0.5;
 static double currentStereoStrength = sliderStart * 0.8 + 0.1;
@@ -5634,6 +5698,9 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	auto visibleSize = windowSize;
 	if (preferredStereoMode == SBS_Half || preferredStereoMode == RGB_Depth)
 		visibleSize.x *= 0.5;
+#ifdef __APPLE__
+	pollMacFullscreenMouse();
+#endif
 	if (doingFileOp) hideUI(false);
 
 	if (Image::draw(&context) < 0) {
@@ -5673,6 +5740,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 			doingFileOp = false;
 		}
 	}
+	pollModelDownloadProgress();
 
 	if (Image::displayInfo) {
 		if (!videoSliderScrubbing && timeNow - displayInfoTime > displayTipWait) {
@@ -6060,12 +6128,24 @@ static bool shouldShowCustomCursor() {
 // UI coordinates span the full window. Rendering each fullscreen split view in
 // a half-width viewport maps the same cursor position into both halves.
 static glm::vec2 mousePositionForUI(float x, float y) {
+#ifdef __APPLE__
+	float macX = 0.0f, macY = 0.0f;
+	if (getMacFullscreenMousePosition(context.window, macX, macY)) {
+		x = macX;
+		y = macY;
+	}
+#endif
 	return {x * Image::mouseScale, y * Image::mouseScale};
 }
 
 // Switch cursor visibility between the application overlay and the operating system.
 static void showCustomCursor(bool show) {
-	if (shouldShowCustomCursor() && show && SDL_GetMouseFocus() == context.window) {
+	bool mouseFocused = SDL_GetMouseFocus() == context.window;
+#ifdef __APPLE__
+	float macX = 0.0f, macY = 0.0f;
+	mouseFocused = mouseFocused || getMacFullscreenMousePosition(context.window, macX, macY);
+#endif
+	if (shouldShowCustomCursor() && show && mouseFocused) {
 		if (mouseMoveDelay < 0)
 			context.mouseVisibility = 1.0;
 		if (SDL_CursorVisible()) SDL_HideCursor();
@@ -6074,6 +6154,35 @@ static void showCustomCursor(bool show) {
 		if (!SDL_CursorVisible()) SDL_ShowCursor();
 	}
 }
+
+#ifdef __APPLE__
+// Some fullscreen spaces stop delivering local motion events. Poll the global
+// pointer so the rendered cursor and hover state still follow physical motion.
+static void pollMacFullscreenMouse() {
+	static bool tracking = false;
+	static glm::vec2 previous{};
+	float x = 0.0f, y = 0.0f;
+	if (!getMacFullscreenMousePosition(context.window, x, y)) {
+		tracking = false;
+		if (isFullscreen) showCustomCursor(false);
+		return;
+	}
+	const glm::vec2 position{x * Image::mouseScale, y * Image::mouseScale};
+	if (!tracking) {
+		previous = position;
+		tracking = true;
+		context.mouse = position;
+		return;
+	}
+	if (position == previous) return;
+	previous = position;
+	context.mouse = position;
+	mouseMoveDelay = -1;
+	mouseLastActive = getTimeNow();
+	showCustomCursor(true);
+	if (!GettingStarted::visible && !discTitleMenu.visible()) checkMouseState();
+}
+#endif
 
 struct NativeDepthRequest {
 	std::filesystem::path input;
@@ -6483,7 +6592,8 @@ static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
 		const auto modelDirectoryPath = modelDirectory.empty()
 			? homePath / "Models" : std::filesystem::path(modelDirectory);
 		config.modelPath = ModelDownloader::ensureAvailable(
-			modelDirectoryPath, "RFDN_x4.onnx", nativeSuperResolutionError);
+			modelDirectoryPath, "RFDN_x4.onnx", nativeSuperResolutionError,
+			&superResolutionModelDownload);
 	#ifdef RENDEPTH_ENABLE_CUDA
 		config.provider = DepthEstimator::Provider::CUDA;
 	#elif defined(RENDEPTH_ENABLE_ROCM)
@@ -6599,9 +6709,14 @@ static int nativeDepthRun(void* ptr) {
 		const auto modelDirectoryPath = modelDirectory.empty()
 			? homePath / "Models" : std::filesystem::path(modelDirectory);
 		config.modelPath = ModelDownloader::ensureAvailable(
-			modelDirectoryPath, depthModelFiles[modelOption], nativeDepthEstimatorError);
+			modelDirectoryPath, depthModelFiles[modelOption], nativeDepthEstimatorError,
+			&stillDepthModelDownload);
 		if (config.modelPath.empty()) {
 			SDL_DestroySurface(suppliedSurface);
+			if (stillDepthModelDownload.cancel.load()) {
+				depthGenAlive = false;
+				return 0;
+			}
 			std::cerr << "Native depth model download failed: "
 				<< nativeDepthEstimatorError << '\n';
 			depthGenerationError = true;
@@ -6792,6 +6907,8 @@ static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int 
 	}
 
 	depthGenAlive = true;
+	stillDepthModelDownload.cancel = false;
+	superResolutionModelDownload.cancel = false;
 	activeDepthGeneration = ++nextDepthGeneration;
 	auto request = new NativeDepthRequest{
 		std::filesystem::path(fileFolderPath), genMode, imageId, activeDepthGeneration,

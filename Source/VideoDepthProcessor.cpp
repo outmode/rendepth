@@ -52,6 +52,8 @@ VideoDepthProcessor::~VideoDepthProcessor() {
 bool VideoDepthProcessor::start(const Config& config) {
 	stop();
 	activeConfig = config;
+	if (activeConfig.downloadProgress != nullptr)
+		activeConfig.downloadProgress->cancel = false;
 	stopRequested = false;
 	isRunning = true;
 	isReady = false;
@@ -73,6 +75,8 @@ bool VideoDepthProcessor::start(const Config& config) {
 // Cancel and join inference, unload the model, and clear queued and temporal data.
 void VideoDepthProcessor::stop() {
 	stopRequested = true;
+	if (activeConfig.downloadProgress != nullptr)
+		activeConfig.downloadProgress->cancel = true;
 	if (isReady) estimator.cancel();
 	changed.notify_all();
 	if (worker.joinable()) worker.join();
@@ -234,7 +238,7 @@ void VideoDepthProcessor::run() {
 	std::string error;
 	DepthEstimator::Config estimatorConfig;
 	estimatorConfig.modelPath = ModelDownloader::ensureAvailable(activeConfig.modelDirectory,
-		activeConfig.modelFilename, error);
+		activeConfig.modelFilename, error, activeConfig.downloadProgress);
 	estimatorConfig.provider = activeConfig.provider;
 	estimatorConfig.processSize = activeConfig.processSize;
 	// Live decoding, browser encoding and rendering share this CPU. ORT's

@@ -26,6 +26,9 @@
 #include "NativeDisplaySelection.h"
 #include "LookingGlassCalibration.h"
 #include "CalibrationVolumes.h"
+#ifdef __APPLE__
+#include "MacFullscreenMouse.h"
+#endif
 #include "rapidjson/document.h"
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"
@@ -3201,10 +3204,15 @@ std::uint64_t gettingStartedRevision = 0;
 // Draw the regular cursor in each guide view, matching the page's packing and pointer coordinates.
 void drawGettingStartedCursor(Context* context, SDL_GPUCommandBuffer* command,
 	SDL_GPURenderPass* pass, int width, int height, GettingStarted::Layout layout) {
-	if (!context->fullscreen || SDL_GetMouseFocus() != context->window) return;
+	if (!context->fullscreen) return;
 	float mouseX = 0, mouseY = 0;
-	int logicalWidth = 0, logicalHeight = 0;
+#ifdef __APPLE__
+	if (!getMacFullscreenMousePosition(context->window, mouseX, mouseY)) return;
+#else
+	if (SDL_GetMouseFocus() != context->window) return;
 	SDL_GetMouseState(&mouseX, &mouseY);
+#endif
+	int logicalWidth = 0, logicalHeight = 0;
 	SDL_GetWindowSize(context->window, &logicalWidth, &logicalHeight);
 	mouseX *= static_cast<float>(width) / std::max(1, logicalWidth);
 	mouseY *= static_cast<float>(height) / std::max(1, logicalHeight);
@@ -3301,7 +3309,12 @@ int drawGettingStarted(Context* context) {
 // Render media, backgrounds, subtitles, and UI overlays for the active presentation mode.
 int Image::draw(Context* context) {
 	if (GettingStarted::visible) {
-		if (context->fullscreen && SDL_GetMouseFocus() == context->window) SDL_HideCursor();
+		bool drawCustomCursor = context->fullscreen && SDL_GetMouseFocus() == context->window;
+#ifdef __APPLE__
+		float mouseX = 0.0f, mouseY = 0.0f;
+		drawCustomCursor = getMacFullscreenMousePosition(context->window, mouseX, mouseY);
+#endif
+		if (drawCustomCursor) SDL_HideCursor();
 		else SDL_ShowCursor();
 		return drawGettingStarted(context);
 	}

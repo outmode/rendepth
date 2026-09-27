@@ -324,7 +324,9 @@ target_include_directories(Rendepth PUBLIC
         ThirdParty/SDL_ttf/include ThirdParty/SDL_shadercross/include
         ThirdParty/rapidjson/include)
 
-target_link_directories(Rendepth PUBLIC "\${ORIGIN}/../Library")
+if(UNIX AND NOT APPLE)
+    target_link_directories(Rendepth PUBLIC "\${ORIGIN}/../Library")
+endif()
 
 target_link_libraries(Rendepth PUBLIC
         SDL3::SDL3 SDL3_ttf::SDL3_ttf SDL3_image::SDL3_image
@@ -771,7 +773,10 @@ elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
     set_target_properties(Rendepth PROPERTIES
             SKIP_BUILD_RPATH FALSE
             BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib"
-            INSTALL_RPATH "\$ORIGIN/../Library")
+            INSTALL_RPATH "${CMAKE_INSTALL_RPATH}")
+    if(APPLE)
+        set_target_properties(Rendepth PROPERTIES BUILD_WITH_INSTALL_RPATH FALSE)
+    endif()
     if(RENDEPTH_ENABLE_ROCM)
         set_target_properties(Rendepth PROPERTIES
                 BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ROCM_DIR}/lib"
@@ -817,7 +822,10 @@ elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
         set_target_properties(DepthTest PROPERTIES
                 SKIP_BUILD_RPATH FALSE
                 BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib"
-                INSTALL_RPATH "\$ORIGIN/../Library")
+                INSTALL_RPATH "${CMAKE_INSTALL_RPATH}")
+        if(APPLE)
+            set_target_properties(DepthTest PROPERTIES BUILD_WITH_INSTALL_RPATH FALSE)
+        endif()
         if(RENDEPTH_ENABLE_ROCM)
             set_target_properties(DepthTest PROPERTIES
                     BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ROCM_DIR}/lib"
@@ -856,7 +864,10 @@ elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
         set_target_properties(SuperTest PROPERTIES
                 SKIP_BUILD_RPATH FALSE
                 BUILD_RPATH "${CMAKE_SOURCE_DIR}/Library;${RENDEPTH_ONNXRUNTIME_DIR}/lib"
-                INSTALL_RPATH "\$ORIGIN/../Library")
+                INSTALL_RPATH "${CMAKE_INSTALL_RPATH}")
+        if(APPLE)
+            set_target_properties(SuperTest PROPERTIES BUILD_WITH_INSTALL_RPATH FALSE)
+        endif()
     endif()
 
 endif()
