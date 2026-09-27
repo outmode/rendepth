@@ -20,18 +20,18 @@ Configure the Rendepth Pro product in Lemon Squeezy for a $49 perpetual license,
 license-key generation, and a limit of 5 computers. Use Test Mode for the full
 purchase/activation/deactivation acceptance test before releasing.
 
-The owner-supplied store ID `474981` and product ID `1373415` are the build
-defaults. They still need confirmation against a test activation. For existing
-build directories with cached values, explicitly supply these **public** settings
-(the checkout URL below was supplied for Test Mode):
+The owner-supplied store ID `474981` and live product ID `1390849` are the build
+defaults. Reconfiguring an existing build directory updates the previous product
+ID `1373415`; for other cached values, explicitly supply these **public** settings
+(confirm that the checkout URL points to the live product before release):
 
 ```sh
 cmake -S . -B <build-directory> \
   -DRENDEPTH_LICENSE_STORE_ID=474981 \
-  -DRENDEPTH_LICENSE_PRODUCT_ID=1373415 \
+  -DRENDEPTH_LICENSE_PRODUCT_ID=1390849 \
   -DRENDEPTH_LICENSE_VARIANT_ID=0 \
   -DRENDEPTH_LICENSE_PURCHASE_URL=https://shop.rendepth.com/
-cmake --build <build-directory> --parallel 28
+cmake --build <build-directory> --parallel 14
 ```
 
 Store and product IDs must be positive. Variant ID is optional: 0 accepts all
@@ -42,9 +42,14 @@ purchase URL disables its button. Join Community opens
 accessible for inspection.
 No seller API key or webhook secret belongs in these settings or the binary.
 
-Use the identifiers belonging to the actual test product during development,
-then rebuild using the live product identifiers for release. Never ship a build
-configured to accept a test product as the production build.
+Test Mode products and keys are separate from live products and keys. Use the
+test product identifiers in a separate development build for purchase and
+activation tests, then rebuild with the live identifiers for release. Confirm
+the live product and store IDs and its license-key settings in the Live Mode
+dashboard (or with a live-mode API key). A test key cannot activate a build
+configured for the live product. Do not buy your own live product just to test
+activation; a live activation can be checked when a legitimate live key exists.
+Never ship a build configured to accept a test product as the production build.
 
 ## Behavior and persistence
 
@@ -108,10 +113,13 @@ and simulated fifth/sixth-computer/support-reset behavior. The native GTK test
 checks entry, busy controls, licensed state, deactivation confirmation, closing,
 and reopening. These tests do not consume real activation slots.
 
-Release checks still require real Lemon Squeezy Test Mode purchase/activation,
-offline relaunch, deactivation and recovery, plus Windows/macOS build and native
-UI checks. Test the real fifth/sixth-computer limit on the seller-configured
-product. Pro feature policy must be decided before enforcing restrictions.
+Release checks still require a Lemon Squeezy Test Mode purchase/activation using
+the test product identifiers, offline relaunch, deactivation and recovery, plus
+Windows/macOS build and native UI checks. Test the real fifth/sixth-computer
+limit on the seller-configured test product. A live activation requires a live
+key; the release build's live ID can be checked against the Live Mode product
+settings without a purchase. Pro feature policy must be decided before enforcing
+restrictions.
 
 API references:
 - https://docs.lemonsqueezy.com/api/license-api

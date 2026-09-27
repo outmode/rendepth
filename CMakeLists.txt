@@ -387,7 +387,11 @@ endif()
 # Public Lemon Squeezy identifiers only; never put seller API credentials here.
 # Owner-supplied IDs; confirm against a test activation before release.
 set(RENDEPTH_LICENSE_STORE_ID "474981" CACHE STRING "Lemon Squeezy store ID (0 disables activation)")
-set(RENDEPTH_LICENSE_PRODUCT_ID "1373415" CACHE STRING "Rendepth Pro product ID")
+set(RENDEPTH_LICENSE_PRODUCT_ID "1390849" CACHE STRING "Rendepth Pro product ID")
+# CMake keeps old cache entries when defaults change. Migrate the previous Pro ID.
+if(RENDEPTH_LICENSE_PRODUCT_ID STREQUAL "1373415")
+    set(RENDEPTH_LICENSE_PRODUCT_ID "1390849" CACHE STRING "Rendepth Pro product ID" FORCE)
+endif()
 set(RENDEPTH_LICENSE_VARIANT_ID "0" CACHE STRING "Optional Pro variant ID (0 accepts all product variants)")
 # Current checkout is owner-supplied for Test Mode; verify live settings before release.
 set(RENDEPTH_LICENSE_PURCHASE_URL "https://shop.rendepth.com/" CACHE STRING "Rendepth Pro HTTPS checkout URL")
