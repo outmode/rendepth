@@ -68,6 +68,10 @@ then run `cmake --build build --config Release --parallel 14 --target Rendepth`.
 See [Windows inference packaging](Packaging/Windows/README.md) for pack details.
 On macOS, provide an ONNX Runtime SDK via `RENDEPTH_ONNXRUNTIME_DIR` and the
 libbluray and libdvdread development packages; see the disc playback notes below.
+The SDK must include the Core ML execution provider. Depth and super resolution
+use Core ML's CPU and GPU compute units by default, with CPU fallback when a
+model cannot load through Core ML. The `DepthTest` and `SuperTest` tools accept
+`--provider coreml` or `--provider cpu` to select an engine explicitly.
 
 The Release executable is written to `Binary` in the repository root. Keep
 `Assets`, `Binary`, `Library`, `Runtimes`, and `Shaders` together when running or
@@ -98,7 +102,8 @@ Dependency versions are pinned by Git submodule commits. The SDL and SyLC pins a
   inputs, pack layout, and validation. Selecting a missing GPU pack downloads
   it from `rendepth.com/packs` when that pack has been published there.
 - Windows FFmpeg runtime DLLs are copied next to `Rendepth.exe` automatically.
-- `RENDEPTH_MAC_BUNDLE` set `ON` to create macOS bundle after building.
+- Set `RENDEPTH_MAC_EXPORT_BUNDLE=ON` in a separate macOS export build directory
+  to create the app bundle; CLion builds a regular executable.
 
 Lightfield Displays
 ------

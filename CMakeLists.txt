@@ -30,6 +30,9 @@ set(RENDEPTH_ENABLE_CUDA OFF)
 set(RENDEPTH_BUILD_DEPTH_TEST ON)
 set(RENDEPTH_BUILD_SUPER_TEST ON)
 set(RENDEPTH_COMPILE_SHADERS OFF)
+if(APPLE)
+    option(RENDEPTH_MAC_EXPORT_BUNDLE "Build the macOS app bundle for export" OFF)
+endif()
 
 # ONNX Runtime is not bundled, so these remain cache entries for each local
 # machine or CI environment to supply.
@@ -250,48 +253,49 @@ if(WIN32)
     endif()
     add_executable(Rendepth WIN32 Assets/Rendepth.rc Source/Main.cpp)
 elseif(APPLE)
-    if(NOT RENDEPTH_MAC_BUNDLE)
+    # Bundle layout and library fixup are only needed for the export build.
+    # Use a dedicated flag so a cached packaging setting cannot change the
+    # executable built by an existing CLion profile.
+    if(NOT RENDEPTH_MAC_EXPORT_BUNDLE)
         add_executable(Rendepth Source/Main.cpp)
     else()
         set(MACOSX_BUNDLE_ICON_FILE Rendepth.icns)
+        file(GLOB RENDEPTH_MAC_SHADERS CONFIGURE_DEPENDS
+                "${CMAKE_SOURCE_DIR}/Shaders/Compiled/*.msl")
         add_executable(Rendepth MACOSX_BUNDLE ${CMAKE_CURRENT_SOURCE_DIR}/Assets/Rendepth.icns
                 ${CMAKE_SOURCE_DIR}/Assets/AppIcons.png ${CMAKE_SOURCE_DIR}/Assets/CircleIcon.png
-                ${CMAKE_SOURCE_DIR}/Assets/Lato.ttf
-                ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Image.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Image.frag.msl
-                ${CMAKE_SOURCE_DIR}/Shaders/Compiled/VideoYUV.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/VideoYUV.frag.msl
-                ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.frag.msl
-                ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.frag.msl
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3.0.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.2.4.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.2.2.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libglm.dylib
+                ${CMAKE_SOURCE_DIR}/Assets/Lato.ttf ${CMAKE_SOURCE_DIR}/Assets/NotoSans.ttf
+                ${CMAKE_SOURCE_DIR}/Assets/Rendepth.png
+                ${RENDEPTH_MAC_SHADERS}
                 ${CMAKE_SOURCE_DIR}/Legal/RENDEPTH_APP_LICENSE
                 ${CMAKE_BINARY_DIR}/generated/Legal/THIRD_PARTY_LICENSING)
-        set_source_files_properties(
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3.0.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.2.4.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.0.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3_image.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.2.2.dylib ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.0.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libSDL3_ttf.dylib
-                ${CMAKE_SOURCE_DIR}/Library/libglm.dylib
-                PROPERTIES
-                MACOSX_PACKAGE_LOCATION Library)
+        set_target_properties(Rendepth PROPERTIES
+                MACOSX_BUNDLE_GUI_IDENTIFIER com.outmode.rendepth
+                MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+                MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+                MACOSX_BUNDLE_BUNDLE_NAME Rendepth)
+        if(NOT RENDEPTH_MAC_BUNDLE_OUTPUT_DIRECTORY)
+            set(RENDEPTH_MAC_BUNDLE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/output" CACHE PATH
+                    "Output directory for the macOS export app bundle" FORCE)
+        endif()
+        set_target_properties(Rendepth PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY "${RENDEPTH_MAC_BUNDLE_OUTPUT_DIRECTORY}"
+                RUNTIME_OUTPUT_DIRECTORY_RELEASE "${RENDEPTH_MAC_BUNDLE_OUTPUT_DIRECTORY}"
+                RUNTIME_OUTPUT_DIRECTORY_DEBUG "${RENDEPTH_MAC_BUNDLE_OUTPUT_DIRECTORY}"
+                RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${RENDEPTH_MAC_BUNDLE_OUTPUT_DIRECTORY}"
+                RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${RENDEPTH_MAC_BUNDLE_OUTPUT_DIRECTORY}")
         set_source_files_properties(
                 ${CMAKE_SOURCE_DIR}/Assets/Rendepth.icns
                 PROPERTIES
                 MACOSX_PACKAGE_LOCATION "Resources")
         set_source_files_properties(
                 ${CMAKE_SOURCE_DIR}/Assets/AppIcons.png ${CMAKE_SOURCE_DIR}/Assets/CircleIcon.png
-                ${CMAKE_SOURCE_DIR}/Assets/Lato.ttf
+                ${CMAKE_SOURCE_DIR}/Assets/Lato.ttf ${CMAKE_SOURCE_DIR}/Assets/NotoSans.ttf
+                ${CMAKE_SOURCE_DIR}/Assets/Rendepth.png
                 PROPERTIES
                 MACOSX_PACKAGE_LOCATION Assets)
         set_source_files_properties(
-                ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Image.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Image.frag.msl
-                ${CMAKE_SOURCE_DIR}/Shaders/Compiled/VideoYUV.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/VideoYUV.frag.msl
-                ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Icon.frag.msl
-                ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.vert.msl ${CMAKE_SOURCE_DIR}/Shaders/Compiled/Sprite.frag.msl
+                ${RENDEPTH_MAC_SHADERS}
                 PROPERTIES
                 MACOSX_PACKAGE_LOCATION Shaders/Compiled)
         set_source_files_properties(
@@ -570,6 +574,7 @@ if(RENDEPTH_ENABLE_FFMPEG)
                 "${CMAKE_SOURCE_DIR}/ThirdParty/FFmpeg/configure"
                 "--cc=${CMAKE_C_COMPILER}"
                 "--host-cc=${CMAKE_C_COMPILER}"
+                "--pkg-config=${PKG_CONFIG_EXECUTABLE}"
                 "--prefix=${RENDEPTH_FFMPEG_PREFIX}"
                 --disable-programs
                 --disable-doc
@@ -692,7 +697,13 @@ elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
                     "${RENDEPTH_ONNXRUNTIME_DIR}/include/onnxruntime")
         endif()
     endif()
+    if(APPLE AND NOT EXISTS "${RENDEPTH_ONNXRUNTIME_INCLUDE_DIR}/coreml_provider_factory.h")
+        message(FATAL_ERROR "The macOS ONNX Runtime SDK must include coreml_provider_factory.h")
+    endif()
     target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_ONNX_RUNTIME)
+    if(APPLE)
+        target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_COREML)
+    endif()
     target_include_directories(Rendepth PUBLIC
             "${RENDEPTH_ONNXRUNTIME_INCLUDE_DIR}")
     if(RENDEPTH_ENABLE_ROCM)
@@ -795,6 +806,9 @@ elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
         # packaging builds. It can still be built explicitly when requested.
         add_executable(DepthTest EXCLUDE_FROM_ALL Source/DepthTest.cpp Source/DepthEstimator.cpp)
         target_compile_definitions(DepthTest PUBLIC RENDEPTH_ENABLE_ONNX_RUNTIME)
+        if(APPLE)
+            target_compile_definitions(DepthTest PUBLIC RENDEPTH_ENABLE_COREML)
+        endif()
         target_include_directories(DepthTest PUBLIC
                 Source ThirdParty/SDL/include ThirdParty/SDL_image/include
                 "${RENDEPTH_ONNXRUNTIME_INCLUDE_DIR}")
@@ -839,6 +853,9 @@ elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
         # packaging builds. It can still be built explicitly when requested.
         add_executable(SuperTest EXCLUDE_FROM_ALL Source/SuperTest.cpp Source/SuperResolution.cpp)
         target_compile_definitions(SuperTest PUBLIC RENDEPTH_ENABLE_ONNX_RUNTIME)
+        if(APPLE)
+            target_compile_definitions(SuperTest PUBLIC RENDEPTH_ENABLE_COREML)
+        endif()
         target_include_directories(SuperTest PUBLIC
                 Source ThirdParty/SDL/include ThirdParty/SDL_image/include
                 "${RENDEPTH_ONNXRUNTIME_INCLUDE_DIR}")
@@ -873,7 +890,7 @@ elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
 endif()
 
 include(Packaging/Legal.cmake)
-if(APPLE AND RENDEPTH_MAC_BUNDLE)
+if(APPLE AND RENDEPTH_MAC_EXPORT_BUNDLE)
     add_custom_command(TARGET Rendepth POST_BUILD
         COMMAND ${CMAKE_COMMAND} "-DRENDEPTH_BUNDLE=$<TARGET_BUNDLE_DIR:Rendepth>"
             -P "${CMAKE_SOURCE_DIR}/Packaging/Mac/FixupBundle.cmake")
@@ -905,6 +922,28 @@ if(WIN32)
     else()
         message(STATUS "GStreamer development files not found; Firefox video capture is disabled")
     endif()
+endif()
+if(APPLE)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(GSTREAMER QUIET IMPORTED_TARGET gstreamer-1.0 gstreamer-app-1.0
+            gstreamer-video-1.0 gstreamer-webrtc-1.0>=1.22 gstreamer-sdp-1.0)
+    endif()
+    if(GSTREAMER_FOUND)
+        message(STATUS "GStreamer WebRTC found; browser video capture is enabled")
+        target_sources(Rendepth PRIVATE Source/BrowserStream.cpp)
+        target_compile_definitions(Rendepth PRIVATE RENDEPTH_HAVE_GSTREAMER=1)
+        target_link_libraries(Rendepth PRIVATE PkgConfig::GSTREAMER)
+        add_executable(BrowserCaptureTest EXCLUDE_FROM_ALL
+            Source/BrowserCaptureTest.cpp Source/ScreenCapture.cpp Source/BrowserStream.cpp)
+        target_compile_definitions(BrowserCaptureTest PRIVATE RENDEPTH_HAVE_GSTREAMER=1)
+        target_link_libraries(BrowserCaptureTest PRIVATE SDL3::SDL3 PkgConfig::GSTREAMER)
+    else()
+        message(STATUS "GStreamer WebRTC development files not found; browser video capture is disabled")
+    endif()
+    add_executable(BrowserBridgeTest EXCLUDE_FROM_ALL
+        Source/BrowserBridgeTest.cpp Source/BrowserBridge.cpp)
+    target_include_directories(BrowserBridgeTest PRIVATE ThirdParty/rapidjson/include)
 endif()
 include(GNUInstallDirs)
 if(WIN32)
@@ -1058,6 +1097,12 @@ else()
     target_compile_options(AudioWaveformTest PRIVATE -UNDEBUG)
 endif()
 add_executable(NativeDisplaySelectionTest EXCLUDE_FROM_ALL Source/NativeDisplaySelectionTest.cpp)
+add_executable(CalibrationVolumesTest EXCLUDE_FROM_ALL Source/CalibrationVolumesTest.cpp)
+if(MSVC)
+    target_compile_options(CalibrationVolumesTest PRIVATE /UNDEBUG)
+else()
+    target_compile_options(CalibrationVolumesTest PRIVATE -UNDEBUG)
+endif()
 add_executable(AIEngineSettingsTest EXCLUDE_FROM_ALL Source/AIEngineSettingsTest.cpp)
 target_include_directories(AIEngineSettingsTest PRIVATE ThirdParty/rapidjson/include)
 add_executable(CubeViCalibrationTest EXCLUDE_FROM_ALL

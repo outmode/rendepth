@@ -82,7 +82,7 @@ int main(int argc, char** argv) {
 	if (argc < 4) {
 		std::cerr << "Usage: SuperTest <model.onnx> <input-file-or-directory> "
 			"<output-file-or-directory> "
-			"[--provider auto|cpu|cuda|rocm|directml] [--repeat N] [--name rfdn|ecbsr]\n";
+			"[--provider auto|cpu|coreml|cuda|rocm|directml] [--repeat N] [--name rfdn|ecbsr]\n";
 		return 2;
 	}
 	if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -99,6 +99,7 @@ int main(int argc, char** argv) {
 			const std::string provider = argv[++i];
 			if (provider == "auto") config.provider = DepthEstimator::Provider::Auto;
 			else if (provider == "cpu") config.provider = DepthEstimator::Provider::CPU;
+			else if (provider == "coreml") config.provider = DepthEstimator::Provider::CoreML;
 			else if (provider == "cuda") config.provider = DepthEstimator::Provider::CUDA;
 			else if (provider == "rocm") config.provider = DepthEstimator::Provider::ROCM;
 			else if (provider == "directml") config.provider = DepthEstimator::Provider::DirectML;

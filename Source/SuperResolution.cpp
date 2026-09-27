@@ -12,6 +12,9 @@
 
 #ifdef RENDEPTH_ENABLE_ONNX_RUNTIME
 #include <onnxruntime_cxx_api.h>
+#ifdef RENDEPTH_ENABLE_COREML
+#include "CoreMLInference.h"
+#endif
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 #include "InferenceRuntime.h"
 #endif
@@ -57,7 +60,11 @@ bool SuperResolution::load(const Config& config, std::string& error) {
 	const auto provider = config.provider == DepthEstimator::Provider::CPU
 		? DepthEstimator::Provider::CPU : InferenceRuntime::provider();
 #else
+#ifdef RENDEPTH_ENABLE_COREML
+	const auto provider = CoreMLInference::resolve(config.provider);
+#else
 	const auto provider = config.provider;
+#endif
 #endif
 	std::unique_ptr<State> nextState;
 	try {
@@ -65,7 +72,14 @@ bool SuperResolution::load(const Config& config, std::string& error) {
 		if (config.intraOpThreads > 0)
 			nextState->sessionOptions.SetIntraOpNumThreads(static_cast<int>(config.intraOpThreads));
 		nextState->sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-		if (provider == DepthEstimator::Provider::CUDA) {
+		if (provider == DepthEstimator::Provider::CoreML) {
+#ifdef RENDEPTH_ENABLE_COREML
+			CoreMLInference::append(nextState->sessionOptions);
+#else
+			error = "Core ML requires a macOS build with Core ML support.";
+			return false;
+#endif
+		} else if (provider == DepthEstimator::Provider::CUDA) {
 #if defined(RENDEPTH_ENABLE_CUDA) || defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME)
 			OrtCUDAProviderOptions options{};
 			nextState->sessionOptions.AppendExecutionProvider_CUDA(options);
@@ -98,6 +112,15 @@ bool SuperResolution::load(const Config& config, std::string& error) {
 		nextState->outputName = outputName.get();
 	} catch (const Ort::Exception& exception) {
 		error = exception.what();
+#ifdef RENDEPTH_ENABLE_COREML
+		if (provider == DepthEstimator::Provider::CoreML) {
+			SDL_Log("Core ML super resolution model unavailable; using CPU: %s", error.c_str());
+			nextState.reset();
+			auto cpuConfig = config;
+			cpuConfig.provider = DepthEstimator::Provider::CPU;
+			return load(cpuConfig, error);
+		}
+#endif
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 		if (provider != DepthEstimator::Provider::CPU) {
 			InferenceRuntime::useCpuFallback(error);
@@ -110,6 +133,7 @@ bool SuperResolution::load(const Config& config, std::string& error) {
 		return false;
 	}
 	switch (provider) {
+		case DepthEstimator::Provider::CoreML: activeProvider = "Core ML (CPU + GPU)"; break;
 		case DepthEstimator::Provider::CUDA: activeProvider = "CUDA"; break;
 		case DepthEstimator::Provider::ROCM: activeProvider = "ROCm"; break;
 		case DepthEstimator::Provider::DirectML: activeProvider = "DirectML"; break;

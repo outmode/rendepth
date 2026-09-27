@@ -64,6 +64,32 @@ keeping the browser video connected.
 
 ## Try it
 
+### macOS photo and video testing
+
+1. Build Rendepth, then register its native host for your user:
+   ```sh
+   cmake --build cmake-build-debug --target Rendepth BrowserBridgeTest
+   python3 Browser/Firefox/native/install.py --rendepth "$PWD/Debug/Rendepth"
+   Debug/BrowserBridgeTest
+   ```
+   If you build an app bundle, point `--rendepth` at
+   `Rendepth.app/Contents/MacOS/Rendepth`. Registration goes in
+   `~/Library/Application Support/Mozilla/NativeMessagingHosts`. Re-register
+   after moving the app or checkout.
+2. In Firefox, open `about:debugging#/runtime/this-firefox`, load
+   `Browser/Firefox/extension/manifest.json` as a temporary add-on, then try
+   an image from its context menu. The native host starts Rendepth if needed.
+3. For video, install GStreamer and the libnice plugin with Homebrew, then
+   reconfigure and rebuild Rendepth:
+   ```sh
+   brew install gstreamer libnice-gstreamer
+   cmake -S . -B cmake-build-debug -DPKG_CONFIG_EXECUTABLE=/opt/homebrew/bin/pkg-config
+   cmake --build cmake-build-debug --target Rendepth BrowserCaptureTest
+   ```
+   GStreamer 1.22 or newer is required. The CMake configure output reports
+   when browser video support is enabled.
+   Play a video and choose **Open Playing Video** in the add-on popup.
+
 ### Windows video and photo testing
 
 Firefox and Python 3 must be installed. Video also needs the 64-bit MSVC

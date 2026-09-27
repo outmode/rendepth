@@ -15,6 +15,7 @@ public:
 	enum class Provider {
 		Auto,
 		CPU,
+		CoreML,
 		ROCM,
 		DirectML,
 		CUDA,

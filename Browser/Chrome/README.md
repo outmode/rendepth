@@ -13,7 +13,7 @@ This is the release-version convention, not a runtime version-enforcement check.
 
 Manifest V3 port of the Firefox extension, with the same popup layout, font,
 icons, controls, remembered preferences and native photo/video protocol.
-The native viewer/host supports Windows and Linux. No Chrome Web Store upload
+The native viewer/host supports Windows, Linux and macOS. No Chrome Web Store upload
 or signing is required for local testing.
 
 ## Install locally
@@ -27,6 +27,11 @@ or signing is required for local testing.
    ```sh
    cmake --build cmake-build-debug --target Rendepth --parallel 10
    ```
+   On macOS, use the same build command. Browser video also requires
+   GStreamer 1.22 or newer and the libnice plugin. Install them with
+   `brew install gstreamer libnice-gstreamer`, then configure with
+   `-DPKG_CONFIG_EXECUTABLE=/opt/homebrew/bin/pkg-config` and rebuild.
+   Photos work without GStreamer.
 2. Register Chrome's native host. On Windows, run:
    ```powershell
    py -3 Browser/Chrome/native/install.py --rendepth Debug/Rendepth.exe --launcher Debug/ChromeNativeHost.exe
@@ -42,8 +47,16 @@ or signing is required for local testing.
    ```
    For Chromium, add `--browser chromium`. The installer uses
    `~/.config/google-chrome/NativeMessagingHosts` by default (respects
-   `XDG_CONFIG_HOME`), independently of Firefox's registration. Both platforms
+   `XDG_CONFIG_HOME`), independently of Firefox's registration. All platforms
    reuse `Browser/Firefox/native/host.py`; keep both directories in the checkout.
+   On macOS, run:
+   ```sh
+   python3 Browser/Chrome/native/install.py --rendepth "$PWD/Debug/Rendepth"
+   ```
+   For a bundle, point `--rendepth` at `Rendepth.app/Contents/MacOS/Rendepth`.
+   The manifest goes in `~/Library/Application Support/Google/Chrome/NativeMessagingHosts`.
+   Use `--browser chromium` or `--browser google-chrome-for-testing` for their
+   separate registration directories.
 3. Open `chrome://extensions`, enable **Developer mode**, choose **Load
    unpacked**, and select `Browser/Chrome/extension`. Pin Rendepth Companion if desired.
 4. Open a page with a playing video or an image. Use the toolbar popup for video,

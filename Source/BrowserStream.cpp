@@ -11,6 +11,9 @@
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#if defined(__APPLE__)
+#include <SDL3/SDL_filesystem.h>
+#endif
 #include <gst/app/gstappsink.h>
 #include <gst/video/video.h>
 #include <gst/video/video-converter.h>
@@ -413,6 +416,18 @@ bool BrowserStream::start(const std::string& directory, std::string& error, bool
 	// remain in the developer's GStreamer installation.
 	if (!g_getenv("GST_PLUGIN_PATH_1_0"))
 		g_setenv("GST_PLUGIN_PATH_1_0", RENDEPTH_GSTREAMER_PLUGIN_DIR, FALSE);
+	#endif
+	#ifdef __APPLE__
+	auto appBinary = std::filesystem::path(SDL_GetBasePath());
+	if (appBinary.filename().empty())
+		appBinary = appBinary.parent_path();
+	const auto bundledPlugins = appBinary.parent_path() / "PlugIns";
+	if (std::filesystem::is_directory(bundledPlugins)) {
+		g_setenv("GST_PLUGIN_SYSTEM_PATH_1_0", bundledPlugins.c_str(), TRUE);
+		const auto scanner = appBinary / "gst-plugin-scanner";
+		if (std::filesystem::is_regular_file(scanner))
+			g_setenv("GST_PLUGIN_SCANNER", scanner.c_str(), TRUE);
+	}
 	#endif
 	gst_init(nullptr, nullptr);
 	for (const char* name : {"webrtcbin", "nicesrc", "nicesink", "dtlssrtpdec", "dtlssrtpenc", "rtpvp8depay", "vp8dec", "appsink"}) {

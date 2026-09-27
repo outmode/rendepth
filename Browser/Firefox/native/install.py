@@ -11,6 +11,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--rendepth", type=Path, required=True)
 parser.add_argument("--directory", type=Path, default=(
     Path(os.environ["LOCALAPPDATA"]) / "Rendepth" / "Firefox" if os.name == "nt" else
+    Path.home() / "Library/Application Support/Mozilla/NativeMessagingHosts" if sys.platform == "darwin" else
     Path.home() / ".mozilla/native-messaging-hosts"))
 parser.add_argument("--launcher", type=Path, help="Windows FirefoxNativeHost.exe built from this checkout")
 args = parser.parse_args()

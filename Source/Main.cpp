@@ -4973,7 +4973,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 		setStereoMode(Native);
 	}
 
-#if defined(__linux__) || defined(_WIN32)
+#if defined(__linux__) || defined(_WIN32) || defined(__APPLE__)
 	std::string bridgeError;
 	if (!browserBridge.start(BrowserBridge::runtimeDirectory(), bridgeError))
 		SDL_Log("Could not enable browser bridge: %s", bridgeError.c_str());

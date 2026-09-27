@@ -388,6 +388,9 @@ void updateVideoSolidColor() {
 				}
 			}
 		}
+	#elif defined(__APPLE__)
+		if (const auto candidate = CalibrationVolumes::lookingGlassCalibration("/Volumes");
+			!candidate.empty()) return candidate;
 	#else
 		const auto opticalMounts = CalibrationVolumes::opticalMounts();
 		for (const auto& mediaRoot : {std::filesystem::path("/run/media"), std::filesystem::path("/media")}) {
@@ -563,6 +566,9 @@ int Image::initNativeOutput(Context* context) {
 		const bool knownQuiltDisplay = cubeVi || isLookingGlass || isGenericLenticular;
 		if (!requested && requestedName == nullptr && !knownQuiltDisplay) continue;
 		if (!requested && requestedName != nullptr) continue;
+		// A secondary fullscreen window covers the device even when there is no
+		// image to render. Leave it untouched until a source has been uploaded.
+		if (displays[i] != appDisplay && imageTexture == nullptr) continue;
 
 		bool matchedCubeVi = cubeVi;
 		// Explicit model override supports hardware revisions not yet observed.
@@ -786,8 +792,9 @@ bool Image::isNativeDisplayOnMainWindow() {
 void Image::setNativeOutputActive(Context* context, bool active) {
 	if (context == nullptr || context->device == nullptr) return;
 	if (active) {
-		if (!nativeOutputEnabled || (nativeDisplay != 0 && (context->nativeOutputWindow == nullptr && !nativeDisplayOnMainWindow)))
-			initNativeOutput(context);
+		// A source can become ready after display discovery selected a device
+		// under the main window. Recheck routing so secondary windows appear then.
+		initNativeOutput(context);
 		return;
 	}
 	for (auto& output : nativeOutputs) {
