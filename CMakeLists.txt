@@ -30,6 +30,7 @@ set(RENDEPTH_ENABLE_CUDA OFF)
 set(RENDEPTH_BUILD_DEPTH_TEST ON)
 set(RENDEPTH_BUILD_SUPER_TEST ON)
 set(RENDEPTH_COMPILE_SHADERS OFF)
+option(RENDEPTH_REQUIRE_GSTREAMER "Require browser WebRTC support for release packaging" OFF)
 if(APPLE)
     option(RENDEPTH_MAC_EXPORT_BUNDLE "Build the macOS app bundle for export" OFF)
 endif()
@@ -70,6 +71,10 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/Debug")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/Binary")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}/Binary")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}/Binary")
+option(RENDEPTH_INSTALLER_BUILD "Keep Windows installer Release outputs out of the live application directory" OFF)
+if(WIN32 AND RENDEPTH_INSTALLER_BUILD)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/installer-binary")
+endif()
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/Library)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG ${CMAKE_SOURCE_DIR}/Library)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/Library)
@@ -930,20 +935,58 @@ if(WIN32)
         pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-1.0 gstreamer-app-1.0
             gstreamer-video-1.0 gstreamer-webrtc-1.0>=1.22 gstreamer-sdp-1.0)
         target_sources(Rendepth PRIVATE Source/BrowserStream.cpp)
-        target_compile_definitions(Rendepth PRIVATE RENDEPTH_HAVE_GSTREAMER=1
-            RENDEPTH_GSTREAMER_PLUGIN_DIR="${RENDEPTH_GSTREAMER_ROOT}/lib/gstreamer-1.0")
+        target_compile_definitions(Rendepth PRIVATE RENDEPTH_HAVE_GSTREAMER=1)
         target_link_libraries(Rendepth PRIVATE PkgConfig::GSTREAMER)
+        # The installed app must use its own plugins and DLLs. Never embed a
+        # developer-machine plugin path in the release executable.
+        set(RENDEPTH_GSTREAMER_PLUGINS
+            app coreelements dtls nice rtp rtpmanager srtp
+            typefindfunctions vpx webrtc)
+        set(RENDEPTH_GSTREAMER_PLUGIN_FILES)
+        foreach(RENDEPTH_GSTREAMER_PLUGIN IN LISTS RENDEPTH_GSTREAMER_PLUGINS)
+            set(RENDEPTH_GSTREAMER_PLUGIN_FILE
+                "${RENDEPTH_GSTREAMER_ROOT}/lib/gstreamer-1.0/gst${RENDEPTH_GSTREAMER_PLUGIN}.dll")
+            if(NOT EXISTS "${RENDEPTH_GSTREAMER_PLUGIN_FILE}")
+                message(FATAL_ERROR "Required GStreamer plugin is missing: ${RENDEPTH_GSTREAMER_PLUGIN_FILE}")
+            endif()
+            list(APPEND RENDEPTH_GSTREAMER_PLUGIN_FILES "${RENDEPTH_GSTREAMER_PLUGIN_FILE}")
+        endforeach()
+        set(RENDEPTH_GSTREAMER_SCANNER
+            "${RENDEPTH_GSTREAMER_ROOT}/libexec/gstreamer-1.0/gst-plugin-scanner.exe")
+        if(NOT EXISTS "${RENDEPTH_GSTREAMER_SCANNER}")
+            message(FATAL_ERROR "Required GStreamer plugin scanner is missing: ${RENDEPTH_GSTREAMER_SCANNER}")
+        endif()
+        install(DIRECTORY "${RENDEPTH_GSTREAMER_ROOT}/bin/"
+            DESTINATION libexec/rendepth/Binary
+            FILES_MATCHING PATTERN "*.dll")
+        install(FILES ${RENDEPTH_GSTREAMER_PLUGIN_FILES}
+            DESTINATION libexec/rendepth/Binary/gstreamer-plugins)
+        install(FILES "${RENDEPTH_GSTREAMER_SCANNER}"
+            DESTINATION libexec/rendepth/Binary)
+        install(DIRECTORY "${RENDEPTH_GSTREAMER_ROOT}/share/licenses/"
+            DESTINATION libexec/rendepth/Legal/GStreamer)
         add_executable(BrowserCaptureTest EXCLUDE_FROM_ALL
             Source/BrowserCaptureTest.cpp Source/ScreenCapture.cpp Source/BrowserStream.cpp)
-        target_compile_definitions(BrowserCaptureTest PRIVATE RENDEPTH_HAVE_GSTREAMER=1
-            RENDEPTH_GSTREAMER_PLUGIN_DIR="${RENDEPTH_GSTREAMER_ROOT}/lib/gstreamer-1.0")
+        target_compile_definitions(BrowserCaptureTest PRIVATE RENDEPTH_HAVE_GSTREAMER=1)
         target_link_libraries(BrowserCaptureTest PRIVATE SDL3::SDL3 PkgConfig::GSTREAMER)
         foreach(RENDEPTH_BROWSER_TARGET IN ITEMS Rendepth BrowserCaptureTest)
             add_custom_command(TARGET ${RENDEPTH_BROWSER_TARGET} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    "${RENDEPTH_GSTREAMER_ROOT}/bin" "$<TARGET_FILE_DIR:${RENDEPTH_BROWSER_TARGET}>")
+                    "${RENDEPTH_GSTREAMER_ROOT}/bin" "$<TARGET_FILE_DIR:${RENDEPTH_BROWSER_TARGET}>"
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "$<TARGET_FILE_DIR:${RENDEPTH_BROWSER_TARGET}>/gstreamer-plugins"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${RENDEPTH_GSTREAMER_PLUGIN_FILES}
+                    "$<TARGET_FILE_DIR:${RENDEPTH_BROWSER_TARGET}>/gstreamer-plugins"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${RENDEPTH_GSTREAMER_SCANNER}"
+                    "$<TARGET_FILE_DIR:${RENDEPTH_BROWSER_TARGET}>")
         endforeach()
     else()
+        if(RENDEPTH_REQUIRE_GSTREAMER)
+            message(FATAL_ERROR
+                "Release packaging requires GStreamer WebRTC. Install the MSVC x64 runtime and development files at RENDEPTH_GSTREAMER_ROOT.")
+        endif()
         message(STATUS "GStreamer development files not found; Firefox video capture is disabled")
     endif()
 endif()

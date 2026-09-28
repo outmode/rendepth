@@ -96,8 +96,8 @@ Firefox and Python 3 must be installed. Video also needs the 64-bit MSVC
 [GStreamer development installer](https://gstreamer.freedesktop.org/download/)
 (1.22 or newer), including WebRTC, libnice, DTLS/SRTP and VP8 plugins. Install
 it to `Runtimes/GStreamer` in this checkout, or set `RENDEPTH_GSTREAMER_ROOT`
-to its install directory when configuring CMake. The current development build
-loads the plugins from that installation.
+to its install directory when configuring CMake. The build copies the
+required plugins beside the app and loads them from there.
 
 1. Configure and build the app and native host from an MSVC developer prompt:
    ```powershell

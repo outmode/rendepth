@@ -2,8 +2,6 @@
 """Stage a relocatable Rendepth.app and both browser registrations in a pkg."""
 
 import argparse
-import base64
-import hashlib
 import json
 from pathlib import Path
 import plistlib
@@ -18,12 +16,6 @@ PLUGINS = (
     "app", "coreelements", "dtls", "nice", "rtp", "rtpmanager",
     "srtp", "typefindfunctions", "vpx", "webrtc",
 )
-
-
-def extension_id():
-    manifest = json.loads((ROOT / "Browser/Chrome/extension/manifest.json").read_text())
-    digest = hashlib.sha256(base64.b64decode(manifest["key"])).hexdigest()[:32]
-    return "".join(chr(ord("a") + int(char, 16)) for char in digest)
 
 
 def run(*command):
@@ -90,7 +82,8 @@ def main():
     parser.add_argument("--native-host", type=Path, required=True,
                         help="PyInstaller onefile output for Packaging/Mac/native_host.py")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--chrome-extension-id", default=extension_id())
+    parser.add_argument("--chrome-extension-id", required=True,
+                        help="Chrome Web Store item ID from the developer dashboard")
     parser.add_argument("--plugin-directory", type=Path,
                         default=Path("/opt/homebrew/lib/gstreamer-1.0"))
     parser.add_argument("--plugin-scanner", type=Path,

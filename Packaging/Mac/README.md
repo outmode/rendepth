@@ -9,12 +9,13 @@ architecture until a universal app and native host are available.
 Requirements: CMake release build, PyInstaller in a Python 3.13 environment,
 GStreamer and the required plugins, a Developer ID Application certificate, a
 Developer ID Installer certificate, and Apple notarization credentials. The
-extension ID passed below must match the **published Chrome Web Store ID**.
+extension ID passed below must match the Chrome Web Store **Item ID**, available
+as soon as the add-on ZIP is uploaded as a draft.
 The Firefox extension must retain `firefox@rendepth.outmode` as its Gecko ID.
 
 ```sh
 cmake -S . -B cmake-build-mac-export -DRENDEPTH_MAC_EXPORT_BUNDLE=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build cmake-build-mac-export --target Rendepth -j6
+cmake --build cmake-build-mac-export --target Rendepth -j28
 
 python3.13 -m venv /private/tmp/rendepth-host-venv
 /private/tmp/rendepth-host-venv/bin/pip install pyinstaller==6.22.3
@@ -30,7 +31,7 @@ PYINSTALLER_CONFIG_DIR=/private/tmp/rendepth-pyinstaller-cache \
 python3 Packaging/Mac/BuildInstaller.py \
   --bundle cmake-build-mac-export/output/Rendepth.app \
   --native-host /private/tmp/rendepth-host-dist/RendepthNativeHost \
-  --chrome-extension-id PUBLISHED_CHROME_EXTENSION_ID \
+  --chrome-extension-id hffdjljngfgobaekdbgfgfodecmehgbh \
   --application-identity 'Developer ID Application: Outmode LLC (PZBA2JJ2RQ)' \
   --installer-identity 'Developer ID Installer: Outmode LLC (PZBA2JJ2RQ)' \
   --output /private/tmp/Rendepth-3.0.0.pkg

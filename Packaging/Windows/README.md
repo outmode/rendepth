@@ -2,23 +2,32 @@
 
 ## Build an unsigned installer
 
-Install Inno Setup 6, configure an x64 Visual Studio Release build as described
-below, then run from the repository root:
+Install Inno Setup 6 and PyInstaller on the build machine. Install the MSVC x64
+GStreamer runtime and development files into `Runtimes/GStreamer` (or set
+`RENDEPTH_GSTREAMER_ROOT` in the Release CMake profile). Configure an x64 Visual
+Studio Release build as described below, then run from the repository root:
 
 ```powershell
-& Packaging/Windows/Build-Installer.ps1
+& Packaging/Windows/Build-Installer.ps1 -ChromeExtensionId hffdjljngfgobaekdbgfgfodecmehgbh
 ```
 
-Pass `-BuildDir` for another configured CMake directory or `-InnoCompiler` for
-an ISCC.exe outside the usual installation paths. Pass `-SkipBuild` only when
-the Release binary has already been built, for example when refreshing the
-installer script while Rendepth is running. The script builds Rendepth
-with 28 parallel jobs, stages the CMake install tree, checks the required CPU
-runtime and Visual C++ DLLs, and writes
+Pass `-ChromeExtensionId` with the Item ID shown after the Chrome upload ZIP
+is added to the Chrome Web Store dashboard. The local unpacked ID is not a
+substitute. Pass `-BuildDir` for another configured CMake directory,
+`-InnoCompiler` for an ISCC.exe outside the usual installation paths, or
+`-Python` for a Python installation with PyInstaller. The script reconfigures with browser WebRTC
+required, builds Rendepth with 28 parallel jobs, stages the CMake install tree,
+checks the required CPU runtime, Visual C++ and GStreamer files, and writes
 `Distribution/<version>/Windows/Rendepth-<version>-windows-x64-setup.exe`.
-The installer includes the CPU runtime, program DLLs, assets, shaders, and
-licenses. GPU runtime packs remain separate. The output is unsigned; sign the
-finished setup executable with Microsoft SignTool when preparing a release.
+The installer includes the CPU runtime, program DLLs, GStreamer WebRTC runtime
+and plugins, their vendor notices, a frozen browser native host, assets, shaders,
+and licenses. It
+registers the native host for Firefox and Chrome, updates any per-user
+development association, and creates manifests that point to the installed
+executable. End users do not need GStreamer or Python
+installed separately. GPU runtime packs remain separate. The output is
+unsigned; sign the finished setup executable with Microsoft SignTool when
+preparing a release.
 
 The script replaces an existing installer for the same version after the new
 installer compiles successfully. It does not keep backup executables.
@@ -67,7 +76,7 @@ No CUDA toolkit, cuDNN, DirectML SDK, or ORT import library is needed to compile
 cmake -S . -B build-windows -G "Visual Studio 18 2026" -A x64 `
   -DRENDEPTH_ONNXRUNTIME_DIR=C:/SDKs/onnxruntime-win-x64-1.22.1 `
   -DRENDEPTH_CPU_RUNTIME_DIR=C:/SDKs/onnxruntime-win-x64-1.22.1
-cmake --build build-windows --config Release --target Rendepth
+cmake --build build-windows --config Release --target Rendepth --parallel 28
 ```
 
 Retain the project's other machine-specific FFmpeg and NASM options. In CLion,

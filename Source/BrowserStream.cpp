@@ -11,7 +11,7 @@
 #include <stdexcept>
 #include <thread>
 #include <utility>
-#if defined(__APPLE__)
+#if defined(_WIN32) || defined(__APPLE__)
 #include <SDL3/SDL_filesystem.h>
 #endif
 #include <gst/app/gstappsink.h>
@@ -412,10 +412,14 @@ bool BrowserStream::start(const std::string& directory, std::string& error, bool
 		return false;
 	}
 	#ifdef _WIN32
-	// The app loads GStreamer DLLs from its output directory, while the plugins
-	// remain in the developer's GStreamer installation.
-	if (!g_getenv("GST_PLUGIN_PATH_1_0"))
-		g_setenv("GST_PLUGIN_PATH_1_0", RENDEPTH_GSTREAMER_PLUGIN_DIR, FALSE);
+	const auto appBinary = std::filesystem::path(SDL_GetBasePath());
+	const auto bundledPlugins = appBinary / "gstreamer-plugins";
+	if (std::filesystem::is_directory(bundledPlugins)) {
+		g_setenv("GST_PLUGIN_SYSTEM_PATH_1_0", bundledPlugins.string().c_str(), TRUE);
+		const auto scanner = appBinary / "gst-plugin-scanner.exe";
+		if (std::filesystem::is_regular_file(scanner))
+			g_setenv("GST_PLUGIN_SCANNER", scanner.string().c_str(), TRUE);
+	}
 	#endif
 	#ifdef __APPLE__
 	auto appBinary = std::filesystem::path(SDL_GetBasePath());

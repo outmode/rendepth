@@ -4,6 +4,9 @@
 #ifndef StageDir
   #error Pass StageDir to ISCC with --define=StageDir=<absolute stage directory>.
 #endif
+#ifndef ChromeExtensionId
+  #error Pass ChromeExtensionId to ISCC from the Chrome Web Store item ID.
+#endif
 
 [Setup]
 AppId=Outmode.Rendepth
@@ -37,9 +40,17 @@ Source: "{#StageDir}\libexec\rendepth\Shaders\*"; DestDir: "{app}\Shaders"; Flag
 Source: "{#StageDir}\libexec\rendepth\Runtimes\*"; DestDir: "{app}\Runtimes"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StageDir}\libexec\rendepth\Legal\*"; DestDir: "{app}\Legal"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[Dirs]
+Name: "{app}\Browser\Firefox"
+Name: "{app}\Browser\Chrome"
+
 [Registry]
 ; Register as an Open with choice without taking over the user's default apps.
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\Rendepth.exe"; ValueType: string; ValueData: "{app}\Binary\Rendepth.exe"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\Mozilla\NativeMessagingHosts\com.outmode.rendepth"; ValueType: string; ValueData: "{app}\Browser\Firefox\com.outmode.rendepth.json"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.outmode.rendepth"; ValueType: string; ValueData: "{app}\Browser\Chrome\com.outmode.rendepth.json"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Mozilla\NativeMessagingHosts\com.outmode.rendepth"; ValueType: string; ValueData: "{app}\Browser\Firefox\com.outmode.rendepth.json"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.outmode.rendepth"; ValueType: string; ValueData: "{app}\Browser\Chrome\com.outmode.rendepth.json"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "Software\Classes\Applications\Rendepth.exe"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "Rendepth"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "Software\Classes\Applications\Rendepth.exe\shell\open\command"; ValueType: string; ValueData: """{app}\Binary\Rendepth.exe"" ""%1"""
 Root: HKLM; Subkey: "Software\Classes\Applications\Rendepth.exe\SupportedTypes"; ValueType: string; ValueName: ".jpeg"; ValueData: ""
@@ -92,3 +103,43 @@ Name: "{autodesktop}\Rendepth"; Filename: "{app}\Binary\Rendepth.exe"; WorkingDi
 
 [Run]
 Filename: "{app}\Binary\Rendepth.exe"; Description: "Launch Rendepth"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+Type: files; Name: "{app}\Browser\Firefox\com.outmode.rendepth.json"
+Type: files; Name: "{app}\Browser\Chrome\com.outmode.rendepth.json"
+
+[Code]
+function JsonEscape(Value: String): String;
+begin
+  StringChangeEx(Value, '\', '\\', True);
+  StringChangeEx(Value, '"', '\"', True);
+  Result := Value;
+end;
+
+procedure WriteBrowserManifest(RelativePath, Description, Permission: String);
+var
+  Contents, HostPath: String;
+begin
+  HostPath := JsonEscape(ExpandConstant('{app}\Binary\RendepthNativeHost.exe'));
+  Contents := '{' + #13#10 +
+    '  "name": "com.outmode.rendepth",' + #13#10 +
+    '  "description": "' + Description + '",' + #13#10 +
+    '  "path": "' + HostPath + '",' + #13#10 +
+    '  "type": "stdio",' + #13#10 +
+    '  ' + Permission + #13#10 +
+    '}' + #13#10;
+  if not SaveStringToFile(ExpandConstant('{app}\Browser\' + RelativePath +
+      '\com.outmode.rendepth.json'), Contents, False) then
+    RaiseException('Could not install the browser native messaging manifest');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    WriteBrowserManifest('Firefox', 'Rendepth Firefox companion bridge',
+      '"allowed_extensions": ["firefox@rendepth.outmode"]');
+    WriteBrowserManifest('Chrome', 'Rendepth Chrome companion bridge',
+      '"allowed_origins": ["chrome-extension://{#ChromeExtensionId}/"]');
+  end;
+end;

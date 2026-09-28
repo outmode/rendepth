@@ -1700,7 +1700,7 @@ Choice ChoiceSlideshow {
 
 Choice ChoiceTags {
 	"Force 3D Format",
-	{ "SBS Full", "SBS Half", "TAB Full", "TAB Half", "Standard Media", "Anaglyph" },
+	{ "SBS Full", "SBS Half", "TAB Full", "TAB Half", "2D Media", "Anaglyph" },
 };
 
 Choice ChoiceEyes {
