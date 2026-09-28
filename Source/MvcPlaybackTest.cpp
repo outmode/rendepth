@@ -24,8 +24,9 @@ int main(int argc, char** argv) {
     std::string error;
     if (!reader.open(argv[1], error)) { std::cerr << error << '\n'; return 2; }
     const BlurayTitle* title = nullptr;
+    const int requestedTitle = argc < 3 ? -1 : std::stoi(argv[2]);
     for (const auto& candidate : reader.titles())
-        if (candidate.mvc && (argc < 3 ? (!title || candidate.duration > title->duration) : candidate.index == std::stoi(argv[2]))) title = &candidate;
+        if (candidate.mvc && (requestedTitle < 0 ? (!title || candidate.duration > title->duration) : candidate.index == requestedTitle)) title = &candidate;
     if (!title) { std::cerr << "No MVC title\n"; return 3; }
     const int index = title->index;
     const double duration = title->duration;

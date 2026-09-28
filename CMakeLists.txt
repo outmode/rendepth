@@ -1203,6 +1203,18 @@ if(RENDEPTH_ENABLE_FFMPEG AND RENDEPTH_HAVE_BLURAY)
     target_include_directories(MvcPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
     target_compile_definitions(MvcPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,COMPILE_DEFINITIONS>)
     target_link_libraries(MvcPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,LINK_LIBRARIES>)
+    add_executable(BluraySeekPlaybackTest EXCLUDE_FROM_ALL Source/BluraySeekPlaybackTest.cpp
+        Source/BlurayReader.cpp Source/DvdReader.cpp Source/AudioCdReader.cpp
+        Source/DiscSource.cpp Source/VideoPlayer.cpp Source/MvcDecoder.cpp)
+    target_include_directories(BluraySeekPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(BluraySeekPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,COMPILE_DEFINITIONS>)
+    target_link_libraries(BluraySeekPlaybackTest PRIVATE $<TARGET_PROPERTY:Rendepth,LINK_LIBRARIES>)
+    add_executable(DiscSubtitleTimingTest EXCLUDE_FROM_ALL Source/DiscSubtitleTimingTest.cpp
+        Source/BlurayReader.cpp Source/DvdReader.cpp Source/AudioCdReader.cpp
+        Source/DiscSource.cpp Source/VideoPlayer.cpp Source/MvcDecoder.cpp)
+    target_include_directories(DiscSubtitleTimingTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(DiscSubtitleTimingTest PRIVATE $<TARGET_PROPERTY:Rendepth,COMPILE_DEFINITIONS>)
+    target_link_libraries(DiscSubtitleTimingTest PRIVATE $<TARGET_PROPERTY:Rendepth,LINK_LIBRARIES>)
 
     find_package(Threads REQUIRED)
     add_executable(DiscReadAheadTest EXCLUDE_FROM_ALL Source/DiscReadAheadTest.cpp)

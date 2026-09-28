@@ -272,6 +272,7 @@ bool DvdReader::selectTitle(int titleIndex, std::string& error) {
     ssize_t blocks = DVDFileSize(vtsFile_);
     totalSizeBytes_ = blocks > 0 ? static_cast<int64_t>(blocks) * DVD_VIDEO_LB_LEN : 0;
     currentByteOffset_ = 0;
+    seekStartTime_ = 0.0;
 
     return true;
 }
@@ -302,6 +303,7 @@ void DvdReader::close() {
     currentChapter_ = 0;
     currentByteOffset_ = 0;
     totalSizeBytes_ = 0;
+    seekStartTime_ = 0.0;
     discTitle_.clear();
     discPath_.clear();
     titles_.clear();
@@ -395,6 +397,7 @@ bool DvdReader::seekTime(double seconds) {
     if (!pgc || !pgc->nr_of_cells || !pgc->cell_playback) return false;
     seconds = std::clamp(seconds, 0.0, duration_);
     uint32_t sector = pgc->cell_playback[0].first_sector;
+    double accessTime = 0.0;
 
     // VOB size is not a time index: variable bitrate and unrelated material
     // in the title set can put a proportional byte seek far beyond the target.
@@ -406,7 +409,10 @@ bool DvdReader::seekTime(double seconds) {
         const auto& map = maps->tmap[pgcn - 1];
         const int entry = std::min(static_cast<int>(seconds / map.tmu) - 1,
             static_cast<int>(map.nr_of_entries) - 1);
-        if (entry >= 0) sector = map.map_ent[entry] & 0x7fffffffU;
+        if (entry >= 0) {
+            sector = map.map_ent[entry] & 0x7fffffffU;
+            accessTime = (entry + 1) * static_cast<double>(map.tmu);
+        }
     } else {
         // Start at the containing cell's access point and let the decoder
         // discard preroll. Skip alternate angle cells when counting time.
@@ -416,13 +422,22 @@ bool DvdReader::seekTime(double seconds) {
             if (cell.block_type == BLOCK_TYPE_ANGLE_BLOCK &&
                 cell.block_mode != BLOCK_MODE_FIRST_CELL) continue;
             sector = cell.first_sector;
+            accessTime = elapsed;
             elapsed += parseDvdTime(cell.playback_time);
             if (elapsed > seconds) break;
         }
     }
     const int64_t targetByte = static_cast<int64_t>(sector) * DVD_VIDEO_LB_LEN;
     if (targetByte >= totalSizeBytes_) return false;
-    return seek(targetByte, 0) == targetByte;
+    if (seek(targetByte, 0) != targetByte) return false;
+    seekStartTime_ = accessTime;
+    return true;
+}
+
+// Return the title time represented by the access point chosen for the last time seek.
+double DvdReader::seekStartTime() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return seekStartTime_;
 }
 
 // Seek to a chapter's starting sector and record the selection.
@@ -552,6 +567,8 @@ int64_t DvdReader::bytePosition() const { return -1; }
 
 // Provide the unavailable-backend fallback for time seeking.
 bool DvdReader::seekTime(double) { return false; }
+
+double DvdReader::seekStartTime() const { return 0.0; }
 
 // Provide the unavailable-backend fallback for chapter seeking.
 bool DvdReader::seekChapter(int) { return false; }

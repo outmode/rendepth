@@ -65,6 +65,7 @@ public:
 
     int64_t bytePosition() const;
     bool seekTime(double seconds);
+    double seekStartTime() const;
     bool seekChapter(int chapterIndex);
 
     int chapterCount() const;
@@ -104,6 +105,7 @@ private:
     int currentChapter_ = 0;
     int64_t currentByteOffset_ = 0;
     int64_t totalSizeBytes_ = 0;
+    double seekStartTime_ = 0.0;
     std::string discTitle_;
     std::filesystem::path discPath_;
     std::vector<DvdTitle> titles_;

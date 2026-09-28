@@ -1743,7 +1743,7 @@ Choice ChoiceRuntimePacks {
 	"Installed Runtime Packs", { "None", "CUDA", secondaryPackLabel, combinedPackLabel }, {}, {}, false, true, true,
 };
 Choice ChoiceRuntimeTools {
-	"GPU Support", { "Choose AI Engine", "Open Pack Folder" }, {}, {}, false, false, true,
+	"GPU Support", { "Choose AI Engine", "Open Data Folder" }, {}, {}, false, false, true,
 };
 static int startupInferenceOption = 0;
 static int committedInferenceOption = 0;
@@ -2549,7 +2549,7 @@ static void changeInference(int option) {
 	displayTipTime = getTimeNow();
 }
 
-// Handle runtime-management actions such as opening the pack folder or choosing an inference engine.
+// Handle runtime-management actions such as opening application data or choosing an inference engine.
 static void runtimeTools(int option) {
 	menuSelection[ChoiceRuntimeTools.label] = -1;
 	if (firstInit) return;
@@ -2578,19 +2578,19 @@ static void runtimeTools(int option) {
 	const auto directory = InferenceRuntime::packDirectory();
 	if (option == 1) {
 		std::error_code error;
-		if (!directory.empty()) std::filesystem::create_directories(directory, error);
-		if (directory.empty() || error) {
+		if (!homePath.empty()) std::filesystem::create_directories(homePath, error);
+		if (homePath.empty() || error) {
 			showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs",
-				"Could not create the runtime pack folder.", context.window);
+				"Could not create the Rendepth data folder.", context.window);
 			return;
 		}
-		// Encode a file URI; pack paths can contain spaces or URI metacharacters.
+		// Encode a file URI; data paths can contain spaces or URI metacharacters.
 		std::string url = "file://";
 #ifdef _WIN32
 		url += '/';
 #endif
 		constexpr char hex[] = "0123456789ABCDEF";
-		for (unsigned char c : directory.generic_u8string()) {
+		for (unsigned char c : homePath.generic_u8string()) {
 			if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
 				(c >= '0' && c <= '9') || c == '/' || c == ':' || c == '-' || c == '_' || c == '.' || c == '~')
 				url += static_cast<char>(c);
@@ -2605,7 +2605,8 @@ static void runtimeTools(int option) {
 	message += "\n\nNvidia pack: " + std::string((menuSelection[ChoiceRuntimePacks.label] & 1) ? "Installed" : "Not installed");
 	message += "\n" + std::string(secondaryInferenceLabel) + " pack: " +
 		std::string((menuSelection[ChoiceRuntimePacks.label] & 2) ? "Installed" : "Not installed");
-	message += "\n\nPack folder: " + directory.string();
+	message += "\n\nData folder: " + homePath.string();
+	message += "\nPack folder: " + directory.string();
 	message += "\n\nChoosing a missing engine downloads and installs its pack from rendepth.com.";
 	message += "\nAn installed pack still needs a compatible GPU and driver."
 		"\nRestart Rendepth after installing a pack or changing the inference preference.";
