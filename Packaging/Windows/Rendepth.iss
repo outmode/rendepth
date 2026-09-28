@@ -29,6 +29,11 @@ WizardStyle=modern
 WizardImageFile=Artwork\wizard-portrait.png
 WizardSmallImageFile=
 ChangesAssociations=yes
+#ifdef SignedBuild
+SignTool=rendepth
+SignedUninstaller=yes
+SignToolMinimumTimeBetween=15000
+#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked

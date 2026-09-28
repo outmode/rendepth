@@ -2,7 +2,11 @@ param(
     [string]$BuildDir = "cmake-build-release-visual-studio",
     [string]$InnoCompiler = "",
     [string]$Python = "",
-    [string]$ChromeExtensionId = ""
+    [string]$ChromeExtensionId = "",
+    [switch]$Sign,
+    [string]$SigningThumbprint = "",
+    [string]$SignToolPath = "",
+    [string]$TimestampUrl = "http://timestamp.sectigo.com"
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,6 +48,31 @@ if (-not $InnoCompiler) {
 }
 if (-not $InnoCompiler -or -not (Test-Path $InnoCompiler)) {
     throw "Inno Setup 6 ISCC.exe was not found. Install it or pass -InnoCompiler."
+}
+if ($Sign) {
+    $SigningThumbprint = $SigningThumbprint -replace '\s', ''
+    if ($SigningThumbprint -notmatch '^[0-9a-fA-F]{40}$') {
+        throw "Pass -SigningThumbprint with the 40-character code-signing certificate thumbprint."
+    }
+    if (-not $SignToolPath) {
+        $command = Get-Command signtool.exe -ErrorAction SilentlyContinue
+        if ($command) { $SignToolPath = $command.Source }
+    }
+    if (-not $SignToolPath) {
+        $sdkBin = Join-Path ${env:ProgramFiles(x86)} "Windows Kits/10/bin"
+        foreach ($sdkVersion in (Get-ChildItem $sdkBin -Directory -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending)) {
+            $candidate = Join-Path $sdkVersion.FullName "x64/signtool.exe"
+            if (Test-Path $candidate) { $SignToolPath = $candidate; break }
+        }
+    }
+    if (-not $SignToolPath -or -not (Test-Path $SignToolPath)) {
+        throw "Windows SDK SignTool was not found. Install the Windows SDK or pass -SignToolPath."
+    }
+    if (-not ([Uri]::IsWellFormedUriString($TimestampUrl, [UriKind]::Absolute) -and
+            $TimestampUrl -match '^https?://')) {
+        throw "Pass an HTTP(S) RFC 3161 timestamp URL."
+    }
 }
 & $Python -m PyInstaller --version | Out-Null
 if ($LASTEXITCODE -ne 0) {
@@ -98,16 +127,60 @@ if ($LASTEXITCODE -ne 0 -or
     throw "Could not freeze the browser native host"
 }
 
+if ($Sign) {
+    $filesToSign = @(
+        "Binary/Rendepth.exe",
+        "Binary/rendepth-mvc.dll",
+        "Binary/RendepthNativeHost.exe"
+    )
+    foreach ($relativePath in $filesToSign) {
+        $file = Join-Path $appStage $relativePath
+        if (-not (Test-Path $file)) { throw "Signing input is missing: $relativePath" }
+    }
+    foreach ($relativePath in $filesToSign) {
+        $file = Join-Path $appStage $relativePath
+        & $SignToolPath sign /sha1 $SigningThumbprint /fd SHA256 `
+            /tr $TimestampUrl /td SHA256 $file
+        if ($LASTEXITCODE -ne 0) { throw "Signing failed: $relativePath" }
+        & $SignToolPath verify /pa $file
+        if ($LASTEXITCODE -ne 0) { throw "Signature verification failed: $relativePath" }
+        $signature = Get-AuthenticodeSignature -LiteralPath $file
+        if ($signature.Status -ne 'Valid' -or
+            $signature.SignerCertificate.Thumbprint -ne $SigningThumbprint -or
+            -not $signature.TimeStamperCertificate) {
+            throw "Signer or timestamp verification failed: $relativePath"
+        }
+        Start-Sleep -Seconds 15  # Sectigo asks for a pause between timestamp requests.
+    }
+}
+
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 $temporaryOutputDir = Join-Path $outputDir ("installer-output-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $temporaryOutputDir | Out-Null
 $newInstaller = Join-Path $temporaryOutputDir (Split-Path -Leaf $installer)
-& $InnoCompiler "/DAppVersion=$version" "/DStageDir=$stage" "/DChromeExtensionId=$ChromeExtensionId" `
-    "/O$temporaryOutputDir" (Join-Path $PSScriptRoot "Rendepth.iss")
+$innoArguments = @("/DAppVersion=$version", "/DStageDir=$stage",
+    "/DChromeExtensionId=$ChromeExtensionId", "/O$temporaryOutputDir")
+if ($Sign) {
+    # Inno's $q quotes the executable path and $f quotes the file to sign.
+    $innoSignCommand = '$q' + $SignToolPath + '$q sign /sha1 ' + $SigningThumbprint +
+        ' /fd SHA256 /tr ' + $TimestampUrl + ' /td SHA256 $f'
+    $innoArguments += @('/DSignedBuild', "/Srendepth=$innoSignCommand")
+}
+& $InnoCompiler @innoArguments (Join-Path $PSScriptRoot "Rendepth.iss")
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $newInstaller)) {
     throw "Inno Setup compilation failed"
+}
+if ($Sign) {
+    & $SignToolPath verify /pa $newInstaller
+    if ($LASTEXITCODE -ne 0) { throw "Installer signature verification failed" }
+    $signature = Get-AuthenticodeSignature -LiteralPath $newInstaller
+    if ($signature.Status -ne 'Valid' -or
+        $signature.SignerCertificate.Thumbprint -ne $SigningThumbprint -or
+        -not $signature.TimeStamperCertificate) {
+        throw "Installer signer or timestamp verification failed"
+    }
 }
 Copy-Item -LiteralPath $newInstaller -Destination $installer -Force
 Remove-Item -LiteralPath $newInstaller
 Remove-Item -LiteralPath $temporaryOutputDir
-Write-Output "Unsigned installer: $installer"
+Write-Output "$(if ($Sign) { 'Signed' } else { 'Unsigned' }) installer: $installer"

@@ -11,6 +11,22 @@ Studio Release build as described below, then run from the repository root:
 & Packaging/Windows/Build-Installer.ps1 -ChromeExtensionId hffdjljngfgobaekdbgfgfodecmehgbh
 ```
 
+To sign a release with a hardware code-signing token, use the certificate
+thumbprint from the Windows Current User personal certificate store:
+
+```powershell
+& Packaging/Windows/Build-Installer.ps1 `
+  -ChromeExtensionId hffdjljngfgobaekdbgfgfodecmehgbh `
+  -Sign -SigningThumbprint 76D9F13FC52953F7365B8A29D61BA25E597C354A
+```
+
+The signed build uses Windows SDK SignTool and Sectigo's RFC 3161 timestamp
+service. SafeNet prompts for the token PIN locally. The script signs and verifies
+the staged app, MVC library, and browser native host before Inno Setup packages
+them; Inno signs the setup and uninstaller. A signing or verification failure
+leaves the previous installer in place. Pass `-SignToolPath` or `-TimestampUrl`
+if this machine uses different tools or a different timestamp service.
+
 Pass `-ChromeExtensionId` with the Item ID shown after the Chrome upload ZIP
 is added to the Chrome Web Store dashboard. The local unpacked ID is not a
 substitute. Pass `-BuildDir` for another configured CMake directory,
@@ -26,8 +42,8 @@ registers the native host for Firefox and Chrome, updates any per-user
 development association, and creates manifests that point to the installed
 executable. End users do not need GStreamer or Python
 installed separately. GPU runtime packs remain separate. The output is
-unsigned; sign the finished setup executable with Microsoft SignTool when
-preparing a release.
+unsigned unless `-Sign` is supplied. Signing only the finished setup executable
+does not sign the application files inside it.
 
 The script replaces an existing installer for the same version after the new
 installer compiles successfully. It does not keep backup executables.

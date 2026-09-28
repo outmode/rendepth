@@ -5,6 +5,8 @@
 #include <SDL3/SDL.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -80,6 +82,29 @@ unsigned successfulFrames = 0;
 HMODULE coreModule = nullptr, directxModule = nullptr, displaysModule = nullptr, opencvModule = nullptr;
 DLL_DIRECTORY_COOKIE runtimeDirectoryCookie = nullptr;
 
+// The SDK may block inside SRContext::create when there is no SR panel. Check
+// the display hosting the fullscreen window before loading any vendor DLLs.
+bool hasSRDisplay(SDL_Window* window) {
+    const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+    const char* name = display ? SDL_GetDisplayName(display) : nullptr;
+    if (!name) {
+        SDL_Log("SR lenticular: window display could not be identified");
+        return false;
+    }
+    std::string lower(name);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    const bool recognized = lower.find("spatiallabs") != std::string::npos ||
+           lower.find("simulated reality") != std::string::npos ||
+           lower.find("leia") != std::string::npos ||
+           lower.find("sr display") != std::string::npos ||
+           lower.find("asv15-") != std::string::npos ||
+           lower.find("psv27-") != std::string::npos;
+    if (!recognized) SDL_Log("SR lenticular: '%s' is not a recognized SR display", name);
+    return recognized;
+}
+
 // LeiaSR records its install root here, including when it is installed outside
 // Program Files. Its installer uses the 32-bit registry view on 64-bit Windows.
 void addRegisteredRuntime(std::vector<std::filesystem::path>& candidates, DWORD view) {
@@ -143,9 +168,9 @@ bool loadRuntime() {
         constexpr DWORD flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
                                 LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS;
         HMODULE opencv = LoadLibraryExW((directory / opencvDll).c_str(), nullptr, flags);
-        HMODULE core = LoadLibraryExW((directory / coreDll).c_str(), nullptr, flags);
-        HMODULE directx = LoadLibraryExW((directory / directxDll).c_str(), nullptr, flags);
-        HMODULE displays = LoadLibraryExW((directory / displaysDll).c_str(), nullptr, flags);
+        HMODULE core = opencv ? LoadLibraryExW((directory / coreDll).c_str(), nullptr, flags) : nullptr;
+        HMODULE directx = core ? LoadLibraryExW((directory / directxDll).c_str(), nullptr, flags) : nullptr;
+        HMODULE displays = directx ? LoadLibraryExW((directory / displaysDll).c_str(), nullptr, flags) : nullptr;
         if (opencv && core && directx && displays) {
             opencvModule = opencv;
             coreModule = core;
@@ -194,15 +219,13 @@ void release() {
 bool initialize(SDL_Window* window, ID3D12Resource* source, ID3D12Resource* backbuffer) {
     if (weaver && activeWindow == window) return true;
     release();
+    if (!hasSRDisplay(window)) return false;
+    // The imports are delayed: machines without monitor software still launch.
+    if (!loadRuntime()) return false;
     const HRESULT deviceResult = backbuffer->GetDevice(IID_PPV_ARGS(&device));
     if (FAILED(deviceResult)) {
         SDL_Log("SR lenticular: backbuffer D3D12 device unavailable (HRESULT 0x%08X)",
                 static_cast<unsigned>(deviceResult));
-        return false;
-    }
-    // The imports are delayed: machines without monitor software still launch.
-    if (!loadRuntime()) {
-        release();
         return false;
     }
     try {
