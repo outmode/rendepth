@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -82,6 +83,8 @@ def main():
     parser.add_argument("--native-host", type=Path, required=True,
                         help="PyInstaller onefile output for Packaging/Mac/native_host.py")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--signed-bundle-output", type=Path,
+                        help="Keep a copy of the fully staged and signed app")
     parser.add_argument("--chrome-extension-id", required=True,
                         help="Chrome Web Store item ID from the developer dashboard")
     parser.add_argument("--plugin-directory", type=Path,
@@ -106,6 +109,11 @@ def main():
                        args.chrome_extension_id, args.plugin_directory, args.plugin_scanner)
         if args.application_identity:
             sign_app(bundle, args.application_identity)
+        if args.signed_bundle_output:
+            if args.signed_bundle_output.exists():
+                raise FileExistsError(args.signed_bundle_output)
+            args.signed_bundle_output.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(bundle, args.signed_bundle_output, symlinks=True)
         component_plist = temporary_root / "components.plist"
         with component_plist.open("wb") as stream:
             plistlib.dump([{
@@ -115,9 +123,20 @@ def main():
                 "BundleHasStrictIdentifier": False,
                 "BundleOverwriteAction": "upgrade",
             }], stream)
-        command = ["pkgbuild", "--root", destination, "--install-location", "/",
-                   "--component-plist", component_plist,
-                   "--identifier", "com.outmode.rendepth", "--version", version]
+        component = temporary_root / "Rendepth-component.pkg"
+        run("pkgbuild", "--root", destination, "--install-location", "/",
+            "--component-plist", component_plist,
+            "--identifier", "com.outmode.rendepth", "--version", version,
+            component)
+        distribution = temporary_root / "Distribution.xml"
+        run("productbuild", "--synthesize", "--package", component, distribution)
+        tree = ET.parse(distribution)
+        title = ET.Element("title")
+        title.text = f"Rendepth {version}"
+        tree.getroot().insert(0, title)
+        tree.write(distribution, encoding="utf-8", xml_declaration=True)
+        command = ["productbuild", "--distribution", distribution,
+                   "--package-path", temporary_root]
         if args.installer_identity:
             command += ["--sign", args.installer_identity]
         command.append(args.output)
