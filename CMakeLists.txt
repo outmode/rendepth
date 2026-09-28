@@ -1129,7 +1129,7 @@ set(CPACK_RPM_PACKAGE_LICENSE "GPL-3.0-only")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
 # Increment the RPM release for rebuilds of the same application version so
 # package managers do not treat a freshly built artifact as the old package.
-set(CPACK_RPM_PACKAGE_RELEASE 25)
+set(CPACK_RPM_PACKAGE_RELEASE 26)
 set(RENDEPTH_RPM_REQUIRES gstreamer1-plugins-good gstreamer1-plugins-bad-free libnice-gstreamer1 tar)
 if(RENDEPTH_ENABLE_FFMPEG AND DAV1D_FOUND)
     list(APPEND RENDEPTH_RPM_REQUIRES "libdav1d >= 0.5.0")
