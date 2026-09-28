@@ -7,6 +7,7 @@
 #include <dxgi1_4.h>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
 #include <cstdlib>
@@ -79,6 +80,21 @@ unsigned successfulFrames = 0;
 HMODULE coreModule = nullptr, directxModule = nullptr, displaysModule = nullptr, opencvModule = nullptr;
 DLL_DIRECTORY_COOKIE runtimeDirectoryCookie = nullptr;
 
+// LeiaSR records its install root here, including when it is installed outside
+// Program Files. Its installer uses the 32-bit registry view on 64-bit Windows.
+void addRegisteredRuntime(std::vector<std::filesystem::path>& candidates, DWORD view) {
+    constexpr wchar_t key[] = L"SOFTWARE\\Leia, Inc.\\Simulated Reality Platform";
+    DWORD bytes = 0;
+    const DWORD flags = RRF_RT_REG_SZ | view;
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, key, nullptr, flags, nullptr, nullptr, &bytes) != ERROR_SUCCESS ||
+        bytes < sizeof(wchar_t)) return;
+    std::wstring root(bytes / sizeof(wchar_t), L'\0');
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, key, nullptr, flags, nullptr, root.data(), &bytes) != ERROR_SUCCESS)
+        return;
+    root.resize(root.find(L'\0'));
+    if (!root.empty()) candidates.emplace_back(std::filesystem::path(root) / L"Platform/bin");
+}
+
 // InferenceRuntime removes PATH from the process DLL search order. Locate the
 // monitor software ourselves, then allow its DLLs and their dependencies from
 // that one directory without changing the process-wide search policy.
@@ -97,8 +113,12 @@ bool loadRuntime() {
     std::vector<std::filesystem::path> candidates;
     if (const wchar_t* override = _wgetenv(L"RENDEPTH_SR_RUNTIME_DIR"))
         candidates.emplace_back(override);
-    if (const wchar_t* programFiles = _wgetenv(L"ProgramFiles"))
+    addRegisteredRuntime(candidates, RRF_SUBKEY_WOW6432KEY);
+    addRegisteredRuntime(candidates, RRF_SUBKEY_WOW6464KEY);
+    if (const wchar_t* programFiles = _wgetenv(L"ProgramFiles")) {
+        candidates.emplace_back(std::filesystem::path(programFiles) / L"LeiaSR/Platform/bin");
         candidates.emplace_back(std::filesystem::path(programFiles) / L"Acer/SpatialLabs/Platform/bin");
+    }
     if (const wchar_t* programFilesX86 = _wgetenv(L"ProgramFiles(x86)"))
         candidates.emplace_back(std::filesystem::path(programFilesX86) / L"Simulated Reality/Platform/bin");
     if (const wchar_t* path = _wgetenv(L"PATH")) {

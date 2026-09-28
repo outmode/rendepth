@@ -362,7 +362,7 @@ target_link_libraries(Rendepth PRIVATE ${RENDEPTH_MODEL_ZLIB})
 if(WIN32)
     target_sources(Rendepth PRIVATE
         ThirdParty/SDL_image/external/zlib/contrib/minizip/iowin32.c)
-    target_link_libraries(Rendepth PUBLIC winhttp ole32 shell32 uuid bcrypt crypt32)
+    target_link_libraries(Rendepth PUBLIC winhttp ole32 shell32 uuid bcrypt crypt32 advapi32)
     if(MSVC)
         target_sources(Rendepth PRIVATE Source/LenticularBridge.cpp)
         target_include_directories(Rendepth PRIVATE ThirdParty/SimulatedRealitySDK-1.34.10/include)
