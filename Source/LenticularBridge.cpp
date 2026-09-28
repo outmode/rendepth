@@ -5,11 +5,8 @@
 #include <SDL3/SDL.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
-#include <algorithm>
-#include <cctype>
 #include <filesystem>
 #include <memory>
-#include <string>
 #include <string_view>
 #include <vector>
 #include <cstdlib>
@@ -17,6 +14,7 @@
 #include "sr/management/srcontext.h"
 #include "sr/sense/display/switchablehint.h"
 #include "sr/weaver/dx12weaver.h"
+#include "sr/world/display/WindowsDisplayUtilities.h"
 
 static_assert(SDL_MAJOR_VERSION == 3 && SDL_MINOR_VERSION == 4 && SDL_MICRO_VERSION == 16,
               "Review the private SDL D3D12 prefixes when updating SDL");
@@ -81,28 +79,43 @@ bool weaveFailed = false;
 unsigned successfulFrames = 0;
 HMODULE coreModule = nullptr, directxModule = nullptr, displaysModule = nullptr, opencvModule = nullptr;
 DLL_DIRECTORY_COOKIE runtimeDirectoryCookie = nullptr;
+bool runtimeUnavailable = false;
+SDL_DisplayID checkedDisplay = 0;
+HMONITOR checkedMonitor = nullptr;
+bool checkedMonitorIsSR = false;
 
 // The SDK may block inside SRContext::create when there is no SR panel. Check
-// the display hosting the fullscreen window before loading any vendor DLLs.
+// the display hosting the fullscreen window before creating an SR context.
 bool hasSRDisplay(SDL_Window* window) {
     const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
-    const char* name = display ? SDL_GetDisplayName(display) : nullptr;
-    if (!name) {
+    const auto monitor = display ? static_cast<HMONITOR>(SDL_GetPointerProperty(
+        SDL_GetDisplayProperties(display), SDL_PROP_DISPLAY_WINDOWS_HMONITOR_POINTER, nullptr)) : nullptr;
+    if (!monitor) {
         SDL_Log("SR lenticular: window display could not be identified");
         return false;
     }
-    std::string lower(name);
-    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    const bool recognized = lower.find("spatiallabs") != std::string::npos ||
-           lower.find("simulated reality") != std::string::npos ||
-           lower.find("leia") != std::string::npos ||
-           lower.find("sr display") != std::string::npos ||
-           lower.find("asv15-") != std::string::npos ||
-           lower.find("psv27-") != std::string::npos;
-    if (!recognized) SDL_Log("SR lenticular: '%s' is not a recognized SR display", name);
-    return recognized;
+    if (display == checkedDisplay && monitor == checkedMonitor) return checkedMonitorIsSR;
+    checkedDisplay = display;
+    checkedMonitor = monitor;
+    checkedMonitorIsSR = false;
+    // The SDK identifies supported panels by EDID. Require its result to match
+    // the monitor hosting the fullscreen window, regardless of its display name.
+    try {
+        std::vector<SR::MonitorData> monitors, knownMonitors;
+        if (SR::getMonitorList(monitors) && SR::getKnownMonitors(monitors, knownMonitors)) {
+            for (const auto& known : knownMonitors) {
+                if (known.monitorHandle == monitor) {
+                    checkedMonitorIsSR = true;
+                    return true;
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        SDL_Log("SR lenticular: display identification failed: %s", e.what());
+    }
+    const char* name = SDL_GetDisplayName(display);
+    SDL_Log("SR lenticular: '%s' is not recognized by the SR runtime", name ? name : "<unnamed>");
+    return false;
 }
 
 // LeiaSR records its install root here, including when it is installed outside
@@ -125,6 +138,7 @@ void addRegisteredRuntime(std::vector<std::filesystem::path>& candidates, DWORD 
 // that one directory without changing the process-wide search policy.
 bool loadRuntime() {
     if (coreModule && directxModule && displaysModule && opencvModule) return true;
+    if (runtimeUnavailable) return false;
 #ifdef _WIN64
     constexpr wchar_t coreDll[] = L"SimulatedRealityCore.dll";
     constexpr wchar_t directxDll[] = L"SimulatedRealityDirectX.dll";
@@ -189,7 +203,8 @@ bool loadRuntime() {
         if (opencv) FreeLibrary(opencv);
         RemoveDllDirectory(cookie);
     }
-    SDL_Log("SR lenticular: no usable monitor runtime found; install SpatialLabs/3D Hub or set RENDEPTH_SR_RUNTIME_DIR");
+    SDL_Log("SR lenticular: no usable monitor runtime found; presenting SBS Half");
+    runtimeUnavailable = true;
     return false;
 }
 
@@ -219,9 +234,9 @@ void release() {
 bool initialize(SDL_Window* window, ID3D12Resource* source, ID3D12Resource* backbuffer) {
     if (weaver && activeWindow == window) return true;
     release();
-    if (!hasSRDisplay(window)) return false;
     // The imports are delayed: machines without monitor software still launch.
     if (!loadRuntime()) return false;
+    if (!hasSRDisplay(window)) return false;
     const HRESULT deviceResult = backbuffer->GetDevice(IID_PPV_ARGS(&device));
     if (FAILED(deviceResult)) {
         SDL_Log("SR lenticular: backbuffer D3D12 device unavailable (HRESULT 0x%08X)",
@@ -291,7 +306,8 @@ bool initialize(SDL_Window* window, ID3D12Resource* source, ID3D12Resource* back
 bool LenticularBridge::supported(SDL_GPUDevice* gpu, SDL_Window* window) {
     if (!gpu || !window) return false;
     const char* driver = SDL_GetGPUDeviceDriver(gpu);
-    return driver && std::string_view(driver) == "direct3d12";
+    return driver && std::string_view(driver) == "direct3d12" &&
+           !failureLogged && !weaveFailed && loadRuntime() && hasSRDisplay(window);
 }
 
 bool LenticularBridge::weave(SDL_GPUCommandBuffer* command, SDL_Window* window,
@@ -394,5 +410,9 @@ void LenticularBridge::stop() {
     release();
     failureLogged = false;
     weaveFailed = false;
+    runtimeUnavailable = false;
+    checkedDisplay = 0;
+    checkedMonitor = nullptr;
+    checkedMonitorIsSR = false;
 }
 #endif
