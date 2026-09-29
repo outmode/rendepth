@@ -5413,9 +5413,11 @@ static void deferMediaLoad(const std::vector<std::string>& files) {
 	deferredMediaFiles = files;
 }
 
-// Apply a pending media selection after loading and conversion activity has settled.
+// A new selection can replace a video still waiting for its first frame, just
+// like back/next navigation. Image loading, conversion and preload work must
+// still settle before replacing the file list they use.
 static void serviceDeferredMediaLoad() {
-	if (isConverting || doingPreload || context.loading) return;
+	if (isConverting || doingPreload || (context.loading && !activeVideo && !activeScreenCapture)) return;
 	std::vector<std::string> files;
 	{
 		std::lock_guard lock(deferredMediaFilesMutex);
@@ -5423,6 +5425,11 @@ static void serviceDeferredMediaLoad() {
 		files.swap(deferredMediaFiles);
 	}
 	if (isPlayingSlideshow) cancelSlideshow();
+	switchedImage = false;
+	context.gotoPrev = false;
+	context.gotoNext = false;
+	context.gotoRand = false;
+	navigationLoadingIndicator = false;
 	discTitleMenu.close();
 	Image::discMenuTexture = nullptr;
 	Image::discMenuDepthTexture = nullptr;
@@ -7649,16 +7656,16 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 	} else if (event->type == SDL_EVENT_DROP_FILE) {
 		std::string droppedFile = event->drop.data;
 		if (isSupportedImage(droppedFile) || isSupportedMedia(droppedFile)) {
-			if (!isConverting && !doingPreload && !context.loading) {
-				float mouseX = 0.0f;
-				float mouseY = 0.0f;
-				SDL_GetMouseState(&mouseX, &mouseY);
-				context.mouse = mousePositionForUI(mouseX, mouseY);
-				mouseLeftWindow = false;
-				mouseLastActive = getTimeNow();
-				showCustomCursor(true);
-				deferMediaLoad({droppedFile});
-			}
+			float mouseX = 0.0f;
+			float mouseY = 0.0f;
+			SDL_GetMouseState(&mouseX, &mouseY);
+			context.mouse = mousePositionForUI(mouseX, mouseY);
+			mouseLeftWindow = false;
+			mouseLastActive = getTimeNow();
+			showCustomCursor(true);
+			// Use the same queue as the file chooser so a busy frame cannot
+			// discard the user's new selection.
+			deferMediaLoad({droppedFile});
 		}
 	}
 

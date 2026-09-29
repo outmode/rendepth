@@ -64,7 +64,13 @@ MVC decoder. Provide a CPU-only x64 ONNX Runtime SDK with headers and notices
 `debug/lib`, `bin`, and `debug/bin`; install libbluray and libdvdread in that
 same SDK, or set `RENDEPTH_DISC_ROOT` to their SDK. For example, configure with
 `-DRENDEPTH_CPU_RUNTIME_DIR=C:/SDKs/onnxruntime-win-x64 -DRENDEPTH_FFMPEG_ROOT=C:/SDKs/vcpkg/installed/x64-windows`,
-then run `cmake --build build --config Release --parallel 14 --target Rendepth`.
+then run `cmake --build build --config Release --parallel 28 --target Rendepth`.
+For a local UI test in CLion, select the `Debug-Visual Studio` CMake profile
+and the `Rendepth` run configuration, then build and run it directly. This
+builds `Debug/Rendepth.exe` with the repository's assets and shaders; the
+Windows installer script is only needed when making an installer. Set the
+profile's build option to `-j 28`. If the profile uses the Visual Studio 2026
+generator, use CLion's bundled CMake rather than an older system CMake.
 See [Windows inference packaging](Packaging/Windows/README.md) for pack details.
 On macOS, provide an ONNX Runtime SDK via `RENDEPTH_ONNXRUNTIME_DIR` and the
 libbluray and libdvdread development packages; see the disc playback notes below.

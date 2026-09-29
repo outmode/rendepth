@@ -1411,9 +1411,12 @@ void Image::initMenuTexture() {
 	if (menuTextSurface) SDL_DestroySurface(menuTextSurface);
 	optionsLabels.clear();
 	optionTextures.clear();
+	menuTextureSize = { 1024.0f, 1024.0f };
 	menuTextSurface = SDL_CreateSurface((int)menuTextureSize.x, (int)menuTextureSize.y,
 		SDL_PIXELFORMAT_ABGR8888);
+	if (menuTextSurface) SDL_FillSurfaceRect(menuTextSurface, nullptr, 0);
 	menuTextureOffset = { 2, 2 };
+	menuRowHeight = 0.0f;
 }
 
 // Render menu labels and choices into their shared GPU text texture.
@@ -1458,14 +1461,41 @@ void Image::addToMenuText(Context* context, const std::string& text) {
 		SDL_Log("Could Not Render Menu Font.");
 		return;
 	}
-	static auto menuHeightMax = 0.0f;
 	glm::vec2 menuTextSize = { menuData->w, menuData->h };
-	menuHeightMax = std::max(menuHeightMax, menuTextSize.y);
+	const auto growSurface = [&](int requiredWidth, int requiredHeight) {
+		int width = static_cast<int>(menuTextureSize.x);
+		int height = static_cast<int>(menuTextureSize.y);
+		while (width < requiredWidth) width *= 2;
+		while (height < requiredHeight) height *= 2;
+		if (width == menuTextSurface->w && height == menuTextSurface->h) return true;
+		SDL_Surface* larger = SDL_CreateSurface(width, height, SDL_PIXELFORMAT_ABGR8888);
+		if (!larger) return false;
+		SDL_FillSurfaceRect(larger, nullptr, 0);
+		SDL_SetSurfaceBlendMode(menuTextSurface, SDL_BLENDMODE_NONE);
+		SDL_BlitSurface(menuTextSurface, nullptr, larger, nullptr);
+		SDL_DestroySurface(menuTextSurface);
+		menuTextSurface = larger;
+		menuTextureSize = { width, height };
+		return true;
+	};
+	if (!growSurface(static_cast<int>(menuTextSize.x + padding * 2),
+			static_cast<int>(menuTextureSize.y))) {
+		SDL_Log("Could Not Grow Menu Texture Surface: %s", SDL_GetError());
+		SDL_DestroySurface(menuData);
+		return;
+	}
 	if (menuTextureOffset.x + menuTextSize.x > menuTextureSize.x) {
 		menuTextureOffset.x = padding;
-		menuTextureOffset.y += menuHeightMax + padding;
-		menuHeightMax = 0.0f;
+		menuTextureOffset.y += menuRowHeight + padding;
+		menuRowHeight = 0.0f;
 	}
+	if (!growSurface(static_cast<int>(menuTextureSize.x),
+			static_cast<int>(menuTextureOffset.y + menuTextSize.y + padding))) {
+		SDL_Log("Could Not Grow Menu Texture Surface: %s", SDL_GetError());
+		SDL_DestroySurface(menuData);
+		return;
+	}
+	menuRowHeight = std::max(menuRowHeight, menuTextSize.y);
 	auto rgbaMenuData = SDL_ConvertSurface(menuData, SDL_PIXELFORMAT_ABGR8888);
 	if (rgbaMenuData == nullptr) {
 		SDL_Log("Could Not Create Menu Texture Surface.");

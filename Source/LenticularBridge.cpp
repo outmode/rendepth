@@ -14,7 +14,6 @@
 #include "sr/management/srcontext.h"
 #include "sr/sense/display/switchablehint.h"
 #include "sr/weaver/dx12weaver.h"
-#include "sr/world/display/WindowsDisplayUtilities.h"
 
 static_assert(SDL_MAJOR_VERSION == 3 && SDL_MINOR_VERSION == 4 && SDL_MICRO_VERSION == 16,
               "Review the private SDL D3D12 prefixes when updating SDL");
@@ -64,8 +63,14 @@ struct D3D12TextureContainerPrefix {
     D3D12TexturePrefix* active;
 };
 
-std::unique_ptr<SR::SRContext, decltype(&SR::SRContext::deleteSRContext)> context{
-    nullptr, &SR::SRContext::deleteSRContext};
+struct ContextDeleter {
+    void operator()(SR::SRContext* value) const {
+        SR::SRContext::deleteSRContext(value);
+    }
+};
+// Resolve the delayed SDK import only when destroying an existing context,
+// never during global initialization on machines without the runtime.
+std::unique_ptr<SR::SRContext, ContextDeleter> context;
 SR::PredictingDX12Weaver* weaver = nullptr;
 SR::SwitchableLensHint* lens = nullptr; // Owned by the SRContext.
 ID3D12Device* device = nullptr;
@@ -80,43 +85,6 @@ unsigned successfulFrames = 0;
 HMODULE coreModule = nullptr, directxModule = nullptr, displaysModule = nullptr, opencvModule = nullptr;
 DLL_DIRECTORY_COOKIE runtimeDirectoryCookie = nullptr;
 bool runtimeUnavailable = false;
-SDL_DisplayID checkedDisplay = 0;
-HMONITOR checkedMonitor = nullptr;
-bool checkedMonitorIsSR = false;
-
-// The SDK may block inside SRContext::create when there is no SR panel. Check
-// the display hosting the fullscreen window before creating an SR context.
-bool hasSRDisplay(SDL_Window* window) {
-    const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
-    const auto monitor = display ? static_cast<HMONITOR>(SDL_GetPointerProperty(
-        SDL_GetDisplayProperties(display), SDL_PROP_DISPLAY_WINDOWS_HMONITOR_POINTER, nullptr)) : nullptr;
-    if (!monitor) {
-        SDL_Log("SR lenticular: window display could not be identified");
-        return false;
-    }
-    if (display == checkedDisplay && monitor == checkedMonitor) return checkedMonitorIsSR;
-    checkedDisplay = display;
-    checkedMonitor = monitor;
-    checkedMonitorIsSR = false;
-    // The SDK identifies supported panels by EDID. Require its result to match
-    // the monitor hosting the fullscreen window, regardless of its display name.
-    try {
-        std::vector<SR::MonitorData> monitors, knownMonitors;
-        if (SR::getMonitorList(monitors) && SR::getKnownMonitors(monitors, knownMonitors)) {
-            for (const auto& known : knownMonitors) {
-                if (known.monitorHandle == monitor) {
-                    checkedMonitorIsSR = true;
-                    return true;
-                }
-            }
-        }
-    } catch (const std::exception& e) {
-        SDL_Log("SR lenticular: display identification failed: %s", e.what());
-    }
-    const char* name = SDL_GetDisplayName(display);
-    SDL_Log("SR lenticular: '%s' is not recognized by the SR runtime", name ? name : "<unnamed>");
-    return false;
-}
 
 // LeiaSR records its install root here, including when it is installed outside
 // Program Files. Its installer uses the 32-bit registry view on 64-bit Windows.
@@ -236,7 +204,6 @@ bool initialize(SDL_Window* window, ID3D12Resource* source, ID3D12Resource* back
     release();
     // The imports are delayed: machines without monitor software still launch.
     if (!loadRuntime()) return false;
-    if (!hasSRDisplay(window)) return false;
     const HRESULT deviceResult = backbuffer->GetDevice(IID_PPV_ARGS(&device));
     if (FAILED(deviceResult)) {
         SDL_Log("SR lenticular: backbuffer D3D12 device unavailable (HRESULT 0x%08X)",
@@ -244,7 +211,9 @@ bool initialize(SDL_Window* window, ID3D12Resource* source, ID3D12Resource* back
         return false;
     }
     try {
-        context.reset(SR::SRContext::create());
+        // Let the runtime discover compatible hardware. Fail promptly if its
+        // service is unavailable instead of waiting for a connection.
+        context.reset(SR::SRContext::create(SR::SRContext::NetworkMode::NonBlockingClientMode));
         if (!context) {
             SDL_Log("SR lenticular: SRContext::create returned null");
             release();
@@ -269,7 +238,7 @@ bool initialize(SDL_Window* window, ID3D12Resource* source, ID3D12Resource* back
             resourceResult = device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&setupQueue));
         if (SUCCEEDED(resourceResult))
             resourceResult = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &copyDesc,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&inputCopy));
+                D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&inputCopy));
         if (FAILED(resourceResult)) {
             SDL_Log("SR lenticular: could not create weaver input or setup queue (HRESULT 0x%08X)",
                     static_cast<unsigned>(resourceResult));
@@ -307,7 +276,7 @@ bool LenticularBridge::supported(SDL_GPUDevice* gpu, SDL_Window* window) {
     if (!gpu || !window) return false;
     const char* driver = SDL_GetGPUDeviceDriver(gpu);
     return driver && std::string_view(driver) == "direct3d12" &&
-           !failureLogged && !weaveFailed && loadRuntime() && hasSRDisplay(window);
+           !failureLogged && !weaveFailed && loadRuntime();
 }
 
 bool LenticularBridge::weave(SDL_GPUCommandBuffer* command, SDL_Window* window,
@@ -356,14 +325,16 @@ bool LenticularBridge::weave(SDL_GPUCommandBuffer* command, SDL_Window* window,
         barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
         barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
         barriers[1].Transition.pResource = inputCopy;
-        barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
         barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
         list->ResourceBarrier(2, barriers);
         list->CopyResource(inputCopy, texture->resource);
         barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
         barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
         barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        // The weaver samples this texture after the copy. Keep the copy-to-read
+        // barrier on the same command list so it cannot see partially copied rows.
+        barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
         list->ResourceBarrier(2, barriers);
         device->CreateRenderTargetView(target->resource, nullptr,
                                        rtvHeap->GetCPUDescriptorHandleForHeapStart());
@@ -411,8 +382,5 @@ void LenticularBridge::stop() {
     failureLogged = false;
     weaveFailed = false;
     runtimeUnavailable = false;
-    checkedDisplay = 0;
-    checkedMonitor = nullptr;
-    checkedMonitorIsSR = false;
 }
 #endif

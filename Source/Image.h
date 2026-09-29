@@ -206,6 +206,7 @@ public:
 	inline static glm::vec2 subtitleTextSize;
 	inline static glm::vec2 menuTextureSize { 1024.0, 1024.0 };
 	inline static glm::vec2 menuTextureOffset { 2.0, 2.0 };
+	inline static float menuRowHeight = 0.0f;
 	inline static bool displayHelp = false;
 	inline static bool displayTip = false;
 	inline static bool displayInfo = false;
