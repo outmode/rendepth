@@ -8,6 +8,7 @@
 #include <winhttp.h>
 #else
 #include <curl/curl.h>
+#include "../CurlTrust.h"
 #endif
 namespace Licensing {
 namespace {
@@ -63,6 +64,7 @@ HttpResponse post(std::string_view endpoint, const std::string& form) {
     if (initialized != CURLE_OK) return result;
     CURL* curl = curl_easy_init();
     if (!curl) return result;
+    if (!configureCurlTrust(curl)) { curl_easy_cleanup(curl); return result; }
     auto* headers = curl_slist_append(nullptr, "Accept: application/json");
     headers = curl_slist_append(headers, "Content-Type: application/x-www-form-urlencoded");
     const std::string url = "https://api.lemonsqueezy.com" + std::string(endpoint);

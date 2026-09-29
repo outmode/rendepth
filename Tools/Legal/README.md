@@ -5,6 +5,8 @@ The repository root `LICENSE` remains the MIT grant for original Rendepth code.
 for the combined application and reproduces both license texts.
 `Legal/THIRD_PARTY_LICENSING` compiles the component notices into one text file.
 Upstream component licenses are preserved; they are not rewritten as GPL.
+The Simulated Reality SDK notice covers the vendored Windows Lenticular build
+interfaces; Rendepth loads its runtime DLLs from the user's monitor software.
 
 Regenerate the two documents from the initialized, pinned dependency tree:
 

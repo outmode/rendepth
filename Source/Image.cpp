@@ -1422,11 +1422,20 @@ void Image::createMenuAssets(Context* context) {
 	for (const Choice& choice : *context->menuChoices) {
 		if (choice.bold) TTF_SetFontStyle(menuFont, originalStyle | TTF_STYLE_BOLD);
 		addToMenuText(context, choice.label);
+		if (!choice.restartLabel.empty()) {
+			addToMenuText(context, choice.restartLabel);
+			if (choice.inlineText && !choice.options.empty())
+				addToMenuText(context, choice.restartLabel + ":");
+		}
 		for (const std::string& option : choice.options) {
 			addToMenuText(context, option);
 			if (choice.inlineText && (choice.readOnly || choice.options.size() == 1)) {
 				addToMenuText(context, choice.label + ": " + option);
 				addToMenuText(context, choice.label + ": " + option + " (Unavailable)");
+				if (!choice.restartLabel.empty()) {
+					addToMenuText(context, choice.restartLabel + ": " + option);
+					addToMenuText(context, choice.restartLabel + ": " + option + " (Unavailable)");
+				}
 			}
 		}
 		if (choice.inlineText && !choice.options.empty()) addToMenuText(context, choice.label + ":");
@@ -1502,14 +1511,16 @@ void Image::saveMenuLayout(Context* context) {
 		if (choiceIndex > 0) choiceStart.y -= 24.0f;
 		choiceIndex++;
 		if (choice.inlineText) {
-			const bool singleLine = choice.readOnly || choice.options.size() <= 1;
-			const auto heading = choice.label + (choice.options.empty() ? "" : ":");
+			const bool singleLine = (choice.readOnly || choice.options.size() <= 1) && !choice.linkOptionOnly;
+			const auto& displayLabel = choice.restartRequired && !choice.restartLabel.empty()
+				? choice.restartLabel : choice.label;
+			const auto heading = displayLabel + (choice.options.empty() ? "" : ":");
 			const float gap = 20.0f * context->displayScale;
 			float width = optionTextures[heading].size.x;
 			float height = optionTextures[heading].size.y;
 			if (singleLine) {
 				for (const auto& option : choice.options) {
-					const auto size = optionTextures[choice.label + ": " + option].size;
+					const auto size = optionTextures[displayLabel + ": " + option].size;
 					width = std::max(width, size.x);
 					height = std::max(height, size.y);
 				}
@@ -3844,7 +3855,8 @@ int Image::draw(Context* context) {
 					drawSprite(commandBuffer, renderPass);
 
 					if (icon.type == IconType::VideoSeek && !context->chapterMarkers.empty()) {
-						const float trackWidth = icon.slider.size.x * context->displayScale;
+						// Match the bar's horizontal aspect transform in fullscreen SBS Full.
+						const float trackWidth = icon.slider.size.x * context->displayScale * aspectScale.x;
 						const float trackHeight = icon.slider.size.y * context->displayScale;
 						const float trackLeft = sliderPosition.x - trackWidth * 0.5f;
 						const float tickWidth = std::max(2.0f * context->displayScale, 1.5f);
@@ -3951,10 +3963,12 @@ int Image::draw(Context* context) {
 				for (const auto& choice : *context->menuChoices) {
 					if (!choice.active) continue;
 					if (choice.inlineText) {
-						const bool singleLine = choice.readOnly || choice.options.size() <= 1;
+						const bool singleLine = (choice.readOnly || choice.options.size() <= 1) && !choice.linkOptionOnly;
 						menuSampleBindings[0] = { .texture = menuTexture, .sampler = imageSampler };
 						SDL_BindGPUFragmentSamplers(renderPass, 0, &menuSampleBindings[0], 1);
-						std::string heading = choice.label + (choice.options.empty() ? "" : ":");
+						const auto& displayLabel = choice.restartRequired && !choice.restartLabel.empty()
+							? choice.restartLabel : choice.label;
+						std::string heading = displayLabel + (choice.options.empty() ? "" : ":");
 						if (singleLine) {
 							const int selected = choice.readOnly ? (*context->menuSelection)[choice.label] : 0;
 							if (selected >= 0 && selected < static_cast<int>(choice.options.size()))
@@ -4295,11 +4309,14 @@ void Image::updateInterlacerUniforms(Context* context, int width, int height, Na
 			context->imageType != Light_Field_LKG) ? 1 : 0;
 	}
 	// invView orders supplied views. RGB-D views are generated from depth in
-	// screen-phase order, so reversing their indices flips the parallax.
+	// screen-phase order, so reversing their indices flips the parallax. The
+	// Looking Glass quilt path reverses source view order in the shader; its
+	// two-eye stereo path needs the same reversal. CubeVI uses its own order.
 	const bool generatedLightField = !config.cubeViC1 && config.viewCount > 2 &&
 		context->imageType == Color_Plus_Depth;
+	const bool reverseLookingGlassStereo = nativeStereoSource && !config.cubeViC1;
 	interlacerDataFrag.invertView =
-		generatedLightField ? 0 : (config.invertView ? 1 : 0);
+		generatedLightField ? 0 : (config.invertView != reverseLookingGlassStereo ? 1 : 0);
 	interlacerDataFrag.flipImageX = config.flipImageX ? 1 : 0;
 	interlacerDataFrag.flipImageY = config.flipImageY ? 1 : 0;
 	interlacerDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;

@@ -2,7 +2,7 @@
 #import <Cocoa/Cocoa.h>
 namespace {
 NSWindow* licenseWindow;
-NSTextField *keyField, *statusField;
+NSTextField *keyField, *maskedField, *statusField;
 NSButton *activateButton, *deactivateButton;
 Licensing::DialogState current;
 Licensing::DialogAction callback;
@@ -48,7 +48,10 @@ void update(const DialogState& state) {
     current = state;
     if (!licenseWindow) return;
     statusField.stringValue = ns(state.message);
-    keyField.hidden = state.licensed; activateButton.hidden = state.licensed; deactivateButton.hidden = !state.licensed;
+    keyField.hidden = state.licensed;
+    maskedField.stringValue = ns(state.maskedKey);
+    maskedField.hidden = !state.licensed;
+    activateButton.hidden = state.licensed; deactivateButton.hidden = !state.licensed;
     keyField.enabled = !state.busy && state.canActivate; activateButton.enabled = !state.busy && state.canActivate;
     deactivateButton.enabled = !state.busy;
     if (state.licensed) keyField.stringValue = @"";
@@ -72,6 +75,11 @@ void open(SDL_Window* parent, const DialogState& state, DialogAction action) {
     keyField = [[NSTextField alloc] initWithFrame:NSMakeRect(24, 206, 492, 28)];
     keyField.placeholderString = @"License Key"; keyField.target = actions; keyField.action = @selector(activate:);
     [licenseWindow.contentView addSubview:keyField];
+    maskedField = [[NSTextField alloc] initWithFrame:keyField.frame];
+    maskedField.editable = NO;
+    maskedField.selectable = NO;
+    maskedField.hidden = YES;
+    [licenseWindow.contentView addSubview:maskedField];
     statusField = label(@"", NSMakeRect(24, 136, 492, 60));
     auto button = [&](NSString* title, NSRect frame, SEL action) {
         NSButton* b = [NSButton buttonWithTitle:title target:actions action:action];

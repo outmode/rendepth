@@ -175,6 +175,9 @@ struct Choice {
 	bool inlineText = false;
 	bool unavailable = false;
 	bool bold = false;
+	std::string restartLabel;
+	bool restartRequired = false;
+	bool linkOptionOnly = false;
 };
 
 struct OptionsTexture {

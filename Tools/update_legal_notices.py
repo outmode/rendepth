@@ -24,6 +24,8 @@ def section(title, path, entry=None):
     elif entry.get("extract_header"):
         start = text.index("/*")
         text = text[start:text.index("*/", start) + 2]
+    if entry.get("strip_trailing_whitespace"):
+        text = "\n".join(line.rstrip(" \t") for line in text.split("\n"))
     return (f"\n--- {title} ---\nSource: {path}\n"
             f"Source SHA-256: {hashlib.sha256(data).hexdigest()}\n\n" + text.rstrip() + "\n")
 

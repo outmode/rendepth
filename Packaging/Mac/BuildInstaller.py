@@ -28,9 +28,12 @@ def write_manifest(path, contents):
     path.write_text(json.dumps(contents, indent=2) + "\n")
 
 
-def stage(bundle, native_host, destination, chrome_id, plugin_directory, plugin_scanner):
+def stage(bundle, native_host, destination, chrome_id, plugin_directory, plugin_scanner, ca_bundle):
     staged_app = destination / "Applications/Rendepth.app"
     shutil.copytree(bundle, staged_app, symlinks=True)
+    if not ca_bundle.is_file() or b"-----BEGIN CERTIFICATE-----" not in ca_bundle.read_bytes():
+        raise ValueError(f"A PEM CA certificate bundle is required: {ca_bundle}")
+    shutil.copyfile(ca_bundle, staged_app / "Contents/Resources/cacert.pem")
     helpers = staged_app / "Contents/Helpers"
     helpers.mkdir(exist_ok=True)
     host_path = helpers / "RendepthNativeHost"
@@ -90,7 +93,10 @@ def main():
     parser.add_argument("--plugin-directory", type=Path,
                         default=Path("/opt/homebrew/lib/gstreamer-1.0"))
     parser.add_argument("--plugin-scanner", type=Path,
-                        default=Path("/opt/homebrew/opt/gstreamer/libexec/gstreamer-1.0/gst-plugin-scanner"))
+        default=Path("/opt/homebrew/opt/gstreamer/libexec/gstreamer-1.0/gst-plugin-scanner"))
+    parser.add_argument("--ca-bundle", type=Path,
+        default=Path("/opt/homebrew/etc/ca-certificates/cert.pem"),
+        help="PEM CA bundle to embed for model downloads and licensing HTTPS")
     parser.add_argument("--application-identity", help="Developer ID Application identity")
     parser.add_argument("--installer-identity", help="Developer ID Installer identity")
     args = parser.parse_args()
@@ -106,7 +112,8 @@ def main():
         destination = temporary_root / "payload"
         destination.mkdir()
         bundle = stage(args.bundle, args.native_host, destination,
-                       args.chrome_extension_id, args.plugin_directory, args.plugin_scanner)
+                       args.chrome_extension_id, args.plugin_directory, args.plugin_scanner,
+                       args.ca_bundle)
         if args.application_identity:
             sign_app(bundle, args.application_identity)
         if args.signed_bundle_output:
@@ -134,9 +141,15 @@ def main():
         title = ET.Element("title")
         title.text = f"Rendepth {version}"
         tree.getroot().insert(0, title)
+        resources = temporary_root / "Resources"
+        resources.mkdir()
+        license_name = "RENDEPTH_APP_LICENSE.txt"
+        shutil.copyfile(ROOT / "Legal/RENDEPTH_APP_LICENSE", resources / license_name)
+        tree.getroot().insert(1, ET.Element("license", {
+            "file": license_name, "mime-type": "text/plain"}))
         tree.write(distribution, encoding="utf-8", xml_declaration=True)
         command = ["productbuild", "--distribution", distribution,
-                   "--package-path", temporary_root]
+                   "--package-path", temporary_root, "--resources", resources]
         if args.installer_identity:
             command += ["--sign", args.installer_identity]
         command.append(args.output)

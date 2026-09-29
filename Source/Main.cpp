@@ -1737,7 +1737,11 @@ static DepthEstimator::Provider inferenceProviderForOption(int option) {
 		option == 2 ? secondaryInferenceProvider : DepthEstimator::Provider::CPU;
 }
 Choice ChoiceInference {
-	"AI Engine (Restart Required)", { "CPU", "Nvidia CUDA", secondaryInferenceLabel }, {}, {}, false, true, true,
+	.label = "AI Engine",
+	.options = { "CPU", "Nvidia CUDA", secondaryInferenceLabel },
+	.readOnly = true,
+	.inlineText = true,
+	.restartLabel = "AI Engine (Restart Required)",
 };
 Choice ChoiceRuntimePacks {
 	"Installed Runtime Packs", { "None", "CUDA", secondaryPackLabel, combinedPackLabel }, {}, {}, false, true, true,
@@ -1767,6 +1771,32 @@ struct RuntimePackInstallState {
 static RuntimePackInstallState runtimePackInstall;
 static void pollRuntimePackInstall();
 #endif
+#endif
+#if defined(__APPLE__) && !defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME)
+Choice ChoiceInference {
+	.label = "AI Engine",
+#ifdef RENDEPTH_ENABLE_COREML
+	.options = { "Core ML (CPU + GPU)" },
+#else
+	.options = { "CPU" },
+#endif
+	.readOnly = true,
+	.inlineText = true,
+};
+Choice ChoiceRuntimePacks {
+#ifdef RENDEPTH_ENABLE_ONNX_RUNTIME
+	"Installed Runtime Packs", { "Built In" }, {}, {}, false, true, true,
+#else
+	"Installed Runtime Packs", { "None" }, {}, {}, false, true, true,
+#endif
+};
+Choice ChoiceRuntimeTools {
+	.label = "GPU Support",
+	.options = { "Open Data Folder" },
+	.inlineText = true,
+	.linkOptionOnly = true,
+};
+static void openDataFolder();
 #endif
 
 static bool downloadBlocksInput() {
@@ -1802,6 +1832,8 @@ static std::vector menuChoices = { ChoiceStereo, ChoiceExport, ChoiceModel, Choi
 	ChoiceBackground, ChoiceSorting, ChoiceSlideshow, ChoiceEyes, ChoiceSaveFormat, ChoiceTags
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	, ChoiceInference, ChoiceRuntimePacks, ChoiceRuntimeTools
+#elif defined(__APPLE__)
+	, ChoiceInference, ChoiceRuntimePacks, ChoiceRuntimeTools
 #endif
 	, ChoiceVersion, ChoiceLicense, ChoiceCredit
 };
@@ -1811,6 +1843,10 @@ static std::unordered_map<std::string, int> menuSelection = {
 	{ ChoiceVersion.label, -1 },
 	{ ChoiceLicense.label, -1 },
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	{ ChoiceInference.label, 0 },
+	{ ChoiceRuntimePacks.label, 0 },
+	{ ChoiceRuntimeTools.label, -1 },
+#elif defined(__APPLE__)
 	{ ChoiceInference.label, 0 },
 	{ ChoiceRuntimePacks.label, 0 },
 	{ ChoiceRuntimeTools.label, -1 },
@@ -1836,6 +1872,10 @@ static std::unordered_map<std::string, int> menuRollover = {
 	{ ChoiceVersion.label, -1 },
 	{ ChoiceLicense.label, -1 },
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	{ ChoiceInference.label, -1 },
+	{ ChoiceRuntimePacks.label, -1 },
+	{ ChoiceRuntimeTools.label, -1 },
+#elif defined(__APPLE__)
 	{ ChoiceInference.label, -1 },
 	{ ChoiceRuntimePacks.label, -1 },
 	{ ChoiceRuntimeTools.label, -1 },
@@ -2392,6 +2432,11 @@ static std::unordered_map<std::string, std::function<void(int)>> menuCallback = 
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	{ ChoiceInference.label, [](int option) { changeInference(option); } },
 	{ ChoiceRuntimeTools.label, [](int option) { runtimeTools(option); } },
+#elif defined(__APPLE__)
+	{ ChoiceRuntimeTools.label, [](int option) {
+		menuSelection[ChoiceRuntimeTools.label] = -1;
+		if (!firstInit && option == 0) openDataFolder();
+	} },
 #endif
 	{ ChoiceStereo.label, [](int option) { changeStereo(option); } },
 	{ ChoiceExport.label, [](int option) { changeExport(option); } },
@@ -2427,11 +2472,18 @@ static void refreshInferenceSettings() {
 	for (auto& choice : menuChoices) {
 		if (choice.label == ChoiceInference.label) {
 			choice.unavailable = missingPack || failedStartup;
+			const bool restartRequired = selected != startupInferenceOption;
+			if (choice.restartRequired != restartRequired) {
+				choice.restartRequired = restartRequired;
+				if (context.window != nullptr) Image::saveMenuLayout(&context);
+			}
 			break;
 		}
 	}
 }
 
+#endif
+#if defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME) || defined(__APPLE__)
 // Native dialogs take focus from an exclusive fullscreen window. Keep SDL from
 // minimizing the owner until the dialog has closed, then restore the old hint.
 class FullscreenMessageBoxGuard {
@@ -2467,6 +2519,8 @@ static bool showAppSimpleMessageBox(SDL_MessageBoxFlags flags, const char* title
 	const FullscreenMessageBoxGuard guard;
 	return SDL_ShowSimpleMessageBox(flags, title, message, window);
 }
+#endif
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 
 // Persist an explicit inference-engine choice and indicate whether it needs an application restart.
 static void changeInference(int option) {
@@ -2549,6 +2603,34 @@ static void changeInference(int option) {
 	displayTipTime = getTimeNow();
 }
 
+#endif
+#if defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME) || defined(__APPLE__)
+// Open the application data folder through the OS file manager.
+static void openDataFolder() {
+	std::error_code error;
+	if (!homePath.empty()) std::filesystem::create_directories(homePath, error);
+	if (homePath.empty() || error) {
+		showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Rendepth Data Folder",
+			"Could not create the Rendepth data folder.", context.window);
+		return;
+	}
+	// Encode a file URI; data paths can contain spaces or URI metacharacters.
+	std::string url = "file://";
+#ifdef _WIN32
+	url += '/';
+#endif
+	constexpr char hex[] = "0123456789ABCDEF";
+	for (unsigned char c : homePath.generic_u8string()) {
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '/' || c == ':' || c == '-' || c == '_' || c == '.' || c == '~')
+			url += static_cast<char>(c);
+		else { url += '%'; url += hex[c >> 4]; url += hex[c & 15]; }
+	}
+	if (!SDL_OpenURL(url.c_str()))
+		showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Rendepth Data Folder", SDL_GetError(), context.window);
+}
+#endif
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 // Handle runtime-management actions such as opening application data or choosing an inference engine.
 static void runtimeTools(int option) {
 	menuSelection[ChoiceRuntimeTools.label] = -1;
@@ -2577,27 +2659,7 @@ static void runtimeTools(int option) {
 	refreshInferenceSettings();
 	const auto directory = InferenceRuntime::packDirectory();
 	if (option == 1) {
-		std::error_code error;
-		if (!homePath.empty()) std::filesystem::create_directories(homePath, error);
-		if (homePath.empty() || error) {
-			showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs",
-				"Could not create the Rendepth data folder.", context.window);
-			return;
-		}
-		// Encode a file URI; data paths can contain spaces or URI metacharacters.
-		std::string url = "file://";
-#ifdef _WIN32
-		url += '/';
-#endif
-		constexpr char hex[] = "0123456789ABCDEF";
-		for (unsigned char c : homePath.generic_u8string()) {
-			if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-				(c >= '0' && c <= '9') || c == '/' || c == ':' || c == '-' || c == '_' || c == '.' || c == '~')
-				url += static_cast<char>(c);
-			else { url += '%'; url += hex[c >> 4]; url += hex[c & 15]; }
-		}
-		if (!SDL_OpenURL(url.c_str()))
-			showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs", SDL_GetError(), context.window);
+		openDataFolder();
 		return;
 	}
 	std::string message = InferenceRuntime::status();
@@ -3793,6 +3855,9 @@ void saveOptions() {
 			setting.first == ChoiceCredit.label || setting.first == ChoiceLicense.label) continue;
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 		if (transientInferenceSetting(setting.first)) continue;
+#elif defined(__APPLE__)
+		if (setting.first == ChoiceInference.label || setting.first == ChoiceRuntimePacks.label ||
+			setting.first == ChoiceRuntimeTools.label) continue;
 #endif
         const char* settingName = setting.first.c_str();
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
@@ -3899,6 +3964,9 @@ void loadOptions() {
 			setting.first == ChoiceCredit.label || setting.first == ChoiceLicense.label) continue;
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 		if (transientInferenceSetting(setting.first) || setting.first == ChoiceInference.label) continue;
+#elif defined(__APPLE__)
+		if (setting.first == ChoiceInference.label || setting.first == ChoiceRuntimePacks.label ||
+			setting.first == ChoiceRuntimeTools.label) continue;
 #endif
 		auto settingName = setting.first.c_str();
 		if (document.HasMember(settingName) && document[settingName].IsInt()) {

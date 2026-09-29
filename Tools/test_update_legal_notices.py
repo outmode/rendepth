@@ -18,6 +18,7 @@ class LegalNoticesTest(unittest.TestCase):
         self.assertEqual(notices.count(RUNTIME_MARKER), 1)
         self.assertIn("https://github.com/outmode/rendepth/releases", app)
         self.assertIn("Source repository: https://github.com/libsdl-org/SDL", notices)
+        self.assertIn("Source: ThirdParty/SimulatedRealitySDK-1.34.10/LICENSE", notices)
         self.assertIn("https://github.com/microsoft/onnxruntime/tree/", notices)
         self.assertNotIn("https://github.com/outmode/rapidjson-private", notices)
         for path in ["ThirdParty/SDL/LICENSE.txt", "ThirdParty/SDL_image/external/aom/PATENTS",
@@ -44,6 +45,7 @@ include("{ROOT.as_posix()}/Packaging/Legal.cmake")
             result = subprocess.run(["cmake", "-P", str(script)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             output = (base / "build/generated/Legal/THIRD_PARTY_LICENSING").read_text()
+            self.assertEqual(output.count("Source: ThirdParty/SimulatedRealitySDK-1.34.10/LICENSE"), 1)
             runtime = output.split(RUNTIME_MARKER)[1]
             self.assertIn("SDK license sentinel", runtime)
             self.assertIn("SDK third-party sentinel", runtime)

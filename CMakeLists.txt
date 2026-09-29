@@ -278,6 +278,7 @@ elseif(APPLE)
                 ${CMAKE_SOURCE_DIR}/Legal/RENDEPTH_APP_LICENSE
                 ${CMAKE_BINARY_DIR}/generated/Legal/THIRD_PARTY_LICENSING)
         set_target_properties(Rendepth PROPERTIES
+                MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/Packaging/Mac/Info.plist.in"
                 MACOSX_BUNDLE_GUI_IDENTIFIER com.outmode.rendepth
                 MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
                 MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
@@ -415,10 +416,10 @@ if(WIN32)
     target_link_libraries(RuntimePackDownloaderSmoke PRIVATE ${RENDEPTH_MODEL_ZLIB} winhttp bcrypt)
 else()
     target_link_libraries(Rendepth PUBLIC CURL::libcurl)
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    target_link_libraries(Rendepth PRIVATE OpenSSL::Crypto)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND RENDEPTH_ENABLE_ONNX_RUNTIME)
-        find_package(OpenSSL REQUIRED COMPONENTS Crypto)
         target_sources(Rendepth PRIVATE Source/RuntimePackDownloaderLinux.cpp)
-        target_link_libraries(Rendepth PRIVATE OpenSSL::Crypto)
     endif()
 endif()
 

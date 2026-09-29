@@ -37,6 +37,7 @@ python3 Packaging/Mac/BuildInstaller.py \
   --bundle cmake-build-mac-export-ninja/output/Rendepth.app \
   --native-host /private/tmp/rendepth-host-release-dist/RendepthNativeHost \
   --chrome-extension-id hffdjljngfgobaekdbgfgfodecmehgbh \
+  --ca-bundle /opt/homebrew/etc/ca-certificates/cert.pem \
   --application-identity 'Developer ID Application: Outmode LLC (PZBA2JJ2RQ)' \
   --installer-identity 'Developer ID Installer: Outmode LLC (PZBA2JJ2RQ)' \
   --signed-bundle-output Distribution/3.0.0/macOS/Rendepth.app \
@@ -63,11 +64,24 @@ publish a package until notarization is accepted and staple validation passes.
 The package builder deliberately labels output without an Installer identity
 as a test package.
 
+The app bundle advertises its supported image, video, disc-image, and audio
+extensions to Finder as an alternate viewer. This makes Rendepth available in
+**Open With** without replacing the user's default app. Finder passes opened
+documents to SDL's file-open event handler.
+
 The builder reads the package version from the app's `Info.plist`, sets the
-Installer title to `Rendepth 3.0.0`, embeds the
+Installer title to `Rendepth 3.0.0`, and presents the same
+`Legal/RENDEPTH_APP_LICENSE` text used by the Windows installer on macOS's
+License screen. Installer provides its standard Agree and Disagree controls.
+The builder embeds the
 GStreamer runtime and plugins, fixes their library paths, signs nested code and
 the app, then creates native messaging manifests. It currently defaults to
 Homebrew's `/opt/homebrew` paths; use `--plugin-directory` and
-`--plugin-scanner` for another GStreamer installation. Keep the packaged
+`--plugin-scanner` for another GStreamer installation. The builder also embeds
+the PEM CA bundle selected by `--ca-bundle` before signing the app, so HTTPS
+model downloads and licensing work without Homebrew on the destination Mac.
+Refresh that bundle when preparing a release. Keep the packaged
 third-party notices in `Contents/Legal` current with the actual libraries in
-the release.
+the release. The bundle includes usage descriptions for removable and network
+volumes, protected media folders, and local network access used by browser video.
+These strings explain macOS permission prompts; they do not grant access.
