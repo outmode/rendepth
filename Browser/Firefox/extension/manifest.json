@@ -1,0 +1,12 @@
+{
+  "manifest_version": 2,
+  "name": "Rendepth Companion",
+  "version": "3.0",
+  "description": "Send web photos and videos to the Rendepth desktop app for 3D viewing. Requires Rendepth.",
+  "icons": {"512": "icons/rendepth.png"},
+  "browser_specific_settings": {"gecko": {"id": "firefox@rendepth.outmode", "strict_min_version": "140.0", "data_collection_permissions": {"required": ["websiteContent"]}}, "gecko_android": {"strict_min_version": "142.0"}},
+  "permissions": ["activeTab", "menus", "nativeMessaging", "storage"],
+  "optional_permissions": ["http://*/*", "https://*/*"],
+  "background": {"scripts": ["images.js", "background.js"]},
+  "browser_action": {"default_title": "Open in Rendepth", "default_popup": "popup.html", "default_icon": "icons/rendepth.png"}
+}

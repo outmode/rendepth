@@ -1,0 +1,559 @@
+[
+  {
+    "name": "SDL",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL/LICENSE.txt",
+      "ThirdParty/SDL/src/video/yuv2rgb/LICENSE"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/SDL"
+    ],
+    "source_revision": "fa2c02bb6e21974a89ea9824bc53c9932abe5f9c",
+    "revision_url": "https://github.com/libsdl-org/SDL/tree/fa2c02bb6e21974a89ea9824bc53c9932abe5f9c"
+  },
+  {
+    "name": "SDL_image",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/LICENSE.txt"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/SDL_image"
+    ],
+    "source_revision": "f661fa1ad24ab1b81e43662532f9a6a9fcf67ea6",
+    "revision_url": "https://github.com/libsdl-org/SDL_image/tree/f661fa1ad24ab1b81e43662532f9a6a9fcf67ea6"
+  },
+  {
+    "name": "SDL_ttf",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_ttf/LICENSE.txt"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/SDL_ttf"
+    ],
+    "source_revision": "a1ce3670aec736ecbf0936c43f2f0cc53aa61e5b",
+    "revision_url": "https://github.com/libsdl-org/SDL_ttf/tree/a1ce3670aec736ecbf0936c43f2f0cc53aa61e5b"
+  },
+  {
+    "name": "GLM",
+    "note": "Header-only dependency; its original license choices are preserved below.",
+    "files": [
+      "ThirdParty/glm/copying.txt"
+    ],
+    "source_urls": [
+      "https://github.com/g-truc/glm"
+    ],
+    "source_revision": "8d1fd52e5ab5590e2c81768ace50c72bae28f2ed",
+    "revision_url": "https://github.com/g-truc/glm/tree/8d1fd52e5ab5590e2c81768ace50c72bae28f2ed"
+  },
+  {
+    "name": "RapidJSON",
+    "note": "Rendepth uses the library headers, not the JSONChecker test suite described in its upstream notice. The public link identifies upstream RapidJSON; Rendepth currently uses a private fork. Any fork changes used in a release must also be made available to recipients.",
+    "files": [
+      "ThirdParty/rapidjson/license.txt"
+    ],
+    "source_urls": [
+      "https://github.com/Tencent/rapidjson"
+    ]
+  },
+  {
+    "name": "libpng",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/libpng/LICENSE"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/libpng"
+    ],
+    "source_revision": "4b9e071b2fc4216369372a3ed260d335dd036f15",
+    "revision_url": "https://github.com/libsdl-org/libpng/tree/4b9e071b2fc4216369372a3ed260d335dd036f15"
+  },
+  {
+    "name": "zlib",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/zlib/LICENSE"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/zlib"
+    ],
+    "source_revision": "0e68590d11e618d60866aa86629fbda128bc068a",
+    "revision_url": "https://github.com/libsdl-org/zlib/tree/0e68590d11e618d60866aa86629fbda128bc068a"
+  },
+  {
+    "name": "Independent JPEG Group",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/jpeg/COPYING"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/jpeg"
+    ],
+    "source_revision": "9db4612eee1913e689f58ce62cd3b8708b290fd3",
+    "revision_url": "https://github.com/libsdl-org/jpeg/tree/9db4612eee1913e689f58ce62cd3b8708b290fd3"
+  },
+  {
+    "name": "libtiff",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/libtiff/LICENSE.md"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/libtiff"
+    ],
+    "source_revision": "9a51cfd52c32d0b0b8ff718387e4290cab887d5e",
+    "revision_url": "https://github.com/libsdl-org/libtiff/tree/9a51cfd52c32d0b0b8ff718387e4290cab887d5e"
+  },
+  {
+    "name": "libwebp",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/libwebp/COPYING",
+      "ThirdParty/SDL_image/external/libwebp/PATENTS",
+      "ThirdParty/SDL_image/external/libwebp/AUTHORS"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/libwebp"
+    ],
+    "source_revision": "0b4545ee8210ff72ec47ab1ad56c2e7460663d11",
+    "revision_url": "https://github.com/libsdl-org/libwebp/tree/0b4545ee8210ff72ec47ab1ad56c2e7460663d11"
+  },
+  {
+    "name": "libavif",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/libavif/LICENSE"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/libavif"
+    ],
+    "source_revision": "ee829431ceaed31a34b7e1420f7f18180e7eae23",
+    "revision_url": "https://github.com/libsdl-org/libavif/tree/ee829431ceaed31a34b7e1420f7f18180e7eae23"
+  },
+  {
+    "name": "dav1d",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/dav1d/COPYING",
+      "ThirdParty/SDL_image/external/dav1d/doc/PATENTS"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/dav1d"
+    ],
+    "source_revision": "a6b395b472c2b1911a49936840e18535b071c1bd",
+    "revision_url": "https://github.com/libsdl-org/dav1d/tree/a6b395b472c2b1911a49936840e18535b071c1bd"
+  },
+  {
+    "name": "libaom",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/aom/LICENSE",
+      "ThirdParty/SDL_image/external/aom/PATENTS",
+      "ThirdParty/SDL_image/external/aom/AUTHORS",
+      "ThirdParty/SDL_image/external/aom/third_party/x86inc/LICENSE",
+      "ThirdParty/SDL_image/external/aom/third_party/fastfeat/LICENSE",
+      "ThirdParty/SDL_image/external/aom/third_party/vector/LICENSE",
+      "ThirdParty/SDL_image/external/aom/third_party/libyuv/LICENSE"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/aom"
+    ],
+    "source_revision": "d59e64a7e71faefdea541ed6d68efbc88f8b9226",
+    "revision_url": "https://github.com/libsdl-org/aom/tree/d59e64a7e71faefdea541ed6d68efbc88f8b9226"
+  },
+  {
+    "name": "JPEG XL",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/libjxl/LICENSE",
+      "ThirdParty/SDL_image/external/libjxl/PATENTS",
+      "ThirdParty/SDL_image/external/libjxl/AUTHORS"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/libjxl"
+    ],
+    "source_revision": "2dac6356c045c0773b109b3f9ef67df208fca05b",
+    "revision_url": "https://github.com/libsdl-org/libjxl/tree/2dac6356c045c0773b109b3f9ef67df208fca05b"
+  },
+  {
+    "name": "Brotli",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/libjxl/third_party/brotli/LICENSE"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/brotli"
+    ],
+    "source_revision": "74f08a53cdf7138867bc3bf88e6762ebe43b53a4",
+    "revision_url": "https://github.com/libsdl-org/brotli/tree/74f08a53cdf7138867bc3bf88e6762ebe43b53a4"
+  },
+  {
+    "name": "Highway",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/libjxl/third_party/highway/LICENSE",
+      "ThirdParty/SDL_image/external/libjxl/third_party/highway/LICENSE-BSD3"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/highway"
+    ],
+    "source_revision": "86a01250cb32386f3c8fc4906f9805db12635df1",
+    "revision_url": "https://github.com/libsdl-org/highway/tree/86a01250cb32386f3c8fc4906f9805db12635df1"
+  },
+  {
+    "name": "skcms",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/libjxl/third_party/skcms/LICENSE"
+    ],
+    "source_urls": [
+      "https://skia.googlesource.com/skcms"
+    ],
+    "source_revision": "64374756e03700d649f897dbd98c95e78c30c7da",
+    "revision_url": "https://skia.googlesource.com/skcms/+/64374756e03700d649f897dbd98c95e78c30c7da"
+  },
+  {
+    "name": "sjpeg",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/libjxl/third_party/sjpeg/COPYING",
+      "ThirdParty/SDL_image/external/libjxl/third_party/sjpeg/AUTHORS"
+    ],
+    "source_urls": [
+      "https://github.com/webmproject/sjpeg"
+    ],
+    "source_revision": "94e0df6d0f8b44228de5be0ff35efb9f946a13c9",
+    "revision_url": "https://github.com/webmproject/sjpeg/tree/94e0df6d0f8b44228de5be0ff35efb9f946a13c9"
+  },
+  {
+    "name": "Little CMS",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_image/external/libjxl/third_party/lcms/COPYING"
+    ],
+    "source_urls": [
+      "https://github.com/mm2/Little-CMS"
+    ],
+    "source_revision": "65c63bf549d78253c14b30b3d62cb668bbbe612c",
+    "revision_url": "https://github.com/mm2/Little-CMS/tree/65c63bf549d78253c14b30b3d62cb668bbbe612c"
+  },
+  {
+    "name": "stb_image",
+    "note": "Notice extracted from the pinned source header.",
+    "files": [
+      "ThirdParty/SDL_image/src/stb_image.h"
+    ],
+    "license_tail": "This software is available under 2 licenses",
+    "source_urls": [
+      "https://github.com/libsdl-org/SDL_image"
+    ],
+    "source_revision": "f661fa1ad24ab1b81e43662532f9a6a9fcf67ea6",
+    "revision_url": "https://github.com/libsdl-org/SDL_image/tree/f661fa1ad24ab1b81e43662532f9a6a9fcf67ea6"
+  },
+  {
+    "name": "tiny_jpeg",
+    "note": "Original notice from the pinned source header.",
+    "files": [
+      "ThirdParty/SDL_image/src/tiny_jpeg.h"
+    ],
+    "extract_header": true,
+    "source_urls": [
+      "https://github.com/libsdl-org/SDL_image"
+    ],
+    "source_revision": "f661fa1ad24ab1b81e43662532f9a6a9fcf67ea6",
+    "revision_url": "https://github.com/libsdl-org/SDL_image/tree/f661fa1ad24ab1b81e43662532f9a6a9fcf67ea6"
+  },
+  {
+    "name": "FreeType",
+    "note": "Uses the FreeType License option. Portions of this software are copyright of The FreeType Project (www.freetype.org). All rights reserved.",
+    "files": [
+      "ThirdParty/SDL_ttf/external/freetype/LICENSE.TXT",
+      "ThirdParty/SDL_ttf/external/freetype/docs/FTL.TXT",
+      "ThirdParty/SDL_ttf/external/freetype/docs/GPLv2.TXT",
+      "ThirdParty/SDL_ttf/external/freetype/src/bdf/README",
+      "ThirdParty/SDL_ttf/external/freetype/src/pcf/README"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/freetype"
+    ],
+    "source_revision": "9973564cfa63763a3e4ac67c09147899539b1e07",
+    "revision_url": "https://github.com/libsdl-org/freetype/tree/9973564cfa63763a3e4ac67c09147899539b1e07"
+  },
+  {
+    "name": "HarfBuzz",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_ttf/external/harfbuzz/COPYING",
+      "ThirdParty/SDL_ttf/external/harfbuzz/src/ms-use/COPYING"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/harfbuzz"
+    ],
+    "source_revision": "564bf9818a18709776856533829c0c04950773d6",
+    "revision_url": "https://github.com/libsdl-org/harfbuzz/tree/564bf9818a18709776856533829c0c04950773d6"
+  },
+  {
+    "name": "PlutoSVG",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_ttf/external/plutosvg/LICENSE"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/plutosvg"
+    ],
+    "source_revision": "2983eb6919feea272d793bc386384e3f5b97b03c",
+    "revision_url": "https://github.com/libsdl-org/plutosvg/tree/2983eb6919feea272d793bc386384e3f5b97b03c"
+  },
+  {
+    "name": "PlutoVG",
+    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "files": [
+      "ThirdParty/SDL_ttf/external/plutovg/LICENSE",
+      "ThirdParty/SDL_ttf/external/plutovg/source/FTL.TXT"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/plutovg"
+    ],
+    "source_revision": "3e6f922f453da1c9e7d1d7f66cac1d9724a18b47",
+    "revision_url": "https://github.com/libsdl-org/plutovg/tree/3e6f922f453da1c9e7d1d7f66cac1d9724a18b47"
+  },
+  {
+    "name": "FFmpeg",
+    "note": "The default source build enables LGPL components, not --enable-gpl or --enable-nonfree. Alternative builds must review their actual configuration. Upstream license options are reproduced below, not all are selected simultaneously.",
+    "files": [
+      "ThirdParty/FFmpeg/LICENSE.md",
+      "ThirdParty/FFmpeg/COPYING.LGPLv2.1",
+      "ThirdParty/FFmpeg/COPYING.LGPLv3",
+      "ThirdParty/FFmpeg/COPYING.GPLv2",
+      "ThirdParty/FFmpeg/COPYING.GPLv3"
+    ],
+    "source_urls": [
+      "https://github.com/FFmpeg/FFmpeg"
+    ],
+    "source_revision": "39fdd1d717c4a83f9d7526ae0164129c47e23c93",
+    "revision_url": "https://github.com/FFmpeg/FFmpeg/tree/39fdd1d717c4a83f9d7526ae0164129c47e23c93"
+  },
+  {
+    "name": "edge264 from SyLC",
+    "note": "Only the edge264 decoder sources are compiled. The rest of SyLC and its tools are not bundled by this target.",
+    "files": [
+      "ThirdParty/SyLC/edge264/LICENSE_BSD.txt"
+    ],
+    "source_urls": [
+      "https://github.com/5ymph0en1x/SyLC"
+    ],
+    "source_revision": "6efa6b18895050e9bf334639cdce4f8498244ac3",
+    "revision_url": "https://github.com/5ymph0en1x/SyLC/tree/6efa6b18895050e9bf334639cdce4f8498244ac3"
+  },
+  {
+    "name": "Lato 1.104",
+    "note": "Bundled Assets/Lato.ttf. Copyright and reserved font name taken from the font metadata; SIL OFL 1.1 text as reproduced with Noto Sans.",
+    "files": [
+      "Tools/Legal/inputs/Lato-OFL.txt"
+    ],
+    "artifacts": [
+      "Assets/Lato.ttf"
+    ],
+    "source_urls": [
+      "https://github.com/latofonts/lato-source"
+    ]
+  },
+  {
+    "name": "Noto Sans 2.015",
+    "note": "Covers Assets/NotoSans.ttf and the browser-extension Noto Sans font; copyright matches their font metadata.",
+    "files": [
+      "Browser/Chrome/extension/fonts/OFL.txt"
+    ],
+    "artifacts": [
+      "Assets/NotoSans.ttf",
+      "Browser/Chrome/extension/fonts/NotoSans.woff2"
+    ],
+    "source_urls": [
+      "https://github.com/notofonts/latin-greek-cyrillic"
+    ]
+  },
+  {
+    "name": "libcurl",
+    "note": "System dependency snapshot: libcurl 8.18.0-10.fc44libcurl 8.18.0-10.fc44. Normally supplied by the operating system on Linux; retain matching notices if redistributed on another platform.",
+    "files": [
+      "Tools/Legal/inputs/libcurl-COPYING.txt"
+    ],
+    "source_urls": [
+      "https://github.com/curl/curl"
+    ]
+  },
+  {
+    "name": "libbluray",
+    "note": "System dependency snapshot: libbluray 1.4.0-3.fc44. Normally supplied by the operating system on Linux; retain matching notices if redistributed on another platform.",
+    "files": [
+      "Tools/Legal/inputs/libbluray-COPYING.txt"
+    ],
+    "source_urls": [
+      "https://code.videolan.org/videolan/libbluray"
+    ]
+  },
+  {
+    "name": "libdvdread",
+    "note": "System dependency snapshot: libdvdread 7.0.1-1.fc44. Normally supplied by the operating system on Linux; retain matching notices if redistributed on another platform.",
+    "files": [
+      "Tools/Legal/inputs/libdvdread-COPYING.txt"
+    ],
+    "source_urls": [
+      "https://code.videolan.org/videolan/libdvdread"
+    ]
+  },
+  {
+    "name": "gtk3",
+    "note": "System dependency snapshot: gtk3 3.24.52-2.fc44gtk3 3.24.52-2.fc44. Normally supplied by the operating system on Linux; retain matching notices if redistributed on another platform.",
+    "files": [
+      "Tools/Legal/inputs/gtk3-COPYING.txt"
+    ],
+    "source_urls": [
+      "https://gitlab.gnome.org/GNOME/gtk"
+    ]
+  },
+  {
+    "name": "glib2",
+    "note": "System dependency snapshot: glib2 2.88.3-1.fc44glib2 2.88.3-1.fc44. Normally supplied by the operating system on Linux; retain matching notices if redistributed on another platform.",
+    "files": [
+      "Tools/Legal/inputs/glib2-LGPL-2.1-or-later.txt.txt"
+    ],
+    "source_urls": [
+      "https://gitlab.gnome.org/GNOME/glib"
+    ]
+  },
+  {
+    "name": "gstreamer1",
+    "note": "System dependency snapshot: gstreamer1 1.28.7-1.fc44gstreamer1 1.28.7-1.fc44. Normally supplied by the operating system on Linux; retain matching notices if redistributed on another platform.",
+    "files": [
+      "Tools/Legal/inputs/gstreamer1-COPYING.txt"
+    ],
+    "source_urls": [
+      "https://gitlab.freedesktop.org/gstreamer/gstreamer"
+    ]
+  },
+  {
+    "name": "gstreamer1-plugins-base",
+    "note": "System dependency snapshot: gstreamer1-plugins-base 1.28.7-1.fc44. Normally supplied by the operating system on Linux; retain matching notices if redistributed on another platform.",
+    "files": [
+      "Tools/Legal/inputs/gstreamer1-plugins-base-COPYING.txt"
+    ],
+    "source_urls": [
+      "https://gitlab.freedesktop.org/gstreamer/gstreamer"
+    ]
+  },
+  {
+    "name": "libva",
+    "note": "System dependency snapshot: libva 2.23.0-3.fc44libva 2.23.0-3.fc44. Normally supplied by the operating system on Linux; retain matching notices if redistributed on another platform.",
+    "files": [
+      "Tools/Legal/inputs/libva-COPYING.txt"
+    ],
+    "source_urls": [
+      "https://github.com/intel/libva"
+    ]
+  },
+  {
+    "name": "libbluray and libdvdread header attributions",
+    "note": "Copyright/license comment blocks from the bundled interface headers.",
+    "files": [
+      "ThirdParty/bluray-dvdread-headers/libbluray/bluray.h",
+      "ThirdParty/bluray-dvdread-headers/dvdread/dvd_reader.h"
+    ],
+    "extract_header": true,
+    "source_urls": [
+      "https://code.videolan.org/videolan/libbluray",
+      "https://code.videolan.org/videolan/libdvdread"
+    ]
+  },
+  {
+    "name": "SDL_shadercross",
+    "note": "Build-time shader tooling. Not part of the default Linux runtime package; retain these notices if distributing these tools.",
+    "files": [
+      "ThirdParty/SDL_shadercross/LICENSE.txt"
+    ],
+    "source_urls": [
+      "https://github.com/libsdl-org/SDL_shadercross"
+    ],
+    "source_revision": "1ff05bec573988a98ef9e0260b4da44f512b8367",
+    "revision_url": "https://github.com/libsdl-org/SDL_shadercross/tree/1ff05bec573988a98ef9e0260b4da44f512b8367"
+  },
+  {
+    "name": "SPIRV-Cross",
+    "note": "Build-time shader tooling. Not part of the default Linux runtime package; retain these notices if distributing these tools.",
+    "files": [
+      "ThirdParty/SDL_shadercross/external/SPIRV-Cross/LICENSE"
+    ],
+    "source_urls": [
+      "https://github.com/KhronosGroup/SPIRV-Cross"
+    ],
+    "source_revision": "1a6169566c73d3da552748fc372fe2bbb856e46e",
+    "revision_url": "https://github.com/KhronosGroup/SPIRV-Cross/tree/1a6169566c73d3da552748fc372fe2bbb856e46e"
+  },
+  {
+    "name": "SPIRV-Tools",
+    "note": "Build-time shader tooling. Not part of the default Linux runtime package; retain these notices if distributing these tools.",
+    "files": [
+      "ThirdParty/SDL_shadercross/external/SPIRV-Tools/LICENSE"
+    ],
+    "source_urls": [
+      "https://github.com/KhronosGroup/SPIRV-Tools"
+    ],
+    "source_revision": "0539c81f69a3daeb706fd3477dca61435b475156",
+    "revision_url": "https://github.com/KhronosGroup/SPIRV-Tools/tree/0539c81f69a3daeb706fd3477dca61435b475156"
+  },
+  {
+    "name": "SPIRV-Headers",
+    "note": "Build-time shader tooling. Not part of the default Linux runtime package; retain these notices if distributing these tools.",
+    "files": [
+      "ThirdParty/SDL_shadercross/external/SPIRV-Headers/LICENSE"
+    ],
+    "source_urls": [
+      "https://github.com/KhronosGroup/SPIRV-Headers"
+    ],
+    "source_revision": "ad9184e76a66b1001c29db9b0a3e87f646c64de0",
+    "revision_url": "https://github.com/KhronosGroup/SPIRV-Headers/tree/ad9184e76a66b1001c29db9b0a3e87f646c64de0"
+  },
+  {
+    "name": "DirectXShaderCompiler",
+    "note": "Build-time shader tooling. Not part of the default Linux runtime package; retain these notices if distributing these tools.",
+    "files": [
+      "ThirdParty/SDL_shadercross/external/DirectXShaderCompiler/LICENSE.TXT"
+    ],
+    "source_urls": [
+      "https://github.com/microsoft/DirectXShaderCompiler"
+    ],
+    "source_revision": "2c84a1c5ab7091608c97df6ba5ccf46e71c322eb",
+    "revision_url": "https://github.com/microsoft/DirectXShaderCompiler/tree/2c84a1c5ab7091608c97df6ba5ccf46e71c322eb"
+  },
+  {
+    "name": "FreeType hash and HarfBuzz integration notices",
+    "note": "Additional original notices identified by FreeType LICENSE.TXT.",
+    "files": [
+      "ThirdParty/SDL_ttf/external/freetype/src/base/fthash.c",
+      "ThirdParty/SDL_ttf/external/freetype/include/freetype/internal/fthash.h",
+      "ThirdParty/SDL_ttf/external/freetype/src/autofit/ft-hb.c",
+      "ThirdParty/SDL_ttf/external/freetype/src/autofit/ft-hb.h"
+    ],
+    "copyright_comment": true,
+    "source_urls": [
+      "https://github.com/libsdl-org/freetype"
+    ],
+    "source_revision": "9973564cfa63763a3e4ac67c09147899539b1e07",
+    "revision_url": "https://github.com/libsdl-org/freetype/tree/9973564cfa63763a3e4ac67c09147899539b1e07"
+  },
+  {
+    "name": "Simulated Reality SDK 1.34.10",
+    "note": "Windows Lenticular build interfaces (headers and import libraries). Rendepth does not ship the monitor runtime DLLs; the upstream notice also identifies the SDK's included third-party components.",
+    "files": [
+      "ThirdParty/SimulatedRealitySDK-1.34.10/LICENSE"
+    ],
+    "strip_trailing_whitespace": true,
+    "source_urls": [
+      "https://github.com/bo3b/SR-lib"
+    ],
+    "source_revision": "174a0cf8868ed91838c9765db5128814c7a31c5c",
+    "revision_url": "https://github.com/bo3b/SR-lib/tree/174a0cf8868ed91838c9765db5128814c7a31c5c/SR-SDK-1.34.10"
+  }
+]

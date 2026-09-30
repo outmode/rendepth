@@ -20,9 +20,75 @@
 
 #include "Core.h"
 #include "SDL3_image/SDL_image.h"
+#include <cstdio>
+#include <cstring>
+#include <cstdint>
+#include <algorithm>
 #include <regex>
 
 namespace {
+	// Read JPEG EXIF orientation from a bounded header scan, defaulting to normal orientation when
+	// absent.
+	int readExifOrientation(const std::string& path) {
+		FILE* file = fopen(path.c_str(), "rb");
+		if (file == nullptr) return 1;
+		uint8_t header[65536];
+		size_t bytesRead = fread(header, 1, sizeof(header), file);
+		fclose(file);
+		if (bytesRead < 12) return 1;
+
+		// Check JPEG: 0xFF, 0xD8
+		if (header[0] == 0xFF && header[1] == 0xD8) {
+			size_t offset = 2;
+			while (offset + 4 <= bytesRead) {
+				if (header[offset] != 0xFF) break;
+				uint8_t marker = header[offset + 1];
+				if (marker == 0xD9 || marker == 0xDA) break;
+				uint16_t length = (static_cast<uint16_t>(header[offset + 2]) << 8) | header[offset + 3];
+				if (length < 2 || offset + 2 + length > bytesRead) break;
+				if (marker == 0xE1 && length >= 14) {
+					const uint8_t* exif = header + offset + 4;
+					if (std::memcmp(exif, "Exif\0\0", 6) == 0) {
+						const uint8_t* tiff = exif + 6;
+						size_t tiffLen = length - 8;
+						if (tiffLen >= 8) {
+							bool littleEndian = (tiff[0] == 'I' && tiff[1] == 'I');
+							bool bigEndian = (tiff[0] == 'M' && tiff[1] == 'M');
+							if (!littleEndian && !bigEndian) break;
+							auto read16 = [littleEndian](const uint8_t* p) -> uint16_t {
+								return littleEndian ? (p[0] | (p[1] << 8)) : ((p[0] << 8) | p[1]);
+							};
+							auto read32 = [littleEndian](const uint8_t* p) -> uint32_t {
+								return littleEndian
+									? (static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+									   (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24))
+									: ((static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+									   (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]));
+							};
+							if (read16(tiff + 2) == 0x002A) {
+								uint32_t ifdOffset = read32(tiff + 4);
+								if (ifdOffset + 2 <= tiffLen) {
+									uint16_t numEntries = read16(tiff + ifdOffset);
+									size_t entryOffset = ifdOffset + 2;
+									for (uint16_t i = 0; i < numEntries && entryOffset + 12 <= tiffLen; ++i, entryOffset += 12) {
+										uint16_t tag = read16(tiff + entryOffset);
+										if (tag == 0x0112) {
+											uint16_t val = read16(tiff + entryOffset + 8);
+											if (val >= 1 && val <= 8) return val;
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				offset += 2 + length;
+			}
+		}
+		return 1;
+	}
+
+	// Recognize a quilt filename tag and optionally extract its columns, rows, and view aspect ratio.
 	bool parseQuiltTag(const std::string& file, glm::vec3* grid) {
 		static const std::regex quiltPattern(
 			R"((?:_|\(|\s)qs([0-9]+)x([0-9]+)a([0-9]+(?:\.[0-9]+)?))",
@@ -44,12 +110,15 @@ namespace {
 	}
 }
 
+// Release the main window and GPU device after rendering resources have been freed.
 void Core::quit(Context* context) {
 	SDL_ReleaseWindowFromGPUDevice(context->device, context->window);
 	SDL_DestroyWindow(context->window);
 	SDL_DestroyGPUDevice(context->device);
 }
 
+// Load the compiled shader format supported by the active GPU backend and declare its resource
+// bindings.
 SDL_GPUShader* Core::loadShader(SDL_GPUDevice* device, const std::string& shaderFilename, Uint32 samplerCount,
 	Uint32 uniformBufferCount, Uint32 storageBufferCount, Uint32 storageTextureCount) {
 	SDL_GPUShaderStage stage;
@@ -143,6 +212,7 @@ SDL_GPUShader* Core::loadShader(SDL_GPUDevice* device, const std::string& shader
 	return shader;
 }
 
+// Create a mipmapped RGBA texture, upload its pixels, and wait for the transfer to finish.
 int Core::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTexture** gpuTexture,
 		const std::string& textureName) {
 	auto mipLevels = (Uint32)std::floor(log2(std::max(imageData->w, imageData->h))) + 1;
@@ -211,8 +281,54 @@ int Core::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTexture
 	return 0;
 }
 
+// Apply embedded rotation or EXIF orientation to a surface, replacing it when a transform is needed.
+SDL_Surface* Core::orientSurface(SDL_Surface* surface, const std::string& filepath) {
+	if (surface == nullptr) return nullptr;
+
+	float rotation = 0.0f;
+	SDL_FlipMode flip = SDL_FLIP_NONE;
+
+	SDL_PropertiesID props = SDL_GetSurfaceProperties(surface);
+	if (props != 0) {
+		rotation = SDL_GetFloatProperty(props, SDL_PROP_SURFACE_ROTATION_FLOAT, 0.0f);
+	}
+
+	if (rotation == 0.0f && flip == SDL_FLIP_NONE && !filepath.empty()) {
+		int orientation = readExifOrientation(filepath);
+		switch (orientation) {
+		case 2: flip = SDL_FLIP_HORIZONTAL; break;
+		case 3: rotation = 180.0f; break;
+		case 4: flip = SDL_FLIP_VERTICAL; break;
+		case 5: flip = SDL_FLIP_HORIZONTAL; rotation = 270.0f; break;
+		case 6: rotation = 90.0f; break;
+		case 7: flip = SDL_FLIP_HORIZONTAL; rotation = 90.0f; break;
+		case 8: rotation = 270.0f; break;
+		default: break;
+		}
+	}
+
+	if (flip != SDL_FLIP_NONE) {
+		SDL_FlipSurface(surface, flip);
+	}
+	if (rotation != 0.0f) {
+		SDL_Surface* rotated = SDL_RotateSurface(surface, rotation);
+		if (rotated != nullptr) {
+			SDL_DestroySurface(surface);
+			surface = rotated;
+		}
+		props = SDL_GetSurfaceProperties(surface);
+		if (props != 0) SDL_ClearProperty(props, SDL_PROP_SURFACE_ROTATION_FLOAT);
+	}
+
+	return surface;
+}
+
+// Load an image, apply orientation, and normalize its pixel format for rendering.
 SDL_Surface* Core::loadImageDirect(const std::string& imageFilename) {
 	SDL_Surface* surface = IMG_Load(imageFilename.c_str());
+	if (surface == nullptr) return nullptr;
+
+	surface = orientSurface(surface, imageFilename);
 	if (surface == nullptr) return nullptr;
 
 	SDL_PixelFormat format= SDL_PIXELFORMAT_ABGR8888;
@@ -225,6 +341,7 @@ SDL_Surface* Core::loadImageDirect(const std::string& imageFilename) {
 	return surface;
 }
 
+// Load a surface on the worker and publish completion with release ordering.
 int Core::loadImageThread(void* ptr) {
 	auto data = static_cast<AsyncData*>(ptr);
 	SDL_DestroySurface(data->surface);
@@ -233,27 +350,50 @@ int Core::loadImageThread(void* ptr) {
 	return data->fileIndex;
 }
 
+// Launch the image-loading worker using the caller's shared request state.
 SDL_Thread* Core::loadImageAsync(AsyncData& asyncData) {
 	SDL_Thread* thread = SDL_CreateThread(Core::loadImageThread, "LoadImageThread", &asyncData);
 	return thread;
 }
 
+// Measure text width for label fitting and return it in the sizing vector.
 glm::vec2 Core::getTextSize(TTF_Font* font, const std::string& text) {
 	int width = 0, height = 0;
 	TTF_GetStringSize(font, text.c_str(), strlen(text.c_str()), &width, &height);
 	return {width, width };
 }
 
-std::string Core::getFileText(const FileInfo& imageInfo, glm::vec2 imageSize) {
-	auto nameMaxLen = 28;
-	auto displayName = imageInfo.name;
-	if (displayName.length() > nameMaxLen) {
-		displayName = displayName.substr(0, nameMaxLen - 3) + "...";
-	}
-	return displayName + " [" + std::to_string((int)imageSize.x) + "x" +
+// Build a filename and dimensions label, truncating at UTF-8 boundaries to fit the available width.
+std::string Core::getFileText(const FileInfo& imageInfo, glm::vec2 imageSize,
+		TTF_Font* font, float maxWidth) {
+	const auto details = " [" + std::to_string((int)imageSize.x) + "x" +
 		std::to_string((int)imageSize.y) + "] " + imageInfo.size;
+	const auto fullText = imageInfo.name + details;
+	if (font == nullptr || getTextSize(font, fullText).x <= maxWidth) return fullText;
+	if (getTextSize(font, "...").x > maxWidth) return {};
+
+	// Reserve room for dimensions/file size and the ellipsis. On very narrow
+	// windows, fit the whole label instead if even those details will not fit.
+	const bool keepDetails = getTextSize(font, "..." + details).x <= maxWidth;
+	const auto& text = keepDetails ? imageInfo.name : fullText;
+	const auto ending = std::string("...") + (keepDetails ? details : "");
+	std::vector<size_t> boundaries{0};
+	for (size_t i = 1; i <= text.size(); ++i) {
+		// Never cut inside a UTF-8 character.
+		if (i == text.size() || (static_cast<unsigned char>(text[i]) & 0xc0) != 0x80)
+			boundaries.push_back(i);
+	}
+	size_t low = 0, high = boundaries.size() - 1;
+	while (low < high) {
+		const auto mid = low + (high - low + 1) / 2;
+		if (getTextSize(font, text.substr(0, boundaries[mid]) + ending).x <= maxWidth)
+			low = mid;
+		else high = mid - 1;
+	}
+	return text.substr(0, boundaries[low]) + ending;
 }
 
+// Infer the source layout from recognized stereo or quilt filename tags.
 StereoFormat Core::getImageType(const std::string& file) {
 	if (parseQuiltTag(file, nullptr)) return Light_Field_LKG;
 	StereoFormat result = Unknown_Format;
@@ -266,12 +406,14 @@ StereoFormat Core::getImageType(const std::string& file) {
 	return result;
 }
 
+// Extract quilt grid dimensions and view aspect ratio, defaulting to a single view.
 glm::vec3 Core::getGridInfo(const std::string& file) {
 	auto result = glm::vec3(1, 1, 1);
 	parseQuiltTag(file, &result);
 	return result;
 }
 
+// Rasterize a UI label and replace its GPU texture and displayed size.
 void Core::drawText(Context* context, const std::string& text, TTF_Font* font,
 		SDL_GPUTexture*& texture, glm::vec2& size, const std::string& name) {
 	auto shownText = text;
@@ -305,6 +447,7 @@ void Core::drawText(Context* context, const std::string& text, TTF_Font* font,
 	SDL_DestroySurface(rgbaHelpData);
 }
 
+// Find the user's home directory from the platform's environment variable.
 std::filesystem::path Core::getHomeDirectory() {
 #ifdef _WIN32
 	const char* homeDir = std::getenv("USERPROFILE");

@@ -26,7 +26,7 @@ layout (set = 2, binding = 0) uniform sampler2D spriteTexture;
 layout (set = 3, binding = 0) uniform SpriteDataFrag {
 	vec4 color;
 	float visibility;
-	int useTexture;
+	int useTexture; // 0: solid, 1: straight alpha, 2: premultiplied alpha
 	vec2 slice;
 };
 
@@ -44,7 +44,10 @@ void main() {
 		}
 		spriteColor *= texture(spriteTexture, sliceUV);
 	}
-	if (spriteColor.a > 0) spriteColor.rgb /= spriteColor.a;
+	// Atlas/text uploads use straight alpha; SRC_ALPHA blending applies their
+	// coverage once. Unpremultiplying here would brighten low-alpha edges.
+	// CPU-composited subtitle text is the exception and opts in explicitly.
+	if (useTexture == 2 && spriteColor.a > 0.0) spriteColor.rgb /= spriteColor.a;
 	alpha = clamp(color.a * visibility * alpha, 0.0, 1.0);
 	spriteColor.rgb *= color.rgb;
 	spriteColor.a *= alpha;

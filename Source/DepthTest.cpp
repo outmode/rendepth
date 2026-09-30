@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+// Enlarge depth pixels through a temporary GPU blit and read them back for export.
 static bool gpuUpscaleDepth(const std::vector<Uint32>& sourcePixels,
 	int sourceWidth, int sourceHeight, int outputWidth, int outputHeight,
 	std::vector<Uint32>& outputPixels) {
@@ -90,6 +91,7 @@ static bool gpuUpscaleDepth(const std::vector<Uint32>& sourcePixels,
 	return success;
 }
 
+// Evaluate the Catmull-Rom kernel used by the CPU depth resampler.
 static float catmullRomWeight(float distance) {
 	const float x = std::abs(distance);
 	if (x <= 1.0f) return 1.5f * x * x * x - 2.5f * x * x + 1.0f;
@@ -97,6 +99,7 @@ static float catmullRomWeight(float distance) {
 	return 0.0f;
 }
 
+// Sample a depth map with clamped Catmull-Rom interpolation.
 static float sampleCatmullRomDepth(const std::vector<float>& source,
 		int sourceWidth, int sourceHeight, float x, float y) {
 	const int baseX = static_cast<int>(std::floor(x));
@@ -121,10 +124,12 @@ static float sampleCatmullRomDepth(const std::vector<float>& source,
 		? valueSum / totalWeight : 0.0f;
 }
 
+// Run a depth model on an input image and save its output using the requested provider and upscaling
+// path.
 int main(int argc, char** argv) {
 	if (argc < 4) {
 		std::cerr << "Usage: DepthTest <model.onnx> <input-image> <output-depth.png> "
-			"[process-size] [--provider auto|cpu|rocm] [--upscale cpu|gpu]\n";
+			"[process-size] [--provider auto|cpu|coreml|cuda|rocm|directml] [--upscale cpu|gpu]\n";
 		return 2;
 	}
 
@@ -150,7 +155,10 @@ int main(int argc, char** argv) {
 			const std::string provider = argv[++argument];
 			if (provider == "auto") config.provider = DepthEstimator::Provider::Auto;
 			else if (provider == "cpu") config.provider = DepthEstimator::Provider::CPU;
+			else if (provider == "coreml") config.provider = DepthEstimator::Provider::CoreML;
+			else if (provider == "cuda") config.provider = DepthEstimator::Provider::CUDA;
 			else if (provider == "rocm") config.provider = DepthEstimator::Provider::ROCM;
+			else if (provider == "directml") config.provider = DepthEstimator::Provider::DirectML;
 			else {
 				std::cerr << "Unknown provider: " << provider << '\n';
 				return 2;
@@ -206,8 +214,8 @@ int main(int argc, char** argv) {
 			for (int x = 0; x < depth.width; ++x) {
 				const float normalized = range > std::numeric_limits<float>::epsilon()
 					? (depth.values[static_cast<size_t>(y * depth.width + x)] - minimum) / range : 0.0f;
-				const Uint8 value = static_cast<Uint8>((1.0f -
-					std::clamp(normalized, 0.0f, 1.0f)) * 255.0f);
+				const Uint8 value = static_cast<Uint8>(
+					std::clamp(normalized, 0.0f, 1.0f) * 255.0f);
 				lowResolution[static_cast<size_t>(y * depth.width + x)] =
 					SDL_MapRGBA(format, nullptr, value, value, value, 255);
 			}
@@ -251,8 +259,8 @@ int main(int argc, char** argv) {
 				depth.values, depth.width, depth.height, sourceX, sourceY);
 			const float normalized = range > std::numeric_limits<float>::epsilon()
 				? (resizedValue - minimum) / range : 0.0f;
-			const Uint8 value = static_cast<Uint8>((1.0f -
-				std::clamp(normalized, 0.0f, 1.0f)) * 255.0f);
+			const Uint8 value = static_cast<Uint8>(
+				std::clamp(normalized, 0.0f, 1.0f) * 255.0f);
 			pixels[static_cast<size_t>(y * sourceWidth + x)] = SDL_MapRGBA(format, nullptr, value, value, value, 255);
 		}
 	}

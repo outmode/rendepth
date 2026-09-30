@@ -10,19 +10,16 @@
 [submodule "ThirdParty/SDL_ttf"]
 	path = ThirdParty/SDL_ttf
 	url = https://github.com/libsdl-org/SDL_ttf.git
-[submodule "ThirdParty/cppzmq"]
-	path = ThirdParty/cppzmq
-	url = https://github.com/zeromq/cppzmq.git
 [submodule "ThirdParty/glm"]
 	path = ThirdParty/glm
 	url = https://github.com/g-truc/glm.git
-[submodule "ThirdParty/libzmq"]
-	path = ThirdParty/libzmq
-	url = https://github.com/zeromq/libzmq.git
 [submodule "ThirdParty/rapidjson"]
 	path = ThirdParty/rapidjson
-	url = https://github.com/Tencent/rapidjson.git
+	url = https://github.com/outmode/rapidjson.git
 [submodule "ThirdParty/FFmpeg"]
 	path = ThirdParty/FFmpeg
 	url = https://github.com/FFmpeg/FFmpeg.git
 	branch = release/8.0
+[submodule "ThirdParty/SyLC"]
+	path = ThirdParty/SyLC
+	url = https://github.com/5ymph0en1x/SyLC.git

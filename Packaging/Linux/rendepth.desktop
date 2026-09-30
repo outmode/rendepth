@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Rendepth
+Comment=Convert any image to 3D
+Exec=/usr/bin/rendepth %f
+Icon=rendepth
+Terminal=false
+Categories=AudioVideo;Player;
+MimeType=image/png;image/jpeg;image/jpg;image/bmp;image/tiff;image/webp;image/avif;image/jxl;image/gif;image/x-tga;image/qoi;image/x-qoi;image/x-icon;video/mp4;video/quicktime;video/x-matroska;video/webm;video/x-msvideo;video/mpeg;video/x-ms-wmv;video/ogg;audio/aac;audio/flac;audio/mp4;audio/mpeg;audio/ogg;audio/wav;audio/webm;
+StartupNotify=true
+StartupWMClass=Rendepth

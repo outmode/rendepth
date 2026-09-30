@@ -22,11 +22,13 @@
 #include <cmath>
 #include <algorithm>
 
+// Return the shared utility instance.
 Utils& Utils::get() {
 	static Utils instance;
 	return instance;
 }
 
+// Fit an image to the display's safe area while preserving its aspect ratio and sizing policy.
 glm::vec2 Utils::getSafeSize(glm::vec2 imageSize, glm::vec2 displaySize, float safeArea, bool expand) {
 	auto defaultHeight = 576.0;
 	auto smallerDimension = std::min(displaySize.x, displaySize.y);
@@ -44,19 +46,23 @@ glm::vec2 Utils::getSafeSize(glm::vec2 imageSize, glm::vec2 displaySize, float s
 	return {std::round(safeSize.y * imageAspect), std::round(safeSize.y) };
 }
 
+// Identify images wider than a two-to-one aspect ratio.
 bool Utils::isFullWidth(glm::vec2 imageSize) {
 	float aspect = imageSize.x / imageSize.y;
 	return  aspect > 2.0 && !(aspect < 1.0);
 }
 
+// Linearly interpolate between scalar values.
 double Utils::lerp(double a, double b, double f){
 	return a * (1.0 - f) + (b * f);
 }
 
+// Linearly interpolate both components of a 2D position.
 glm::vec2 Utils::lerp(glm::vec2 a, glm::vec2 b, double f){
 	return {lerp(a.x, b.x, f), lerp(a.y, b.y, f) };
 }
 
+// Ease a value toward its target and snap close results to end the animation.
 double Utils::tween(double value, double target, double speed) {
 	static auto snapThreshold = 0.03;
 	static auto snapStep = 0.003;
@@ -71,6 +77,8 @@ double Utils::tween(double value, double target, double speed) {
 	return result;
 }
 
+// Convert an aligned canvas and optional slider offset into drawing coordinates with an inverted Y
+// axis.
 glm::vec2 Utils::getCanvasPosition(const Context* context, const Canvas* canvas,
 	const Canvas* slider, const glm::vec2& aspectScale) {
 	auto position = canvas->position * aspectScale + canvas->alignment * context->windowSize;

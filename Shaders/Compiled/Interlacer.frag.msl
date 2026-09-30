@@ -44,14 +44,6 @@ struct spvUnsafeArray
     }
 };
 
-// Implementation of signed integer mod accurate to SPIR-V specification
-template<typename Tx, typename Ty>
-inline Tx spvSMod(Tx x, Ty y)
-{
-    Tx remainder = x - y * (x / y);
-    return select(Tx(remainder + y), remainder, remainder == 0 || (x >= 0) == (y >= 0));
-}
-
 struct InterlacerData
 {
     float2 outputSize;
@@ -69,16 +61,18 @@ struct InterlacerData
     int invertView;
     int flipImageX;
     int flipImageY;
-    int reserved2;
+    int separateDepth;
     int swapLeftRight;
     int sourceRgbd;
     float stereoStrength;
     float stereoDepth;
     float stereoOffset;
-    int reserved3;
+    int sourceType;
+    int testPattern;
+    int cubeViC1;
 };
 
-constant spvUnsafeArray<float, 5> _212 = spvUnsafeArray<float, 5>({ 0.125, 0.25, 0.375, 0.5, 0.625 });
+constant spvUnsafeArray<float, 5> _593 = spvUnsafeArray<float, 5>({ 0.125, 0.25, 0.375, 0.5, 0.625 });
 
 struct main0_out
 {
@@ -89,6 +83,122 @@ struct main0_in
 {
     float2 fragUV [[user(locn0)]];
 };
+
+static inline __attribute__((always_inline))
+float3 sampleTestPattern(thread const float2& uv, thread const int& view, constant InterlacerData& _74)
+{
+    if (_74.testPattern == 1)
+    {
+        return select(float3(0.0, 1.0, 1.0), float3(1.0, 0.0, 0.0), bool3(view == 0));
+    }
+    else
+    {
+        if (_74.testPattern == 2)
+        {
+            return float3(bool3(view == 0));
+        }
+        else
+        {
+            if (_74.testPattern == 3)
+            {
+                return select(float3(1.0, 0.0, 1.0), float3(0.0, 1.0, 0.0), bool3(view == 0));
+            }
+            else
+            {
+                if (_74.testPattern == 4)
+                {
+                    float2 grid = fract(uv * 20.0);
+                    bool _910 = grid.x < 0.039999999105930328369140625;
+                    bool _917;
+                    if (!_910)
+                    {
+                        _917 = grid.y < 0.039999999105930328369140625;
+                    }
+                    else
+                    {
+                        _917 = _910;
+                    }
+                    float line = float(_917);
+                    float3 baseColor = select(float3(0.1500000059604644775390625, 0.550000011920928955078125, 0.85000002384185791015625), float3(0.85000002384185791015625, 0.1500000059604644775390625, 0.1500000059604644775390625), bool3(view == 0));
+                    return mix(baseColor, float3(1.0), float3(line));
+                }
+            }
+        }
+    }
+    return float3(0.0);
+}
+
+static inline __attribute__((always_inline))
+float luminance(thread const float3& color)
+{
+    return dot(float3(0.300000011920928955078125, 0.589999973773956298828125, 0.10999999940395355224609375), color);
+}
+
+static inline __attribute__((always_inline))
+float3 sampleMono(thread const float2& uv, constant InterlacerData& _74, texture2d<float> quiltTexture, sampler quiltTextureSmplr)
+{
+    float2 sourceUV = uv;
+    if (_74.sourceType == 1)
+    {
+        float3 color = quiltTexture.sample(quiltTextureSmplr, sourceUV, level(0.0)).xyz;
+        color = float3(0.25, color.y * 1.5, color.z * 1.5);
+        float3 param = color;
+        return float3(luminance(param));
+    }
+    bool _112 = _74.sourceType == 3;
+    bool _120;
+    if (!_112)
+    {
+        _120 = _74.sourceType == 5;
+    }
+    else
+    {
+        _120 = _112;
+    }
+    if (_120)
+    {
+        sourceUV.x *= 0.5;
+    }
+    else
+    {
+        if (_74.sourceType == 4)
+        {
+            sourceUV.x = (sourceUV.x * 0.5) + 0.5;
+        }
+        else
+        {
+            if (_74.sourceType == 6)
+            {
+                sourceUV.x *= 0.5;
+            }
+            else
+            {
+                if (_74.sourceType == 7)
+                {
+                    sourceUV.x *= 0.333000004291534423828125;
+                }
+                else
+                {
+                    bool _168 = _74.sourceType == 9;
+                    bool _176;
+                    if (!_168)
+                    {
+                        _176 = _74.sourceType == 10;
+                    }
+                    else
+                    {
+                        _176 = _168;
+                    }
+                    if (_176)
+                    {
+                        sourceUV.y *= 0.5;
+                    }
+                }
+            }
+        }
+    }
+    return quiltTexture.sample(quiltTextureSmplr, sourceUV, level(0.0)).xyz;
+}
 
 static inline __attribute__((always_inline))
 float2 clampEdge(thread float2& inUV, thread const float2& minUV, thread const float2& maxUV)
@@ -105,9 +215,18 @@ float2 clampEdge(thread float2& inUV, thread const float2& minUV, thread const f
 }
 
 static inline __attribute__((always_inline))
-float getDepth(texture2d<float> tex, sampler texSmplr, thread const float2& uv)
+float getDepth(texture2d<float> tex, sampler texSmplr, thread const float2& uv, constant InterlacerData& _74, texture2d<float> depthTexture, sampler depthTextureSmplr)
 {
-    float depthSample = 1.0 - tex.sample(texSmplr, fast::clamp(uv, float2(0.0), float2(1.0))).x;
+    float _401;
+    if (_74.separateDepth != 0)
+    {
+        _401 = depthTexture.sample(depthTextureSmplr, fast::clamp(uv, float2(0.0), float2(1.0))).x;
+    }
+    else
+    {
+        _401 = tex.sample(texSmplr, fast::clamp(uv, float2(0.0), float2(1.0))).x;
+    }
+    float depthSample = 1.0 - _401;
     float ndc = (depthSample * 2.0) - 1.0;
     float linearDepth = 20.0 / (100.09999847412109375 - (ndc * 99.90000152587890625));
     linearDepth /= 99.90000152587890625;
@@ -115,133 +234,426 @@ float getDepth(texture2d<float> tex, sampler texSmplr, thread const float2& uv)
 }
 
 static inline __attribute__((always_inline))
-float getParallax(thread float& depth, constant InterlacerData& _75)
+float3 sampleRgbdLightField(thread const float2& uv, thread const int& view, constant InterlacerData& _74, texture2d<float> quiltTexture, sampler quiltTextureSmplr, texture2d<float> depthTexture, sampler depthTextureSmplr)
 {
-    depth = _75.stereoDepth / depth;
-    return depth;
-}
-
-static inline __attribute__((always_inline))
-float3 sampleRgbd(thread const float2& uv, thread const int& view, constant InterlacerData& _75, texture2d<float> quiltTexture, sampler quiltTextureSmplr)
-{
-    float2 colorUV = float2(uv.x * 0.5, uv.y);
-    float2 depthUV = float2((uv.x * 0.5) + 0.5, uv.y);
-    float _148;
-    if (_75.viewCount > 1)
+    float2 _487;
+    if (_74.separateDepth != 0)
     {
-        _148 = (float(view) / float(_75.viewCount - 1)) - 0.5;
+        _487 = uv;
     }
     else
     {
-        _148 = 0.0;
+        _487 = float2(uv.x * 0.5, uv.y);
     }
-    float normalizedView = _148;
+    float2 colorUV = _487;
+    float2 _503;
+    if (_74.separateDepth != 0)
+    {
+        _503 = uv;
+    }
+    else
+    {
+        _503 = float2((uv.x * 0.5) + 0.5, uv.y);
+    }
+    float2 depthUV = _503;
+    float _520;
+    if (_74.viewCount > 1)
+    {
+        _520 = (float(view) / float(_74.viewCount - 1)) - 0.5;
+    }
+    else
+    {
+        _520 = 0.0;
+    }
+    float normalizedView = _520;
     float viewAmount = abs(normalizedView) * 2.0;
-    float aspect = _75._imageSize.x / _75._imageSize.y;
-    float2 minUVDepth = float2(0.500999987125396728515625, 0.0);
-    float2 maxUVDepth = float2(0.999000012874603271484375, 1.0);
+    float aspect = _74._imageSize.x / _74._imageSize.y;
+    float2 minUVDepth = select(float2(0.500999987125396728515625, 0.0), float2(0.001000000047497451305389404296875, 0.0), bool2(_74.separateDepth != 0));
+    float2 maxUVDepth = select(float2(0.999000012874603271484375, 1.0), float2(0.999000012874603271484375, 1.0), bool2(_74.separateDepth != 0));
     float2 param = depthUV;
     float2 param_1 = minUVDepth;
     float2 param_2 = maxUVDepth;
-    float2 _185 = clampEdge(param, param_1, param_2);
-    float2 param_3 = _185;
-    float centerDepth = getDepth(quiltTexture, quiltTextureSmplr, param_3);
+    float2 _569 = clampEdge(param, param_1, param_2);
+    float2 param_3 = _569;
+    float centerDepth = getDepth(quiltTexture, quiltTextureSmplr, param_3, _74, depthTexture, depthTextureSmplr);
     float minDepth = centerDepth;
     float offsetSign = (normalizedView < 0.0) ? 1.0 : (-1.0);
     for (int i = 0; i < 5; i++)
     {
-        float depthOffset = ((((_212[i] * _75.stereoStrength) * viewAmount) / aspect) / 4000.0) + (((_75.stereoOffset * (-8.0)) * viewAmount) / aspect);
+        float depthOffset = ((((_593[i] * _74.stereoStrength) * viewAmount) / aspect) / 4000.0) + (((_74.stereoOffset * (-8.0)) * viewAmount) / aspect);
         float2 param_4 = depthUV + float2(offsetSign * depthOffset, 0.0);
         float2 param_5 = minUVDepth;
         float2 param_6 = maxUVDepth;
-        float2 _250 = clampEdge(param_4, param_5, param_6);
-        float2 param_7 = _250;
-        minDepth = fast::min(minDepth, getDepth(quiltTexture, quiltTextureSmplr, param_7));
+        float2 _631 = clampEdge(param_4, param_5, param_6);
+        float2 param_7 = _631;
+        minDepth = fast::min(minDepth, getDepth(quiltTexture, quiltTextureSmplr, param_7, _74, depthTexture, depthTextureSmplr));
     }
-    float param_8 = minDepth;
-    float _265 = getParallax(param_8, _75);
-    float parallax = ((((_75.stereoStrength * viewAmount) / aspect) * _265) / 4000.0) + (((_75.stereoOffset * (-8.0)) * viewAmount) / aspect);
-    float2 param_9 = colorUV + float2(offsetSign * parallax, 0.0);
-    float2 param_10 = float2(0.001000000047497451305389404296875, 0.0);
-    float2 param_11 = float2(0.499000012874603271484375, 1.0);
-    float2 _289 = clampEdge(param_9, param_10, param_11);
-    colorUV = _289;
+    float parallax = ((((_74.stereoStrength * viewAmount) / aspect) * (_74.stereoDepth / minDepth)) / 4000.0) + (((_74.stereoOffset * (-8.0)) * viewAmount) / aspect);
+    float2 param_8 = colorUV + float2(offsetSign * parallax, 0.0);
+    float2 param_9 = float2(0.001000000047497451305389404296875, 0.0);
+    float2 param_10 = select(float2(0.499000012874603271484375, 1.0), float2(0.999000012874603271484375, 1.0), bool2(_74.separateDepth != 0));
+    float2 _674 = clampEdge(param_8, param_9, param_10);
+    colorUV = _674;
     return quiltTexture.sample(quiltTextureSmplr, colorUV, level(0.0)).xyz;
 }
 
 static inline __attribute__((always_inline))
-float3 sampleView(thread float2& uv, thread const float& phase, constant InterlacerData& _75, texture2d<float> quiltTexture, sampler quiltTextureSmplr)
+float getParallax(thread float& depth, constant InterlacerData& _74)
 {
-    if (_75.output2D != 0)
-    {
-        if (_75.sourceRgbd != 0)
-        {
-            return quiltTexture.sample(quiltTextureSmplr, float2(uv.x * 0.5, uv.y), level(0.0)).xyz;
-        }
-        if (_75.sourceFlat != 0)
-        {
-            return quiltTexture.sample(quiltTextureSmplr, uv, level(0.0)).xyz;
-        }
-    }
-    int view = int(floor(fract(phase) * float(_75.viewCount)));
-    view = clamp(view, 0, _75.viewCount - 1);
-    if (_75.invertView != 0)
-    {
-        view = (_75.viewCount - 1) - view;
-    }
-    if (_75.swapLeftRight != 0)
-    {
-        view = (_75.viewCount - 1) - view;
-    }
-    if (_75.sourceRgbd != 0)
+    depth = (-_74.stereoDepth) / depth;
+    return depth;
+}
+
+static inline __attribute__((always_inline))
+float3 sampleRgbd(thread const float2& uv, thread const int& view, constant InterlacerData& _74, texture2d<float> quiltTexture, sampler quiltTextureSmplr, texture2d<float> depthTexture, sampler depthTextureSmplr)
+{
+    if (_74.viewCount > 2)
     {
         float2 param = uv;
         int param_1 = view;
-        return sampleRgbd(param, param_1, _75, quiltTexture, quiltTextureSmplr);
+        return sampleRgbdLightField(param, param_1, _74, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
     }
-    if (_75.output2D != 0)
+    float2 _697;
+    if (_74.separateDepth != 0)
     {
-        view = _75.viewCount / 2;
+        _697 = uv;
     }
     else
     {
-        view = (_75.viewCount - 1) - view;
+        _697 = float2(uv.x * 0.5, uv.y);
     }
-    int column = spvSMod(view, _75.gridColumns);
-    int row = (_75.gridRows - 1) - (view / _75.gridColumns);
-    if (_75.flipImageX != 0)
+    float2 colorUV = _697;
+    float2 _713;
+    if (_74.separateDepth != 0)
+    {
+        _713 = uv;
+    }
+    else
+    {
+        _713 = float2((uv.x * 0.5) + 0.5, uv.y);
+    }
+    float2 depthUV = _713;
+    float _730;
+    if (_74.viewCount > 1)
+    {
+        _730 = ((float(view) / float(_74.viewCount - 1)) - 0.5) * 2.0;
+    }
+    else
+    {
+        _730 = 0.0;
+    }
+    float normalizedView = _730;
+    float aspect = _74._imageSize.x / _74._imageSize.y;
+    float2 minUVDepth = select(float2(0.500999987125396728515625, 0.0), float2(0.001000000047497451305389404296875, 0.0), bool2(_74.separateDepth != 0));
+    float2 maxUVDepth = select(float2(0.999000012874603271484375, 1.0), float2(0.999000012874603271484375, 1.0), bool2(_74.separateDepth != 0));
+    float2 param_2 = depthUV;
+    float2 param_3 = minUVDepth;
+    float2 param_4 = maxUVDepth;
+    float2 _769 = clampEdge(param_2, param_3, param_4);
+    float2 param_5 = _769;
+    float centerDepth = getDepth(quiltTexture, quiltTextureSmplr, param_5, _74, depthTexture, depthTextureSmplr);
+    float minDepth = centerDepth;
+    float stereoScale = 25000.0;
+    for (int i = 0; i < 5; i++)
+    {
+        float depthOffset = (((_593[i] * _74.stereoStrength) / aspect) / stereoScale) + (_74.stereoOffset / aspect);
+        float2 param_6 = depthUV - float2(normalizedView * depthOffset, 0.0);
+        float2 param_7 = minUVDepth;
+        float2 param_8 = maxUVDepth;
+        float2 _813 = clampEdge(param_6, param_7, param_8);
+        float2 param_9 = _813;
+        minDepth = fast::min(minDepth, getDepth(quiltTexture, quiltTextureSmplr, param_9, _74, depthTexture, depthTextureSmplr));
+    }
+    float param_10 = minDepth;
+    float _826 = getParallax(param_10, _74);
+    float parallax = (((_74.stereoStrength / aspect) * _826) / stereoScale) + (_74.stereoOffset / aspect);
+    float2 param_11 = colorUV - float2(normalizedView * parallax, 0.0);
+    float2 param_12 = float2(0.001000000047497451305389404296875, 0.0);
+    float2 param_13 = select(float2(0.499000012874603271484375, 1.0), float2(0.999000012874603271484375, 1.0), bool2(_74.separateDepth != 0));
+    float2 _849 = clampEdge(param_11, param_12, param_13);
+    colorUV = _849;
+    return quiltTexture.sample(quiltTextureSmplr, colorUV, level(0.0)).xyz;
+}
+
+static inline __attribute__((always_inline))
+float3 sampleStereo(thread float2& uv, thread const int& view, constant InterlacerData& _74, texture2d<float> quiltTexture, sampler quiltTextureSmplr)
+{
+    if (_74.flipImageX != 0)
     {
         uv.x = 1.0 - uv.x;
     }
-    if (_75.flipImageY != 0)
+    if (_74.flipImageY != 0)
     {
         uv.y = 1.0 - uv.y;
     }
-    float2 quiltUV = (float2(float(column), float(row)) + fast::clamp(uv, float2(0.0), float2(1.0))) * _75.tileSize;
-    return quiltTexture.sample(quiltTextureSmplr, quiltUV, level(0.0)).xyz;
+    float2 sourceUV = fast::clamp(uv, float2(0.0), float2(1.0));
+    bool isRight = view > 0;
+    bool _222 = _74.sourceType == 3;
+    bool _229;
+    if (!_222)
+    {
+        _229 = _74.sourceType == 5;
+    }
+    else
+    {
+        _229 = _222;
+    }
+    if (_229)
+    {
+        float _233;
+        if (isRight)
+        {
+            _233 = (sourceUV.x * 0.5) + 0.5;
+        }
+        else
+        {
+            _233 = sourceUV.x * 0.5;
+        }
+        sourceUV.x = _233;
+        return quiltTexture.sample(quiltTextureSmplr, sourceUV, level(0.0)).xyz;
+    }
+    else
+    {
+        if (_74.sourceType == 4)
+        {
+            float _258;
+            if (isRight)
+            {
+                _258 = sourceUV.x * 0.5;
+            }
+            else
+            {
+                _258 = (sourceUV.x * 0.5) + 0.5;
+            }
+            sourceUV.x = _258;
+            return quiltTexture.sample(quiltTextureSmplr, sourceUV, level(0.0)).xyz;
+        }
+        else
+        {
+            bool _279 = _74.sourceType == 9;
+            bool _286;
+            if (!_279)
+            {
+                _286 = _74.sourceType == 10;
+            }
+            else
+            {
+                _286 = _279;
+            }
+            if (_286)
+            {
+                float _290;
+                if (isRight)
+                {
+                    _290 = (sourceUV.y * 0.5) + 0.5;
+                }
+                else
+                {
+                    _290 = sourceUV.y * 0.5;
+                }
+                sourceUV.y = _290;
+                return quiltTexture.sample(quiltTextureSmplr, sourceUV, level(0.0)).xyz;
+            }
+            else
+            {
+                if (_74.sourceType == 6)
+                {
+                    float _315;
+                    if (isRight)
+                    {
+                        _315 = (sourceUV.x * 0.5) + 0.5;
+                    }
+                    else
+                    {
+                        _315 = sourceUV.x * 0.5;
+                    }
+                    sourceUV.x = _315;
+                    sourceUV.y *= 0.5;
+                    return quiltTexture.sample(quiltTextureSmplr, sourceUV, level(0.0)).xyz;
+                }
+                else
+                {
+                    if (_74.sourceType == 7)
+                    {
+                        float _344;
+                        if (isRight)
+                        {
+                            _344 = (sourceUV.x * 0.3333333432674407958984375) + 0.3333333432674407958984375;
+                        }
+                        else
+                        {
+                            _344 = sourceUV.x * 0.3333333432674407958984375;
+                        }
+                        sourceUV.x = _344;
+                        return quiltTexture.sample(quiltTextureSmplr, sourceUV, level(0.0)).xyz;
+                    }
+                    else
+                    {
+                        if (_74.sourceType == 1)
+                        {
+                            float3 color = quiltTexture.sample(quiltTextureSmplr, sourceUV, level(0.0)).xyz;
+                            if (!isRight)
+                            {
+                                return float3(color.x);
+                            }
+                            else
+                            {
+                                return float3((color.y + color.z) * 0.5);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    float2 param = sourceUV;
+    return sampleMono(param, _74, quiltTexture, quiltTextureSmplr);
 }
 
-fragment main0_out main0(main0_in in [[stage_in]], constant InterlacerData& _75 [[buffer(0)]], texture2d<float> quiltTexture [[texture(0)]], sampler quiltTextureSmplr [[sampler(0)]], float4 gl_FragCoord [[position]])
+static inline __attribute__((always_inline))
+float3 sampleView(thread float2& uv, thread const float& phase, constant InterlacerData& _74, texture2d<float> quiltTexture, sampler quiltTextureSmplr, texture2d<float> depthTexture, sampler depthTextureSmplr)
+{
+    int view = int(floor(fract(phase) * float(_74.viewCount)));
+    view = clamp(view, 0, _74.viewCount - 1);
+    if (_74.invertView != 0)
+    {
+        view = (_74.viewCount - 1) - view;
+    }
+    if (_74.swapLeftRight != 0)
+    {
+        view = (_74.viewCount - 1) - view;
+    }
+    if (_74.testPattern != 0)
+    {
+        float2 param = uv;
+        int param_1 = view;
+        return sampleTestPattern(param, param_1, _74);
+    }
+    if (_74.output2D != 0)
+    {
+        if (_74.sourceRgbd != 0)
+        {
+            float2 _998;
+            if (_74.separateDepth != 0)
+            {
+                _998 = uv;
+            }
+            else
+            {
+                _998 = float2(uv.x * 0.5, uv.y);
+            }
+            return quiltTexture.sample(quiltTextureSmplr, _998, level(0.0)).xyz;
+        }
+        if (_74.sourceFlat != 0)
+        {
+            float2 param_2 = uv;
+            return sampleMono(param_2, _74, quiltTexture, quiltTextureSmplr);
+        }
+    }
+    if (_74.sourceRgbd != 0)
+    {
+        float2 param_3 = uv;
+        int param_4 = view;
+        return sampleRgbd(param_3, param_4, _74, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
+    }
+    if (_74.sourceType == 8)
+    {
+        int targetView = view;
+        if (_74.output2D != 0)
+        {
+            targetView = _74.viewCount / 2;
+        }
+        else
+        {
+            targetView = (_74.viewCount - 1) - view;
+        }
+        int column = targetView % _74.gridColumns;
+        int row = (_74.gridRows - 1) - (targetView / _74.gridColumns);
+        if (_74.cubeViC1 != 0)
+        {
+            int sourceViews = _74.gridColumns * _74.gridRows;
+            int sourceView = min((sourceViews - 1), ((view * sourceViews) / _74.viewCount));
+            if (_74.output2D != 0)
+            {
+                sourceView = sourceViews / 2;
+            }
+            column = (_74.gridColumns - 1) - (sourceView % _74.gridColumns);
+            row = (_74.gridRows - 1) - (sourceView / _74.gridColumns);
+        }
+        if (_74.flipImageX != 0)
+        {
+            uv.x = 1.0 - uv.x;
+        }
+        if (_74.flipImageY != 0)
+        {
+            uv.y = 1.0 - uv.y;
+        }
+        float2 quiltUV = (float2(float(column), float(row)) + fast::clamp(uv, float2(0.0), float2(1.0))) * _74.tileSize;
+        return quiltTexture.sample(quiltTextureSmplr, quiltUV, level(0.0)).xyz;
+    }
+    bool _1153 = _74.output2D != 0;
+    bool _1160;
+    if (!_1153)
+    {
+        _1160 = _74.sourceFlat != 0;
+    }
+    else
+    {
+        _1160 = _1153;
+    }
+    if (_1160)
+    {
+        float2 param_5 = uv;
+        return sampleMono(param_5, _74, quiltTexture, quiltTextureSmplr);
+    }
+    float2 param_6 = uv;
+    int param_7 = view;
+    float3 _1171 = sampleStereo(param_6, param_7, _74, quiltTexture, quiltTextureSmplr);
+    return _1171;
+}
+
+fragment main0_out main0(main0_in in [[stage_in]], constant InterlacerData& _74 [[buffer(0)]], texture2d<float> quiltTexture [[texture(0)]], texture2d<float> depthTexture [[texture(1)]], sampler quiltTextureSmplr [[sampler(0)]], sampler depthTextureSmplr [[sampler(1)]], float4 gl_FragCoord [[position]])
 {
     main0_out out = {};
     float2 pixel = gl_FragCoord.xy;
-    pixel.y = _75.outputSize.y - pixel.y;
-    float basePhase = dot(pixel, _75.phaseScale);
-    basePhase -= _75.center;
-    float2 param = in.fragUV;
-    float param_1 = basePhase - _75.subpixelPhase;
-    float3 _480 = sampleView(param, param_1, _75, quiltTexture, quiltTextureSmplr);
-    float3 color;
-    color.x = _480.x;
-    float2 param_2 = in.fragUV;
-    float param_3 = basePhase;
-    float3 _487 = sampleView(param_2, param_3, _75, quiltTexture, quiltTextureSmplr);
-    color.y = _487.y;
-    float2 param_4 = in.fragUV;
-    float param_5 = basePhase + _75.subpixelPhase;
-    float3 _497 = sampleView(param_4, param_5, _75, quiltTexture, quiltTextureSmplr);
-    color.z = _497.z;
-    out.outColor = float4(color, 1.0);
+    if (_74.cubeViC1 != 0)
+    {
+        float2 vendorPixel = pixel + float2(0.5);
+        float interval = fast::max(_74.phaseScale.x, 0.001000000047497451305389404296875);
+        float phase = (3.0 * (vendorPixel.x + (vendorPixel.y * _74.phaseScale.y))) + _74.center;
+        float2 param = in.fragUV;
+        float param_1 = phase / interval;
+        float3 _1215 = sampleView(param, param_1, _74, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
+        float3 color;
+        color.x = _1215.x;
+        float2 param_2 = in.fragUV;
+        float param_3 = (phase + 1.0) / interval;
+        float3 _1225 = sampleView(param_2, param_3, _74, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
+        color.y = _1225.y;
+        float2 param_4 = in.fragUV;
+        float param_5 = (phase + 2.0) / interval;
+        float3 _1235 = sampleView(param_4, param_5, _74, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
+        color.z = _1235.z;
+        out.outColor = float4(color, 1.0);
+        return out;
+    }
+    pixel.y = _74.outputSize.y - pixel.y;
+    float basePhase = dot(pixel, _74.phaseScale);
+    basePhase -= _74.center;
+    float2 param_6 = in.fragUV;
+    float param_7 = basePhase - _74.subpixelPhase;
+    float3 _1269 = sampleView(param_6, param_7, _74, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
+    float3 color_1;
+    color_1.x = _1269.x;
+    float2 param_8 = in.fragUV;
+    float param_9 = basePhase;
+    float3 _1276 = sampleView(param_8, param_9, _74, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
+    color_1.y = _1276.y;
+    float2 param_10 = in.fragUV;
+    float param_11 = basePhase + _74.subpixelPhase;
+    float3 _1286 = sampleView(param_10, param_11, _74, quiltTexture, quiltTextureSmplr, depthTexture, depthTextureSmplr);
+    color_1.z = _1286.z;
+    out.outColor = float4(color_1, 1.0);
     return out;
 }
 

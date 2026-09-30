@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Rendepth Companion</title>
+<link rel="stylesheet" href="popup.css"></head>
+<body><h1><img class="title-logo" src="icons/rendepth.png" width="28" height="28" alt="">Open in Rendepth</h1>
+<div id="format-label">Video format</div>
+<div id="format-picker">
+<select id="format" hidden><option value="2d">2D Video</option><option value="sbs-half">SBS Half</option><option value="sbs-full">SBS Full</option></select>
+<button id="format-toggle" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="format-options" aria-labelledby="format-label format-value"><span id="format-value">2D Video</span><span class="chevron" aria-hidden="true"></span></button>
+<ul id="format-options" role="listbox" aria-labelledby="format-label" hidden></ul>
+</div>
+<p id="mono-help">Converts ordinary video to 3D using Rendepth’s video depth model.</p>
+<div id="half-options" hidden><label><input id="scale-half" type="checkbox" checked> Expand SBS Half up to 3840×1080</label>
+<p>Preserves more horizontal detail from 4K SBS Half. May reduce frame rate. Uncheck for faster capture.</p></div>
+<div id="quality-options"><label><input id="limit-source" type="checkbox" disabled> Limit source to 1080p</label>
+<p>Tries automatically on YouTube; other sites may need a manual quality change. Applies when opening or refreshing capture. Reduces detail in high-resolution SBS.</p></div>
+<div id="navigation-options"><label><input id="auto-reconnect" type="checkbox" disabled> Automatically reconnect on this site</label>
+<p>Optional. Enabling this asks Firefox for access to this site so capture can resume on new pages. Otherwise, Rendepth stays open and you click Refresh Video after navigating.</p></div>
+<p id="navigation-notice" role="status"></p>
+<div class="actions"><button id="open" disabled>Open Playing Video</button><button id="stop" disabled>Stop</button></div>
+<p id="quality-notice" role="status"></p>
+<p id="status" role="status"></p>
+<script src="popup.js"></script></body></html>

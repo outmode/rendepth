@@ -46,21 +46,31 @@ fragment main0_out main0(main0_in in [[stage_in]], constant SpriteDataFrag& _18 
         }
         spriteColor *= spriteTexture.sample(spriteTextureSmplr, sliceUV);
     }
-    if (spriteColor.w > 0.0)
+    bool _86 = _18.useTexture == 2;
+    bool _94;
+    if (_86)
     {
-        float _92 = spriteColor.w;
-        float4 _94 = spriteColor;
-        float3 _97 = _94.xyz / float3(_92);
-        spriteColor.x = _97.x;
-        spriteColor.y = _97.y;
-        spriteColor.z = _97.z;
+        _94 = spriteColor.w > 0.0;
+    }
+    else
+    {
+        _94 = _86;
+    }
+    if (_94)
+    {
+        float _98 = spriteColor.w;
+        float4 _100 = spriteColor;
+        float3 _103 = _100.xyz / float3(_98);
+        spriteColor.x = _103.x;
+        spriteColor.y = _103.y;
+        spriteColor.z = _103.z;
     }
     alpha = fast::clamp((_18.color.w * _18.visibility) * alpha, 0.0, 1.0);
-    float4 _118 = spriteColor;
-    float3 _120 = _118.xyz * _18.color.xyz;
-    spriteColor.x = _120.x;
-    spriteColor.y = _120.y;
-    spriteColor.z = _120.z;
+    float4 _124 = spriteColor;
+    float3 _126 = _124.xyz * _18.color.xyz;
+    spriteColor.x = _126.x;
+    spriteColor.y = _126.y;
+    spriteColor.z = _126.z;
     spriteColor.w *= alpha;
     out.outColor = spriteColor;
     return out;

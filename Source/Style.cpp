@@ -20,10 +20,12 @@
 
 #include "Style.h"
 
+// Return the UI size preset selected for the current display.
 Style::Scale Style::getCurrentScale() {
 	return currentScale;
 }
 
+// Choose a UI size preset from the display's shorter dimension.
 void Style::calculateScale(glm::vec2 screen) {
 	auto minDim = std::min(screen.x, screen.y);
 	if (minDim <= 1200.0) {
@@ -35,66 +37,82 @@ void Style::calculateScale(glm::vec2 screen) {
 	}
 }
 
+// Return the icon radius for the selected UI size preset.
 float Style::getIconRadius(Scale scale) {
 	return iconRadiusMap[scale];
 }
 
+// Return the icon gutter for the selected UI size preset.
 float Style::getIconGutter(Scale scale) {
 	return iconGutterMap[scale];
 }
 
+// Return the spacing between icons for the selected UI size preset.
 float Style::getIconSpacer(Scale scale) {
 	return iconSpacerMap[scale];
 }
 
+// Return the slider thumb size for the selected UI size preset.
 float Style::getIconSlider(Scale scale) {
 	return iconSliderMap[scale];
 }
 
+// Return the slider dragger size for the selected UI size preset.
 float Style::getIconDragger(Scale scale) {
 	return iconDraggerMap[scale];
 }
 
+// Return the slider bar thickness for the selected UI size preset.
 float Style::getIconBar(Scale scale) {
 	return iconBarMap[scale];
 }
 
+// Return the slider spacing for the selected UI size preset.
 float Style::getIconSliderSpace(Scale scale) {
 	return iconSliderSpaceMap[scale];
 }
 
+// Return the information-area margin for the selected UI size preset.
 float Style::getInfo(Scale scale) {
 	return infoMarginMap[scale];
 }
 
+// Return the help-text font size for the selected UI size preset.
 float Style::getHelpFontSize(Scale scale) {
 	return helpFontMap[scale];
 }
 
+// Return the information-label font size for the selected UI size preset.
 float Style::getInfoFontSize(Scale scale) {
 	return infoFontMap[scale];
 }
 
+// Return the menu font size for the selected UI size preset.
 float Style::getMenuFontSize(Scale scale) {
 	return menuFontMap[scale];
 }
 
+// Return the choice-row size for the selected UI size preset.
 float Style::getChoiceSize(Scale scale) {
 	return choiceMap[scale];
 }
 
+// Return the options-layout size for the selected UI size preset.
 float Style::getOptionsSize(Scale scale) {
 	return optionsMap[scale];
 }
 
+// Return the button margin for the selected UI size preset.
 float Style::getButtonMargin(Scale scale) {
 	return buttonMarginMap[scale];
 }
 
+// Combine a named palette color and opacity into an RGBA value.
 glm::vec4 Style::getColor(Color color, Alpha alpha) {
 	return { colorMap[color], alphaMap[alpha] };
 }
 
+// Apply the left and right anaglyph filters and gamma correction while retaining opacity.
 glm::vec4 Style::toAnaglyph(glm::vec4 color) const {
 	glm::vec3 filtered{ 0.0 };
 	filtered += clamp(glm::vec3(color) * leftFilter,
@@ -105,6 +123,7 @@ glm::vec4 Style::toAnaglyph(glm::vec4 color) const {
 	return { filtered, color.a };
 }
 
+// Apply the configured per-channel gamma correction to an RGB color.
 glm::vec3 Style::correctColor(glm::vec3 original) const {
 	glm::vec3 corrected { 0.0 };
 	corrected.r = glm::pow(original.r, 1.0f / gammaMap.r);

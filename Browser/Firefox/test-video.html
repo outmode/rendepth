@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Rendepth SBS test</title>
+<style>body{font:18px system-ui;background:#222;color:white;margin:30px}video{display:block;width:min(100%,960px);margin-top:20px}button{padding:12px}</style>
+<h1>Native SBS test video</h1><p>Choose SBS Full in the Rendepth extension. Each eye has a label and a moving circle.</p>
+<button id="play">Play test video</button><video id="video" controls muted></video>
+<script>
+const canvas = document.createElement('canvas');
+canvas.width = 960; canvas.height = 270;
+const ctx = canvas.getContext('2d');
+function draw(time) {
+  for (let eye=0; eye<2; eye++) {
+    ctx.fillStyle = eye ? '#173977' : '#772039'; ctx.fillRect(eye*480,0,480,270);
+    ctx.fillStyle = 'white'; ctx.font = '32px sans-serif';
+    ctx.fillText(eye ? 'RIGHT' : 'LEFT',eye*480+25,55);
+    ctx.beginPath(); ctx.arc(eye*480+240+Math.sin(time/700)*80+(eye ? -12 : 12),155,35,0,Math.PI*2); ctx.fill();
+  }
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+document.getElementById('play').onclick = async () => {
+  const video = document.getElementById('video');
+  if (!video.srcObject) video.srcObject = canvas.captureStream(Number(new URLSearchParams(location.search).get('fps')) || 60);
+  await video.play();
+};
+</script></html>

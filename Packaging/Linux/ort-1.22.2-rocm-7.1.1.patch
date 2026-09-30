@@ -1,0 +1,36 @@
+diff --git a/cmake/CMakeLists.txt b/cmake/CMakeLists.txt
+index adf0fc0..c774856 100644
+--- a/cmake/CMakeLists.txt
++++ b/cmake/CMakeLists.txt
+@@ -307,7 +307,7 @@ if (onnxruntime_USE_ROCM)
+   if (EXISTS "${onnxruntime_ROCM_HOME}/.info/version")
+     message("\n***** ROCm version from ${onnxruntime_ROCM_HOME}/.info/version ****\n")
+     file(READ "${onnxruntime_ROCM_HOME}/.info/version" ROCM_VERSION_DEV_RAW)
+-    string(REGEX MATCH "^([0-9]+)\.([0-9]+)\.([0-9]+)-.*$" ROCM_VERSION_MATCH ${ROCM_VERSION_DEV_RAW})
++    string(REGEX MATCH "^([0-9]+)\.([0-9]+)\.([0-9]+)" ROCM_VERSION_MATCH ${ROCM_VERSION_DEV_RAW})
+   elseif (EXISTS "${onnxruntime_ROCM_HOME}/include/rocm_version.h")
+     message("\n***** ROCm version from ${onnxruntime_ROCM_HOME}/include/rocm_version.h ****\n")
+     file(READ "${onnxruntime_ROCM_HOME}/include/rocm_version.h" ROCM_VERSION_H_RAW)
+diff --git a/onnxruntime/core/providers/rocm/cu_inc/common.cuh b/onnxruntime/core/providers/rocm/cu_inc/common.cuh
+index b8fe875..969891f 100644
+--- a/onnxruntime/core/providers/rocm/cu_inc/common.cuh
++++ b/onnxruntime/core/providers/rocm/cu_inc/common.cuh
+@@ -576,8 +576,17 @@ struct alignas(sizeof(T) * vec_size) aligned_vector {
+ // HIP_KERNEL_ASSERT is a macro that wraps an assert() call inside rocm kernels.
+ #define HIP_KERNEL_ASSERT(...) assert(__VA_ARGS__)
+ 
++// hipify-clang emits the legacy _v2 spelling; hipBLAS 7.1.1 exports the
++// equivalent unsuffixed API.
++#define hipblasGemmStridedBatchedEx_v2 hipblasGemmStridedBatchedEx
++
+ // WARP related definitions and functions
+-constexpr int GPU_WARP_SIZE = warpSize;
++#if defined(__AMDGCN_WAVEFRONT_SIZE__)
++constexpr int GPU_WARP_SIZE = __AMDGCN_WAVEFRONT_SIZE__;
++#else
++// The host compilation pass does not execute warp operations.
++constexpr int GPU_WARP_SIZE = 64;
++#endif
+ inline int GPU_WARP_SIZE_HOST = warpSizeDynamic();
+ 
+ template <typename T>

@@ -41,7 +41,8 @@ void main() {
 		if (angle > rotation || angle < rotation - 1.0) alpha = 0.0;
 	}
 	vec4 iconColor = texture(iconTexture, fragUV);
-	if (iconColor.a > 0) iconColor.rgb /= iconColor.a;
+	// PNG and SDL text uploads use straight alpha. Dividing RGB by coverage
+	// brightens antialiased edges and creates a fringe around tinted icons.
 	alpha = clamp(color.a * visibility * alpha, 0.0, 1.0);
 	iconColor.rgb *= color.rgb;
 	iconColor.a *= alpha;

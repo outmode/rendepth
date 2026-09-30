@@ -15,6 +15,7 @@ public:
 	enum class Provider {
 		Auto,
 		CPU,
+		CoreML,
 		ROCM,
 		DirectML,
 		CUDA,
@@ -27,6 +28,7 @@ public:
 		Provider provider = Provider::Auto;
 		int processSize = 504;
 		unsigned int intraOpThreads = 0;
+		bool allowThreadSpinning = true;
 	};
 
 	struct Result {
