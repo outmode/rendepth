@@ -63,10 +63,10 @@ an install over an old tree does not delete old notice files.
   are selected.
 - GPL binaries need matching, complete Corresponding Source and build/install
   instructions under GPLv3 section 6. Preserve the exact submodule revisions,
-  local dependency changes, and any static-library sources. The current private
-  RapidJSON submodule URL is not by itself public source access: arrange access
-  to the covered source for recipients. A notice compilation or the repository's
-  MIT license does not replace these distribution obligations.
+  local dependency changes, and any static-library sources. Verify that the
+  pinned RapidJSON commit is available from its public submodule URL before
+  publishing. A notice compilation or the repository's MIT license does not
+  replace these distribution obligations.
 - Retain original notices in source distributions too. The generator compiles
   notices; it does not decide whether a particular dependency combination is
   redistributable or replace a review of applicable terms.

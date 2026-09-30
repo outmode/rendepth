@@ -15,7 +15,7 @@
 	url = https://github.com/g-truc/glm.git
 [submodule "ThirdParty/rapidjson"]
 	path = ThirdParty/rapidjson
-	url = https://github.com/outmode/rapidjson-private.git
+	url = https://github.com/outmode/rapidjson.git
 [submodule "ThirdParty/FFmpeg"]
 	path = ThirdParty/FFmpeg
 	url = https://github.com/FFmpeg/FFmpeg.git
