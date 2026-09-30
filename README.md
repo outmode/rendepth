@@ -1,4 +1,4 @@
-![Rendepth_Title](https://github.com/user-attachments/assets/227300ae-5ac2-494f-ac21-4e37f473bba9)
+<img width="460" height="120" alt="Rendepth_Clean_Logo" src="https://github.com/user-attachments/assets/745be2f7-080b-488d-befc-812803ae55d9" />
 
 Free and Open Source Stereoscopic 3D Media Player.
 
@@ -14,13 +14,15 @@ Dependencies retain their own licenses; the collected texts and attributions are
 
 Stereo 3D Samples
 ------
-![Japan_1080P_anaglyph](https://github.com/user-attachments/assets/4488e967-21f0-4e29-82a0-26d6b5447944)
 
-![Japan_1080P_free_view](https://github.com/user-attachments/assets/6804236b-4631-46c2-ba54-20920844b082)
+<img width="3840" height="1920" alt="pexels-garrett-johnson-1459914-3800799_free_view_lrl" src="https://github.com/user-attachments/assets/45abf8ac-07c9-4bc4-8c93-113c2e010fe1" />
 
-![Japan_1080P_sbs](https://github.com/user-attachments/assets/47d03596-8218-47d6-8b69-ab4acefea47e)
+<img width="5120" height="3840" alt="pexels-garrett-johnson-1459914-3800799_rgbd" src="https://github.com/user-attachments/assets/a6f87b0e-c206-4058-ad95-a6520aed505d" />
 
-![Japan_1080P_rgbd](https://github.com/user-attachments/assets/c30d9f27-8c2c-40be-a23e-934211771656)
+<img width="3840" height="1920" alt="pexels-koolshooters-7143201_free_view_lrl" src="https://github.com/user-attachments/assets/548ec25a-061d-452b-b6a6-d3d47ed2c931" />
+
+<img width="5120" height="3840" alt="pexels-koolshooters-7143201_rgbd" src="https://github.com/user-attachments/assets/8651845a-ce25-4ec4-9f58-70b4bfc078fd" />
+
 
 #### Enjoying Rendepth? Consider donating to support further development: https://rendepth.com/donate
 
@@ -208,8 +210,6 @@ default 240 frames, for example `MvcPlaybackTest <disc> 132 1950 frame.yuv 720`.
 Build a test target with
 `cmake --build <build-directory> --target <test-name> --parallel 10`.
 
-### Made by Outmode.
-
 Keyboard presentation controls
 ------
 - **0:** Disable 3D and hide the 3D button, as with Disabled in settings.
@@ -222,3 +222,5 @@ When 3D is disabled, **2** and **3** restore the last saved display mode in its
 2D or 3D view, including across restarts. Choose the display format in settings
 or cycle with **1**. **4–9** do not change presentation modes. If no display mode
 has been used yet, **1/2/3** use Natural Color.
+
+### Made by Outmode.
