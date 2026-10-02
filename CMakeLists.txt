@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(Rendepth VERSION 3.0.0 LANGUAGES C CXX)
+project(Rendepth VERSION 3.0.1 LANGUAGES C CXX)
 if(APPLE)
     enable_language(OBJCXX)
 endif()

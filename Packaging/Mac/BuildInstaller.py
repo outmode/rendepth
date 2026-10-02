@@ -36,10 +36,18 @@ def stage(bundle, native_host, destination, chrome_id, plugin_directory, plugin_
     shutil.copyfile(ca_bundle, staged_app / "Contents/Resources/cacert.pem")
     helpers = staged_app / "Contents/Helpers"
     helpers.mkdir(exist_ok=True)
-    host_path = helpers / "RendepthNativeHost"
-    shutil.copy2(native_host, host_path)
-    if not host_path.is_file() or not host_path.stat().st_mode & 0o111:
-        raise ValueError("The frozen native host executable is missing")
+    host_bundle = helpers / "RendepthNativeHost.app"
+    host_executable = native_host / "Contents/MacOS/RendepthNativeHost"
+    if not host_executable.is_file() or not host_executable.stat().st_mode & 0o111:
+        raise ValueError("The onedir native host app and executable are required")
+    if not (native_host / "Contents/Frameworks/Python.framework").is_dir():
+        raise ValueError("The native host must contain Python.framework in Contents/Frameworks")
+    shutil.copytree(native_host, host_bundle, symlinks=True)
+    with (host_bundle / "Contents/Info.plist").open("rb") as stream:
+        host_info = plistlib.load(stream)
+    host_info["LSUIElement"] = True
+    with (host_bundle / "Contents/Info.plist").open("wb") as stream:
+        plistlib.dump(host_info, stream)
     plugins = staged_app / "Contents/PlugIns"
     plugins.mkdir(parents=True, exist_ok=True)
     for name in PLUGINS:
@@ -53,7 +61,8 @@ def stage(bundle, native_host, destination, chrome_id, plugin_directory, plugin_
     run("cmake", f"-DRENDEPTH_BUNDLE={staged_app}", "-P",
         ROOT / "Packaging/Mac/FixupBundle.cmake")
 
-    installed_host = "/Applications/Rendepth.app/Contents/Helpers/RendepthNativeHost"
+    installed_host = ("/Applications/Rendepth.app/Contents/Helpers/"
+                      "RendepthNativeHost.app/Contents/MacOS/RendepthNativeHost")
     common = {"name": "com.outmode.rendepth", "path": installed_host, "type": "stdio"}
     write_manifest(destination / "Library/Application Support/Mozilla/NativeMessagingHosts/com.outmode.rendepth.json",
         {**common, "description": "Rendepth Firefox companion bridge",
@@ -65,18 +74,32 @@ def stage(bundle, native_host, destination, chrome_id, plugin_directory, plugin_
 
 
 def sign_app(bundle, identity):
-    # Sign every nested Mach-O file before sealing the application bundle.
+    # Sign loose binaries first, then frameworks, the helper app and the main
+    # app. Signing a framework's executable directly would break its seal.
+    frameworks = sorted((path for path in bundle.rglob("*.framework")
+                         if path.is_dir() and not path.is_symlink()),
+                        key=lambda item: len(item.parts), reverse=True)
+    helper = bundle / "Contents/Helpers/RendepthNativeHost.app"
     for path in sorted(bundle.rglob("*"), key=lambda item: len(item.parts), reverse=True):
         if not path.is_file() or path.is_symlink():
             continue
-        if path == bundle / "Contents/MacOS/Rendepth":
+        if path in (bundle / "Contents/MacOS/Rendepth",
+                    helper / "Contents/MacOS/RendepthNativeHost"):
+            continue
+        if any(framework in path.parents for framework in frameworks):
             continue
         result = subprocess.run(["file", "-b", str(path)], capture_output=True, text=True, check=True)
         if "Mach-O" in result.stdout:
             run("codesign", "--force", "--options", "runtime", "--timestamp",
                 "--sign", identity, path)
+    for framework in frameworks:
+        run("codesign", "--force", "--options", "runtime", "--timestamp",
+            "--sign", identity, framework)
+    run("codesign", "--force", "--options", "runtime", "--timestamp",
+        "--sign", identity, helper)
     run("codesign", "--force", "--options", "runtime", "--timestamp",
         "--sign", identity, bundle)
+    run("codesign", "--verify", "--deep", "--strict", "--verbose=2", helper)
     run("codesign", "--verify", "--deep", "--strict", "--verbose=2", bundle)
 
 
@@ -84,7 +107,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, default=ROOT / "Binary/Rendepth.app")
     parser.add_argument("--native-host", type=Path, required=True,
-                        help="PyInstaller onefile output for Packaging/Mac/native_host.py")
+                        help="PyInstaller onedir/windowed RendepthNativeHost.app")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--signed-bundle-output", type=Path,
                         help="Keep a copy of the fully staged and signed app")
@@ -131,8 +154,12 @@ def main():
                 "BundleOverwriteAction": "upgrade",
             }], stream)
         component = temporary_root / "Rendepth-component.pkg"
+        scripts = temporary_root / "scripts"
+        scripts.mkdir()
+        for name in ("postinstall", "migrate-user-registrations.sh"):
+            shutil.copy2(ROOT / "Packaging/Mac/Scripts" / name, scripts / name)
         run("pkgbuild", "--root", destination, "--install-location", "/",
-            "--component-plist", component_plist,
+            "--component-plist", component_plist, "--scripts", scripts,
             "--identifier", "com.outmode.rendepth", "--version", version,
             component)
         distribution = temporary_root / "Distribution.xml"
