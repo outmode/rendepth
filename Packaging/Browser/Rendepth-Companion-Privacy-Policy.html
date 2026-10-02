@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rendepth Companion Privacy Policy</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Lato, "Helvetica Neue", Arial, sans-serif;
+      color: #ffffff;
+      background: #16273b;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      border-top: 5px solid #ff1c69;
+      font-size: 1rem;
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    main {
+      width: min(100% - 2.5rem, 800px);
+      margin: 0 auto;
+      padding: 4.5rem 0 6rem;
+    }
+
+    .site-name {
+      margin: 0 0 3.5rem;
+      color: #ffffff;
+      font-size: 0.9rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow {
+      margin: 0 0 0.75rem;
+      color: #ff8aab;
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    h1, h2 { line-height: 1.2; }
+
+    h1 {
+      max-width: 14ch;
+      margin: 0 0 1.5rem;
+      font-size: clamp(2.5rem, 6vw, 3.75rem);
+      font-weight: 700;
+      letter-spacing: -0.035em;
+    }
+
+    .details {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem 2rem;
+      padding: 0 0 1.5rem;
+      color: #c5d0dd;
+      font-size: 0.9rem;
+    }
+
+    .details p { margin: 0; }
+    .details strong { margin-right: 0.25em; color: #ffffff; font-weight: 700; }
+
+    .intro {
+      margin: 0 0 3.25rem;
+      padding: 1.5rem 0 1.5rem 1.5rem;
+      border-left: 3px solid #ff1c69;
+      color: #e5ebf2;
+      font-size: 1.1rem;
+    }
+
+    h2 {
+      margin: 2.75rem 0 1rem;
+      padding-top: 2rem;
+      border-top: 1px solid #42536a;
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+
+    p { margin: 0 0 1.15rem; }
+    h2 + p { margin-top: 0; }
+    a { color: #ff8aab; text-underline-offset: 0.2em; }
+    a:hover, a:focus-visible { color: #ffffff; }
+    a:focus-visible { outline: 2px solid #ff8aab; outline-offset: 3px; }
+
+    @media (max-width: 600px) {
+      main { padding: 2.5rem 0 4rem; }
+      .site-name { margin-bottom: 2.75rem; }
+      .intro { padding-left: 1rem; }
+    }
+
+    @media print {
+      :root { color-scheme: light; color: #16273b; background: #ffffff; }
+      body { border-top-color: #ff1c69; }
+      main { padding: 2rem 0; }
+      .site-name, .details strong { color: #16273b; }
+      .eyebrow, a { color: #a60843; }
+      .details, .intro { color: #263b50; }
+      h2 { border-top-color: #ccd3db; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="site-name">Rendepth</p>
+    <p class="eyebrow">Rendepth Companion</p>
+    <h1>Privacy Policy</h1>
+    <div class="details">
+      <p><strong>Effective date:</strong> September 30, 2026</p>
+      <p><strong>Publisher:</strong> Outmode · <a href="https://rendepth.com/">rendepth.com</a></p>
+    </div>
+    <p class="intro">This policy describes how Outmode's Rendepth Companion browser extension handles information when you use it with the Rendepth desktop application. It covers the Companion extension and its browser-to-desktop media connection, not other Rendepth products or the websites whose media you choose to open.</p>
+
+    <h2>Media you choose to open</h2>
+    <p>Rendepth Companion accesses a web image or video when you choose an “Open in Rendepth” command or use the extension's toolbar to open a playing video. If you explicitly enable automatic reconnection for a website, an active video session may reconnect after you navigate to another page on that same website. The extension uses that media only to display or convert it in the Rendepth desktop application. It does not build a browsing history or access media in unrelated tabs.</p>
+    <p>For an image, the extension reads the selected image from its page or requests it from the website hosting it, then passes the image to the locally installed Rendepth application. A request to the image's website may include the browser credentials normally used for that site. The extension does not read or save your passwords or cookies.</p>
+    <p>For a video, the extension captures the selected video and sends it to the Rendepth application through a direct local WebRTC connection. Video playback and audio stay in your browser; the extension does not send an audio track. The extension uses Chrome's native messaging interface to communicate with the installed Rendepth application and set up this connection. It does not send selected images or video to an Outmode server.</p>
+
+    <h2>Settings and local files</h2>
+    <p>The extension stores your source-quality setting and the website origins for which you explicitly enable automatic video reconnection in Chrome's local extension storage. Temporary connection status is kept in Chrome's session storage. You can turn off automatic reconnection for a site in the extension, and you can remove extension storage by uninstalling the extension or clearing its data in Chrome.</p>
+    <p>To display a web photo, Rendepth creates temporary media files on your computer. These files are normally removed when the desktop application closes. If it exits unexpectedly, temporary files may remain until Rendepth removes older runtime files on a later launch. Rendepth Companion does not upload these files to Outmode.</p>
+
+    <h2>Sharing and other uses</h2>
+    <p>Outmode does not receive or store the media you open with Rendepth Companion on its servers. The extension does not use this media or your settings for advertising, profiling, analytics, sale to data brokers, creditworthiness decisions, or lending. It does not transfer your media to third parties for those purposes. A website that hosts a selected image receives the request needed to retrieve that image and handles that request under its own privacy policy.</p>
+    <p>Rendepth Companion's use of information obtained through Chrome APIs complies with the Chrome Web Store User Data Policy, including its Limited Use requirements. The extension uses that information only to provide its stated purpose of opening selected web media in Rendepth.</p>
+
+    <h2>Changes to this policy</h2>
+    <p>If the extension's data practices change, Outmode will update this policy and the Chrome Web Store disclosure before applying the new practices.</p>
+  </main>
+</body>
+</html>
