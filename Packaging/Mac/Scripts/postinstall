@@ -11,14 +11,21 @@ if [ ! -x "$rendepth_host" ]; then
     echo "Rendepth native host is missing: $rendepth_host" >&2
     exit 1
 fi
-for rendepth_browser in 'Mozilla' 'Google/Chrome'; do
-    rendepth_system_manifest="$rendepth_root/Library/Application Support/$rendepth_browser/NativeMessagingHosts/com.outmode.rendepth.json"
+for rendepth_manifest_relative in \
+    'Library/Application Support/Mozilla/NativeMessagingHosts/com.outmode.rendepth.json' \
+    'Library/Google/Chrome/NativeMessagingHosts/com.outmode.rendepth.json'; do
+    rendepth_system_manifest="$rendepth_root/$rendepth_manifest_relative"
     if [ "$(/usr/bin/plutil -extract path raw -o - "$rendepth_system_manifest" 2>/dev/null)" != \
         '/Applications/Rendepth.app/Contents/Helpers/RendepthNativeHost.app/Contents/MacOS/RendepthNativeHost' ]; then
         echo "Rendepth system browser registration is missing or incorrect: $rendepth_system_manifest" >&2
         exit 1
     fi
 done
+
+# An alternate target volume has no relation to this Mac's local user homes.
+if [ "$rendepth_root" != '/' ]; then
+    exit 0
+fi
 
 rendepth_accounts=$(/usr/bin/dscl . -list /Users NFSHomeDirectory) || {
     echo 'Could not list local users; checking standard home directories.' >&2

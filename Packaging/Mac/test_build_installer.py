@@ -12,6 +12,29 @@ import BuildInstaller
 
 
 class StageTest(unittest.TestCase):
+    def test_postinstall_accepts_staged_browser_registrations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            host = (root / "Applications/Rendepth.app/Contents/Helpers/"
+                    "RendepthNativeHost.app/Contents/MacOS/RendepthNativeHost")
+            host.parent.mkdir(parents=True)
+            host.write_bytes(b"host")
+            host.chmod(0o755)
+            manifest_paths = (
+                root / "Library/Application Support/Mozilla/NativeMessagingHosts/com.outmode.rendepth.json",
+                root / "Library/Google/Chrome/NativeMessagingHosts/com.outmode.rendepth.json",
+            )
+            for manifest in manifest_paths:
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text(json.dumps({"path": "/" + str(host.relative_to(root))}))
+            script = Path(__file__).with_name("Scripts") / "postinstall"
+            command = ["/bin/sh", str(script), "", "", str(root)]
+            subprocess.run(command, check=True, capture_output=True)
+            manifest_paths[1].unlink()
+            failure = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(failure.returncode, 0)
+            self.assertIn(str(manifest_paths[1]), failure.stderr)
+
     def test_stage_uses_signed_helper_app_layout(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

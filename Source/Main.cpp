@@ -47,6 +47,7 @@
 #include "AIEngineSettings.h"
 #include "SettingsFile.h"
 #include "GettingStarted.h"
+#include "UIScrollWheel.h"
 #if defined(_WIN32) && defined(_MSC_VER)
 #include "LenticularBridge.h"
 #endif
@@ -1809,7 +1810,7 @@ static bool downloadBlocksInput() {
 }
 
 Choice ChoiceVersion {
-	.label = "Rendepth 3.0.0 (Free Version)",
+	.label = "Rendepth 3.0.1 (Free Version)",
 	.options = {},
 	.inlineText = true,
 	.bold = true,
@@ -4991,7 +4992,7 @@ static void refreshLicenseMenu(bool rebuild) {
         menuSelection[label] = -1; menuRollover[label] = -1;
         original.label = label;
     };
-    rename(ChoiceVersion, licensed ? "Rendepth 3.0.0 (Pro License)" : "Rendepth 3.0.0 (Free Version)");
+    rename(ChoiceVersion, licensed ? "Rendepth 3.0.1 (Pro License)" : "Rendepth 3.0.1 (Free Version)");
     rename(ChoiceLicense, licensed ? "Manage Rendepth Pro License" : "Upgrade to Rendepth Pro");
     if (rebuild) {
         Image::initMenuTexture();
@@ -5002,6 +5003,11 @@ static void refreshLicenseMenu(bool rebuild) {
 
 // Initialize application services, the SDL window and GPU, preferences, and the initial media source.
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
+#if defined(__APPLE__) && defined(RENDEPTH_ENABLE_ONNX_RUNTIME)
+	// ORT's POSIX telemetry uploader can race library teardown and abort on exit.
+	// Suppress it before the first Ort::Env creates the uploader worker.
+	setenv("ORT_DISABLE_TELEMETRY", "1", 1);
+#endif
 	startupNativeDiscoveryPending = true;
 	startupFirstFrameTime = 0;
 	Licensing::Service::initialize();
@@ -5012,7 +5018,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	context.appName = "Rendepth";
 	// Keep the desktop entry name, Wayland app_id, and X11 window class aligned
 	// so the running window is grouped under the installed launcher icon.
-	SDL_SetAppMetadata("Rendepth", "3.0.0", "rendepth");
+	SDL_SetAppMetadata("Rendepth", "3.0.1", "rendepth");
 	context.windowSize = { 1920, 1080 };
 	context.appIcons = &appIcons;
 	context.menuChoices = &menuChoices;
@@ -7646,8 +7652,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		}
 	} else if (event->type == SDL_EVENT_MOUSE_WHEEL) {
 		if (context.displayMenu) {
-			const float direction = event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
-			Image::scrollMenu(-event->wheel.y * direction * 64.0f * context.displayScale);
+			Image::scrollMenu(-UIScrollWheel::deltaY(event->wheel) * 64.0f * context.displayScale);
 			checkMouseState();
 		} else {
 			wheelSpeed += (int)event->wheel.y;
