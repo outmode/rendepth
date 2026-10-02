@@ -1,0 +1,46 @@
+#!/bin/sh
+set -eu
+
+. "$(/usr/bin/dirname "$0")/migrate-user-registrations.sh"
+
+# Only remove per-user overrides when the new system registration and host are
+# already in place. The app bundle and manifests are installed by this package.
+rendepth_root=${3:-/}
+rendepth_host="$rendepth_root/Applications/Rendepth.app/Contents/Helpers/RendepthNativeHost.app/Contents/MacOS/RendepthNativeHost"
+if [ ! -x "$rendepth_host" ]; then
+    echo "Rendepth native host is missing: $rendepth_host" >&2
+    exit 1
+fi
+for rendepth_manifest_relative in \
+    'Library/Application Support/Mozilla/NativeMessagingHosts/com.outmode.rendepth.json' \
+    'Library/Google/Chrome/NativeMessagingHosts/com.outmode.rendepth.json'; do
+    rendepth_system_manifest="$rendepth_root/$rendepth_manifest_relative"
+    if [ "$(/usr/bin/plutil -extract path raw -o - "$rendepth_system_manifest" 2>/dev/null)" != \
+        '/Applications/Rendepth.app/Contents/Helpers/RendepthNativeHost.app/Contents/MacOS/RendepthNativeHost' ]; then
+        echo "Rendepth system browser registration is missing or incorrect: $rendepth_system_manifest" >&2
+        exit 1
+    fi
+done
+
+# An alternate target volume has no relation to this Mac's local user homes.
+if [ "$rendepth_root" != '/' ]; then
+    exit 0
+fi
+
+rendepth_accounts=$(/usr/bin/dscl . -list /Users NFSHomeDirectory) || {
+    echo 'Could not list local users; checking standard home directories.' >&2
+    rendepth_accounts=''
+}
+if [ -n "$rendepth_accounts" ]; then
+    printf '%s\n' "$rendepth_accounts" | while IFS= read -r rendepth_account; do
+        rendepth_home=${rendepth_account#* }
+        rendepth_home=$(printf '%s' "$rendepth_home" | /usr/bin/sed 's/^[[:space:]]*//')
+        case "$rendepth_home" in
+            /*) if [ -d "$rendepth_home" ]; then migrate_registration_home "$rendepth_home"; fi ;;
+        esac
+    done
+else
+    for rendepth_home in /Users/* /var/root; do
+        if [ -d "$rendepth_home" ]; then migrate_registration_home "$rendepth_home"; fi
+    done
+fi

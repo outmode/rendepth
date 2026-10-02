@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include "GettingStarted.h"
 #include "Core.h"
+#include "UIScrollWheel.h"
 #include <SDL3_image/SDL_image.h>
 #include <SDL3_ttf/SDL_ttf.h>
 #include <algorithm>
@@ -278,8 +279,7 @@ Action handleEvent(const SDL_Event& event, SDL_Window* window) {
             pressed = -1;
         }
     } else if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-        const float direction = event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
-        scroll = std::clamp(scroll - static_cast<int>(event.wheel.y * direction * 54 * currentScale), 0, scrollLimit);
+        scroll = std::clamp(scroll - static_cast<int>(UIScrollWheel::deltaY(event.wheel) * 54 * currentScale), 0, scrollLimit);
         dirty = true;
     } else if (event.type == SDL_EVENT_KEY_DOWN) {
         const auto key = event.key.key;

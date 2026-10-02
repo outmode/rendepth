@@ -5,6 +5,7 @@
 #include "DvdReader.h"
 #include "Core.h"
 #include "Style.h"
+#include "UIScrollWheel.h"
 #include <SDL3_ttf/SDL_ttf.h>
 #include <algorithm>
 #include <atomic>
@@ -470,7 +471,7 @@ bool DiscTitleMenu::handleEvent(const SDL_Event& e, SDL_Window* window) {
         else return false; // App shortcuts, including arrows and fullscreen, stay active.
         return true;
     } else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
-        float dy = e.wheel.y * (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1);
+        float dy = UIScrollWheel::deltaY(e.wheel);
         if (dy != 0) pageBy(dy < 0 ? 1 : -1);
         return true;
     } else if (pointer) {
