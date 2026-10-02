@@ -14,8 +14,18 @@ import host
 
 def main():
     executable = Path(sys.executable).resolve()
-    rendepth = executable.parents[1] / "MacOS" / "Rendepth"
     try:
+        # The onedir host is a nested app in Rendepth.app/Contents/Helpers.
+        # Keep Python.framework inside that signed app instead of extracting it
+        # to a fresh, unnotarized temporary directory on every browser request.
+        if (executable.parent.name != "MacOS" or
+                executable.parents[1].name != "Contents" or
+                executable.parents[2].name != "RendepthNativeHost.app" or
+                executable.parents[3].name != "Helpers" or
+                executable.parents[4].name != "Contents" or
+                executable.parents[5].name != "Rendepth.app"):
+            raise ValueError("The Rendepth browser host is outside its application bundle")
+        rendepth = executable.parents[4] / "MacOS" / "Rendepth"
         if not rendepth.is_file() or not os.access(rendepth, os.X_OK):
             raise ValueError("The Rendepth application is missing or not executable")
         host.run(rendepth)
