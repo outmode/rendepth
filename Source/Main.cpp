@@ -3498,6 +3498,11 @@ struct ExportSaveJob {
 	SaveFormat format = SaveFormat::JPG;
 	std::vector<std::pair<std::filesystem::path, std::string>> destinations;
 	std::string displayName;
+	// Browser media has no source filename. Allocate its number on the save
+	// thread so queued exports and previous sessions cannot reuse a filename.
+	std::string numberedStem;
+	std::string numberedSuffix;
+	std::string numberedDisplayAction;
 	bool batch = false;
 };
 
@@ -3538,7 +3543,21 @@ static int exportSaveWorker(void*) {
 						path.parent_path().string().c_str(), error.message().c_str());
 					continue;
 				}
-				const auto utf8Path = path.u8string();
+				auto outputPath = path;
+				if (!job.numberedStem.empty()) {
+					std::error_code existsError;
+					for (unsigned long number = 1; ; ++number) {
+						const auto name = std::format("{}_{:03}", job.numberedStem, number);
+						outputPath = path.parent_path() / (name + job.numberedSuffix);
+						if (!std::filesystem::exists(outputPath, existsError)) {
+							if (existsError) throw std::filesystem::filesystem_error(
+								"Could not inspect export path", outputPath, existsError);
+							result.displayName = name + job.numberedDisplayAction;
+							break;
+						}
+					}
+				}
+				const auto utf8Path = outputPath.u8string();
 				const std::string pathString(reinterpret_cast<const char*>(utf8Path.data()), utf8Path.size());
 				if (!saveExportImage(job.surface, pathString.c_str(), job.format)) {
 					SDL_Log("Could not save export to %s: %s", pathString.c_str(), SDL_GetError());
@@ -3659,20 +3678,28 @@ static void saveFile() {
 			gridInfo = "9x8a" + aspect;
 		}
 
-		outFileName = exportBaseName(context.fileName);
+		const auto sourcePath = std::filesystem::path(context.fileLink);
+		const bool browserPhoto = !browserImagePath.empty() && sourcePath == browserImagePath;
+		const bool browserVideo = browserCapture && activeScreenCapture;
+		outFileName = browserPhoto ? "Web_Photo" : browserVideo ? "Web_Video" :
+			exportBaseName(context.fileName);
 		if (lastVideoFrame != nullptr && (activeScreenCapture ||
 			(activeVideo && lastVideoFrame->generation == videoPlayer.generation()))) {
 			outFileName += formatVideoTimeTag(lastVideoFrame->presentationTime);
 		}
 		const std::filesystem::path outFilePath = outFileName + "_" + exportTag +
 			gridInfo + saveExtension();
+		if (browserPhoto || browserVideo) {
+			job.numberedStem = outFileName;
+			job.numberedSuffix = "_" + exportTag + gridInfo + saveExtension();
+			job.numberedDisplayAction = exportFormat == Color_Only ? " to 2D" : " to 3D";
+		}
 
-		const auto sourcePath = std::filesystem::path(context.fileLink);
 		// Disc, capture, and browser photo sources have no persistent writable folder.
 		const bool exportToUserFolder = videoPlayer.discSource() || activeScreenCapture ||
 			isOpticalDiscPath(sourcePath) ||
 			(!selectedDiscPath.empty() && sourcePath == selectedDiscPath) ||
-			(!browserImagePath.empty() && sourcePath == browserImagePath);
+			browserPhoto;
 		std::vector<std::pair<std::filesystem::path, std::string>> exportDirectories;
 		const auto addExportDirectory = [&](std::filesystem::path parent, std::string location) {
 			if (parent.empty()) return;
