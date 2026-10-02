@@ -323,6 +323,8 @@ static bool leftClickConsumedByUI = false;
 auto lastSwitchTime = 0.0;
 auto mouseLastActive = 0.0;
 auto mouseMoveWait = 3.0;
+static bool mainButtonPulseUsed = false;
+static double mainButtonPulseStartedAt = -1.0;
 auto displayInfoTime = 0.0;
 auto displayInfoEnabled = true;
 auto showDisplayInfoOnce = false;
@@ -430,6 +432,7 @@ static void failVideoLoad(const std::string& error, const char* fallbackText) {
 	lastVideoFrame.reset();
 	activeVideo = false;
 	videoFrameLoaded = false;
+	mainButtonPulseStartedAt = -1.0;
 	setVideoControlsVisible(false);
 	setDisplay3D(false);
 	setStereoMode(Native);
@@ -1810,7 +1813,7 @@ static bool downloadBlocksInput() {
 }
 
 Choice ChoiceVersion {
-	.label = "Rendepth 3.0.1 (Free Version)",
+	.label = "Rendepth 3.0.2 (Free Version)",
 	.options = {},
 	.inlineText = true,
 	.bold = true,
@@ -3214,6 +3217,12 @@ static std::vector appIcons = { IconLoading, IconMinimize, IconFullscreen, IconO
 	IconVideoAudio, IconVideoCaption, IconHelp, IconClose };
 // IconScreenCapture is intentionally omitted for launch; keep its implementation for later.
 
+// Keep the empty viewer's controls visible until the Options menu opens.
+static bool persistentEmptyScreenButton(IconType type) {
+	return fileList.empty() && !activeScreenCapture && !context.displayMenu &&
+		(type == IconType::File || type == IconType::Minimize || type == IconType::Close);
+}
+
 // Finish or cancel slider scrubbing, restore playback, and release mouse capture.
 static void finishSliderDrag(bool commitSeek) {
 	const bool volumeSliderChanged = currentSlider != nullptr &&
@@ -4437,6 +4446,7 @@ static void stopCapture() {
 	activeScreenCapture = false;
 	activeVideo = false;
 	videoFrameLoaded = false;
+	mainButtonPulseStartedAt = -1.0;
 	lastVideoFrame.reset();
 	resetVideoPlaybackBuffer(false);
 	setVideoControlsVisible(false);
@@ -5019,7 +5029,7 @@ static void refreshLicenseMenu(bool rebuild) {
         menuSelection[label] = -1; menuRollover[label] = -1;
         original.label = label;
     };
-    rename(ChoiceVersion, licensed ? "Rendepth 3.0.1 (Pro License)" : "Rendepth 3.0.1 (Free Version)");
+    rename(ChoiceVersion, licensed ? "Rendepth 3.0.2 (Pro License)" : "Rendepth 3.0.2 (Free Version)");
     rename(ChoiceLicense, licensed ? "Manage Rendepth Pro License" : "Upgrade to Rendepth Pro");
     if (rebuild) {
         Image::initMenuTexture();
@@ -5045,7 +5055,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	context.appName = "Rendepth";
 	// Keep the desktop entry name, Wayland app_id, and X11 window class aligned
 	// so the running window is grouped under the installed launcher icon.
-	SDL_SetAppMetadata("Rendepth", "3.0.1", "rendepth");
+	SDL_SetAppMetadata("Rendepth", "3.0.2", "rendepth");
 	context.windowSize = { 1920, 1080 };
 	context.appIcons = &appIcons;
 	context.menuChoices = &menuChoices;
@@ -5158,6 +5168,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 #endif
 
 	hideUI();
+	checkMouseState();
 
 	// File associations open their media directly; an ordinary launch opens the welcome page.
 	if (fileToLoad.empty() && !GettingStarted::dontShowAgain) GettingStarted::show();
@@ -5792,6 +5803,26 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		}
 	}
 
+	// Introduce the available controls after the first real media frame appears.
+	// Keep the intro pending while the startup guide covers the viewer.
+	if (!mainButtonPulseUsed && !GettingStarted::visible && !discTitleMenu.visible() &&
+		!context.loading &&
+		((activeScreenCapture && videoFrameLoaded) ||
+			(activeVideo && (videoFrameLoaded || videoPlayer.audioOnly())) ||
+			(!activeVideo && !fileList.empty() && !context.fileLink.empty()))) {
+		mainButtonPulseUsed = true;
+		mainButtonPulseStartedAt = timeNow;
+		checkMouseState();
+	}
+	constexpr double mainButtonPulseDuration = 2.0;
+	const double pulseElapsed = timeNow - mainButtonPulseStartedAt;
+	if (mainButtonPulseStartedAt >= 0.0 && pulseElapsed >= mainButtonPulseDuration) {
+		mainButtonPulseStartedAt = -1.0;
+		checkMouseState();
+	}
+	const bool mainButtonPulseActive = mainButtonPulseStartedAt >= 0.0;
+	const double pulsePhase = pulseElapsed - std::floor(pulseElapsed);
+	const double pulseOpacity = 0.5 - 0.5 * std::cos(2.0 * 3.14159265358979323846 * pulsePhase);
 	static auto iconVisibilitySpeed = 16.0;
 
 	for (auto& icon : appIcons) {
@@ -5807,7 +5838,10 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 				!isPlayingSlideshow) ? 1.0 : 0.0;
 		}
 		icon.visibility = Utils::tween(icon.visibility, iconTargetVisibility, iconVisibilitySpeed * deltaAverage);
-		if (icon.type == IconType::File && fileList.empty() && !activeScreenCapture)
+		if (mainButtonPulseActive && icon.active && icon.mode == IconMode::Button &&
+			icon.type != IconType::Loading && icon.state != IconState::Over)
+			icon.visibility = pulseOpacity;
+		if (persistentEmptyScreenButton(icon.type))
 			icon.visibility = 1.0;
 	}
 
@@ -6130,7 +6164,8 @@ void checkMouseState() {
 			(!activeVideo && !activeScreenCapture && !discBrowser && !context.loading &&
 				!fileList.empty() && fileIndex >= 0 && fileIndex < static_cast<int>(fileList.size()) &&
 				isSupportedImage(fileList[fileIndex].link));
-		auto displayOpen = !((icon.type != IconType::File && icon.type != IconType::Close &&
+		auto displayOpen = !((icon.type != IconType::File && icon.type != IconType::Options &&
+			icon.type != IconType::Close &&
 			icon.type != IconType::Minimize &&
 			icon.type != IconType::Crop)
 			&& fileList.empty() && !activeScreenCapture);
@@ -6159,30 +6194,30 @@ void checkMouseState() {
 				(fileList[fileIndex].type != Color_Plus_Depth &&
 					exportFormat == Color_Plus_Depth && !videoDepthReady)));
 		}
+		const bool videoOnlyControl = icon.type == IconType::VideoSeek ||
+				icon.type == IconType::VideoVolume || icon.type == IconType::VideoAudio ||
+				icon.type == IconType::VideoCaption;
+		const bool videoPlayControl = activeVideo &&
+				(icon.type == IconType::Play || icon.type == IconType::Pause);
+		const bool displayVideo = videoOnlyControl
+				? activeVideo && videoControlsVisible
+				: (!videoPlayControl || videoControlsVisible);
+		const bool displayCaptureNavigation = !(activeScreenCapture &&
+				(icon.type == IconType::Back || icon.type == IconType::Forward ||
+					icon.type == IconType::Play || icon.type == IconType::Pause));
+		const bool displayFileNavigation = (discBrowser ? discTitleMenu.hasPages() : fileList.size() > 1) ||
+				(icon.type != IconType::Back && icon.type != IconType::Forward);
+		const bool available = displayLoading && displaySettings && displayStereo && displayParallax &&
+			displayOpen && displaySave && displayMenu && displayXD && displayVideo &&
+			displayCaptureFileActions && displayFileNavigation && displayDiscControl && displayBatch &&
+			displayCaptureNavigation &&
+			(icon.type != IconType::TrackSelection || canShowTrackSelection());
 		if (withinArea(context.mouse, getCoordinates(icon.canvas().topLeft, aspectScale),
 			getCoordinates(icon.canvas().bottomRight, aspectScale))) {
 			if (icon.type == IconType::Folder)
 				icon.label = "Batch Convert to " + getExportDisplayName();
 			icon.state = IconState::Near;
-			const bool videoOnlyControl = icon.type == IconType::VideoSeek ||
-				icon.type == IconType::VideoVolume || icon.type == IconType::VideoAudio ||
-				icon.type == IconType::VideoCaption;
-			const bool videoPlayControl = activeVideo &&
-				(icon.type == IconType::Play || icon.type == IconType::Pause);
-		const bool displayVideo = videoOnlyControl
-				? activeVideo && videoControlsVisible
-				: (!videoPlayControl || videoControlsVisible);
-			const bool displayCaptureNavigation = !(activeScreenCapture &&
-				(icon.type == IconType::Back || icon.type == IconType::Forward ||
-					icon.type == IconType::Play || icon.type == IconType::Pause));
-			const bool displayFileNavigation = (discBrowser ? discTitleMenu.hasPages() : fileList.size() > 1) ||
-				(icon.type != IconType::Back && icon.type != IconType::Forward);
-			icon.active = displayLoading && displaySettings && displayStereo && displayParallax &&
-				displayOpen && displaySave && displayMenu && displayXD && displayVideo &&
-				displayCaptureFileActions && displayFileNavigation && displayDiscControl && displayBatch &&
-				(icon.type != IconType::TrackSelection || canShowTrackSelection());
-			icon.active = icon.active && displayCaptureNavigation;
-			if (icon.type == IconType::Loading) icon.active = true;
+			icon.active = available || icon.type == IconType::Loading;
 			auto iconPosition = getCoordinates(
 				{icon.canvas().position * aspectScale
 					+ icon.slider.position * aspectScale,
@@ -6243,10 +6278,10 @@ void checkMouseState() {
 				isIconCaptured = true;
 				continue;
 			}
-			if (icon.type != IconType::Loading &&
-				!(icon.type == IconType::File && fileList.empty() && !activeScreenCapture)) {
+			if (icon.type != IconType::Loading && !persistentEmptyScreenButton(icon.type)) {
 				icon.state = IconState::Idle;
-				icon.active = false;
+				icon.active = mainButtonPulseStartedAt >= 0.0 && available &&
+					icon.mode == IconMode::Button;
 			} else {
 				icon.active = true;
 			}
@@ -7527,7 +7562,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 								if (icon.callback) callbackQueue.push_back(icon.callback);
 							} else if (icon.callback && allowCallback) {
 								icon.callback();
-								if (icon.type == IconType::Settings)
+								if (icon.type == IconType::Settings || icon.type == IconType::Options)
 									refreshMouseStateAfterClick = true;
 							}
 						} else if (icon.mode == IconMode::Slider) {

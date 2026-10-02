@@ -20,7 +20,7 @@ cmake -S . -B cmake-build-mac-export-ninja -G Ninja \
   -DPKG_CONFIG_EXECUTABLE=/opt/homebrew/bin/pkg-config \
   -DRENDEPTH_ONNXRUNTIME_DIR="$PWD/Runtimes/onnxruntime-osx-arm64-1.30.0"
 SDKROOT="$(xcrun --show-sdk-path)" \
-  cmake --build cmake-build-mac-export-ninja --target Rendepth -j16
+  cmake --build cmake-build-mac-export-ninja --target Rendepth --parallel 14
 
 python3.13 -m venv /private/tmp/rendepth-host-venv
 /private/tmp/rendepth-host-venv/bin/pip install pyinstaller==6.22.3
@@ -41,14 +41,14 @@ python3 Packaging/Mac/BuildInstaller.py \
   --ca-bundle /opt/homebrew/etc/ca-certificates/cert.pem \
   --application-identity 'Developer ID Application: Outmode LLC (PZBA2JJ2RQ)' \
   --installer-identity 'Developer ID Installer: Outmode LLC (PZBA2JJ2RQ)' \
-  --signed-bundle-output Distribution/3.0.1/macOS/Rendepth.app \
-  --output Distribution/3.0.1/macOS/Rendepth-3.0.1.pkg
+  --signed-bundle-output Distribution/3.0.2/macOS/Rendepth.app \
+  --output Distribution/3.0.2/macOS/Rendepth-3.0.2.pkg
 
-pkgutil --check-signature Distribution/3.0.1/macOS/Rendepth-3.0.1.pkg
-xcrun notarytool submit Distribution/3.0.1/macOS/Rendepth-3.0.1.pkg \
+pkgutil --check-signature Distribution/3.0.2/macOS/Rendepth-3.0.2.pkg
+xcrun notarytool submit Distribution/3.0.2/macOS/Rendepth-3.0.2.pkg \
   --keychain-profile rendepth-notary --wait
-xcrun stapler staple Distribution/3.0.1/macOS/Rendepth-3.0.1.pkg
-xcrun stapler validate Distribution/3.0.1/macOS/Rendepth-3.0.1.pkg
+xcrun stapler staple Distribution/3.0.2/macOS/Rendepth-3.0.2.pkg
+xcrun stapler validate Distribution/3.0.2/macOS/Rendepth-3.0.2.pkg
 ```
 
 Before the first notarization, create an Apple Account app-specific password and
@@ -71,7 +71,7 @@ extensions to Finder as an alternate viewer. This makes Rendepth available in
 documents to SDL's file-open event handler.
 
 The builder reads the package version from the app's `Info.plist`, sets the
-Installer title to `Rendepth 3.0.1`, and presents the same
+Installer title to `Rendepth 3.0.2`, and presents the same
 `Legal/RENDEPTH_APP_LICENSE` text used by the Windows installer on macOS's
 License screen. Installer provides its standard Agree and Disagree controls.
 The builder embeds the
