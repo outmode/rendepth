@@ -97,6 +97,22 @@ def send(message):
     sys.stdout.buffer.flush()
 
 
+def wait_for_image_disconnect(input_stream):
+    # Keep the native port open until Firefox has received image-opened and
+    # closed it. Exiting immediately can deliver a disconnect before the final
+    # response on Windows. Bound the wait if the browser never closes the port.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        ready = (winbridge.input_ready(input_stream) if os.name == "nt" else
+                 select.select([input_stream], [], [], 0.05)[0])
+        if ready:
+            if read_message(input_stream) is None:
+                return
+            raise ValueError("Unexpected image message after completion")
+        if os.name == "nt":
+            time.sleep(0.05)
+
+
 def validate_offer(message):
     if message.get("transport") != "webrtc-vp8":
         raise ValueError("Reload the Rendepth extension: this host requires WebRTC video")
@@ -316,6 +332,7 @@ def run(executable):
                     image_transfer.save(directory)
                     attach(executable, directory, image_transfer.format, image_transfer.swap, image=True)
                     send({"action": "image-opened"})
+                    wait_for_image_disconnect(input_stream)
                     return
                 raise ValueError("Unexpected image message")
             if message.get("action") == "navigate" and started:

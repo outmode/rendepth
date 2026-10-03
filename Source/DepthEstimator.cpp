@@ -65,6 +65,13 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 		"and rebuild with RENDEPTH_ENABLE_ONNX_RUNTIME=ON.";
 	return false;
 #else
+	#ifndef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	const std::string runtimeVersion = OrtGetApiBase()->GetVersionString();
+	if (runtimeVersion.rfind("1.22.", 0) != 0) {
+		error = "Rendepth requires ONNX Runtime 1.22.x; loaded " + runtimeVersion + ".";
+		return false;
+	}
+	#endif
 	if (config.modelPath.empty() || !std::filesystem::is_regular_file(config.modelPath)) {
 		error = "Depth model was not found: " + config.modelPath.string();
 		return false;

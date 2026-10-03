@@ -85,6 +85,13 @@ bool load(Provider backend, std::string& error) {
     using GetApiBase = const OrtApiBase* (ORT_API_CALL*)();
     auto getApiBase = reinterpret_cast<GetApiBase>(dlsym(handle, "OrtGetApiBase"));
     const OrtApiBase* base = getApiBase ? getApiBase() : nullptr;
+    const std::string version = base ? base->GetVersionString() : "";
+    if (version.rfind("1.22.", 0) != 0) {
+        error = "ONNX Runtime pack must be 1.22.x; found " +
+            (version.empty() ? "an unknown version" : version) + " in " + path.string();
+        dlclose(handle);
+        return false;
+    }
     const OrtApi* api = base ? base->GetApi(ORT_API_VERSION) : nullptr;
     if (!api) {
         error = "Incompatible ONNX Runtime in " + path.string() +

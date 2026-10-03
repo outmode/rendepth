@@ -176,6 +176,23 @@ bool loadRuntime() {
     return false;
 }
 
+// The MSVC delay-load helper raises a structured exception for a missing DLL
+// or export. /EHsc's C++ catch below does not handle those exceptions.
+int handleMissingDelayedImport(unsigned code) {
+    return code == 0xC06D007E || code == 0xC06D007F
+        ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH;
+}
+
+SR::SRContext* createContext() {
+    __try {
+        return SR::SRContext::create(SR::SRContext::NetworkMode::NonBlockingClientMode);
+    } __except (handleMissingDelayedImport(GetExceptionCode())) {
+        SDL_Log("SR lenticular: missing delayed SDK DLL or export (exception 0x%08X)",
+                static_cast<unsigned>(GetExceptionCode()));
+        return nullptr;
+    }
+}
+
 void release() {
     if (activeWindow) SDL_Log("SR lenticular: fullscreen output disengaged");
     if (lens) {
@@ -213,7 +230,7 @@ bool initialize(SDL_Window* window, ID3D12Resource* source, ID3D12Resource* back
     try {
         // Let the runtime discover compatible hardware. Fail promptly if its
         // service is unavailable instead of waiting for a connection.
-        context.reset(SR::SRContext::create(SR::SRContext::NetworkMode::NonBlockingClientMode));
+        context.reset(createContext());
         if (!context) {
             SDL_Log("SR lenticular: SRContext::create returned null");
             release();
@@ -266,6 +283,10 @@ bool initialize(SDL_Window* window, ID3D12Resource* source, ID3D12Resource* back
         return true;
     } catch (const std::exception& e) {
         SDL_Log("SR lenticular initialization failed: %s", e.what());
+        release();
+        return false;
+    } catch (...) {
+        SDL_Log("SR lenticular initialization failed with an unknown exception");
         release();
         return false;
     }
@@ -371,6 +392,13 @@ bool LenticularBridge::weave(SDL_GPUCommandBuffer* command, SDL_Window* window,
         // Keep them alive until fullscreen exits, after SDL's frame fence.
         if (lens) {
             try { lens->disable(); } catch (const std::exception&) { }
+        }
+        weaveFailed = true;
+        return false;
+    } catch (...) {
+        SDL_Log("SR lenticular weave failed with an unknown exception");
+        if (lens) {
+            try { lens->disable(); } catch (...) { }
         }
         weaveFailed = true;
         return false;

@@ -51,6 +51,13 @@ bool SuperResolution::load(const Config& config, std::string& error) {
 	error = "ONNX Runtime support is not enabled.";
 	return false;
 #else
+	#ifndef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	const std::string runtimeVersion = OrtGetApiBase()->GetVersionString();
+	if (runtimeVersion.rfind("1.22.", 0) != 0) {
+		error = "Rendepth requires ONNX Runtime 1.22.x; loaded " + runtimeVersion + ".";
+		return false;
+	}
+	#endif
 	if (config.modelPath.empty() || !std::filesystem::is_regular_file(config.modelPath)) {
 		error = "SR model was not found: " + config.modelPath.string();
 		return false;

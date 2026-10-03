@@ -347,6 +347,7 @@ SDL_Thread* depthGenThread = nullptr;
 std::atomic<bool> depthGenAlive (false);
 std::atomic<bool> doneLoadingImage (false);
 std::atomic<bool> depthGenerationError (false);
+static std::atomic<const char*> depthGenerationErrorText{"Could Not Generate Image Depth"};
 std::atomic<bool> doingFileOp (false);
 std::atomic<bool> doingPreload (false);
 std::vector<std::function<void()>> callbackQueue{};
@@ -370,7 +371,7 @@ auto swapLeftRight = false;
 auto mouseLeftWindow = false;
 auto mouseStateInitialized = false;
 auto mouseIsDown = false;
-auto showGoFullScreenOnce = true;
+	auto showGoFullScreenOnce = true;
 auto deltaIndex = 0;
 const int deltaCount = 16;
 std::array<double, deltaCount> deltaTimes{};
@@ -2487,43 +2488,6 @@ static void refreshInferenceSettings() {
 }
 
 #endif
-#if defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME) || defined(__APPLE__)
-// Native dialogs take focus from an exclusive fullscreen window. Keep SDL from
-// minimizing the owner until the dialog has closed, then restore the old hint.
-class FullscreenMessageBoxGuard {
-public:
-	FullscreenMessageBoxGuard() {
-		const char* previous = SDL_GetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS);
-		hadPrevious_ = previous != nullptr;
-		if (previous) previous_ = previous;
-		SDL_SetHintWithPriority(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0", SDL_HINT_OVERRIDE);
-	}
-	~FullscreenMessageBoxGuard() {
-		if (hadPrevious_)
-			SDL_SetHintWithPriority(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS,
-				previous_.c_str(), SDL_HINT_OVERRIDE);
-		else
-			SDL_ResetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS);
-	}
-	FullscreenMessageBoxGuard(const FullscreenMessageBoxGuard&) = delete;
-	FullscreenMessageBoxGuard& operator=(const FullscreenMessageBoxGuard&) = delete;
-
-private:
-	std::string previous_;
-	bool hadPrevious_ = false;
-};
-
-static bool showAppMessageBox(const SDL_MessageBoxData& dialog, int* selected) {
-	const FullscreenMessageBoxGuard guard;
-	return SDL_ShowMessageBox(&dialog, selected);
-}
-
-static bool showAppSimpleMessageBox(SDL_MessageBoxFlags flags, const char* title,
-		const char* message, SDL_Window* window) {
-	const FullscreenMessageBoxGuard guard;
-	return SDL_ShowSimpleMessageBox(flags, title, message, window);
-}
-#endif
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 
 // Persist an explicit inference-engine choice and indicate whether it needs an application restart.
@@ -2537,7 +2501,7 @@ static void changeInference(int option) {
 #if defined(_WIN32) || defined(__linux__)
 	if (runtimePackInstall.thread != nullptr) {
 		menuSelection[ChoiceInference.label] = committedInferenceOption;
-		showAppSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "GPU Runtime Packs",
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "GPU Runtime Packs",
 			"A GPU pack installation is in progress. Open GPU Support to view or cancel it.", context.window);
 		return;
 	}
@@ -2559,7 +2523,7 @@ static void changeInference(int option) {
 		const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_INFORMATION, context.window,
 			"Install GPU Runtime Pack", message.c_str(), static_cast<int>(std::size(buttons)), buttons, nullptr };
 		int selected = 0;
-		if (!showAppMessageBox(dialog, &selected) || selected != 1) return;
+		if (!SDL_ShowMessageBox(&dialog, &selected) || selected != 1) return;
 		runtimePackInstall.root = InferenceRuntime::packDirectory();
 		runtimePackInstall.option = option;
 		runtimePackInstall.error.clear();
@@ -2587,7 +2551,7 @@ static void changeInference(int option) {
 		};
 		runtimePackInstall.thread = SDL_CreateThread(installRuntimePack, "RuntimePackInstall", &runtimePackInstall);
 		if (!runtimePackInstall.thread)
-			showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs",
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs",
 				"Could not start the GPU pack download thread.", context.window);
 		return;
 	}
@@ -2614,7 +2578,7 @@ static void openDataFolder() {
 	std::error_code error;
 	if (!homePath.empty()) std::filesystem::create_directories(homePath, error);
 	if (homePath.empty() || error) {
-		showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Rendepth Data Folder",
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Rendepth Data Folder",
 			"Could not create the Rendepth data folder.", context.window);
 		return;
 	}
@@ -2631,7 +2595,7 @@ static void openDataFolder() {
 		else { url += '%'; url += hex[c >> 4]; url += hex[c & 15]; }
 	}
 	if (!SDL_OpenURL(url.c_str()))
-		showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Rendepth Data Folder", SDL_GetError(), context.window);
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Rendepth Data Folder", SDL_GetError(), context.window);
 }
 #endif
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
@@ -2655,7 +2619,7 @@ static void runtimeTools(int option) {
 		const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_INFORMATION, context.window,
 			"GPU Runtime Packs", message.c_str(), static_cast<int>(std::size(buttons)), buttons, nullptr };
 		int selected = 0;
-		if (showAppMessageBox(dialog, &selected) && selected == 1)
+		if (SDL_ShowMessageBox(&dialog, &selected) && selected == 1)
 			runtimePackInstall.cancel = true;
 		return;
 	}
@@ -2688,7 +2652,7 @@ static void runtimeTools(int option) {
 		static_cast<int>(std::size(buttons)), buttons, nullptr
 	};
 	int selected = -1;
-	if (showAppMessageBox(dialog, &selected) && selected >= 0 && selected <= 2)
+	if (SDL_ShowMessageBox(&dialog, &selected) && selected >= 0 && selected <= 2)
 		changeInference(selected);
 }
 
@@ -2723,10 +2687,10 @@ static void pollRuntimePackInstall() {
 	if (runtimePackInstall.success) {
 		const int option = runtimePackInstall.option;
 		changeInference(option);
-		showAppSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "GPU Runtime Packs",
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "GPU Runtime Packs",
 			"GPU pack installed. Restart Rendepth to use the selected AI engine.", context.window);
 	} else if (!runtimePackInstall.cancel.load()) {
-		showAppSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs",
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "GPU Runtime Packs",
 			runtimePackInstall.error.c_str(), context.window);
 	}
 }
@@ -2820,6 +2784,20 @@ static void showInfoTip(const std::string& text) {
 	Image::displayInfo = true;
 	Image::infoTargetVisibility = 1.0;
 	displayInfoTime = getTimeNow();
+}
+
+// Remind the user after any loading tip has cleared, including when already maximized.
+static void showFullscreen3DPromptIfReady() {
+	if (!showGoFullScreenOnce || !isMaximized || isFullscreen || !display3D ||
+		isConverting || context.loading || Image::displayTip || Image::displayHelp ||
+		context.displayMenu || GettingStarted::visible || discTitleMenu.visible()) return;
+	if (preferredStereoMode != SBS_Full && !isHalfSbsPreference(preferredStereoMode) &&
+		preferredStereoMode != RGB_Depth) return;
+	Core::drawText(&context, "Go Fullscreen to Enable 3D",
+		Image::helpFont, Image::helpTexture, Image::helpTextSize, "Help Texture");
+	Image::displayTip = true;
+	displayTipTime = getTimeNow();
+	showGoFullScreenOnce = false;
 }
 
 // Describe the timeline position, duration, and chapter or audio-CD track for the seek tooltip.
@@ -3293,10 +3271,9 @@ static void updateVideoSlider() {
 	if (!activeVideo) return;
 	auto& timeline = getIcon(IconType::VideoSeek);
 	const auto scale = std::max(context.displayScale, 0.01f);
-	// SBS Full doubles the displayed horizontal view. Keep the video control
-	// group in the same logical half-width so its buttons do not spread across
-	// both views.
-	const auto controlWidthScale = preferredStereoMode == SBS_Full ? 0.5f : 1.0f;
+	// Only fullscreen SBS Full splits the display into two views. Keep the
+	// controls at normal width while the window is showing a single view.
+	const auto controlWidthScale = context.mode == SBS_Full && context.fullscreen ? 0.5f : 1.0f;
 	const auto preferredWidth = style.getIconDragger(Style::getCurrentScale()) *
 		12.0f * controlWidthScale;
 	const auto thumbDiameter = style.getIconSlider(Style::getCurrentScale()) * 2.0f;
@@ -5040,6 +5017,8 @@ static void refreshLicenseMenu(bool rebuild) {
 
 // Initialize application services, the SDL window and GPU, preferences, and the initial media source.
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
+	// Keep fullscreen visible when a native dialog or another application takes focus.
+	SDL_SetHintWithPriority(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0", SDL_HINT_OVERRIDE);
 #if defined(__APPLE__) && defined(RENDEPTH_ENABLE_ONNX_RUNTIME)
 	// ORT's POSIX telemetry uploader can race library teardown and abort on exit.
 	// Suppress it before the first Ort::Env creates the uploader worker.
@@ -5775,15 +5754,6 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		}
 		if (rapidBrowseMode && display3D)
 			setDisplay3D(false);
-		if (display3D && !isFullscreen && showGoFullScreenOnce && (context.mode == SBS_Full ||
-				context.mode == SBS_Half || context.mode == RGB_Depth)) {
-			Core::drawText(&context, "Go Full-Screen to View in Stereo",
-				Image::helpFont, Image::helpTexture,
-				Image::helpTextSize, "Help Texture");
-			Image::displayTip = true;
-			displayTipTime = getTimeNow();
-			showGoFullScreenOnce = false;
-		}
 	} else if (doingPreload && asyncData.done.load(std::memory_order_acquire)) {
 		endPreload(true);
 	}
@@ -6037,9 +6007,10 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		preloadDepthIndex = -1;
 		isSpeculativeDepth = false;
 		SDL_SetWindowTitle(context.window, context.appName);
-		Core::drawText(&context, "Could Not Load Media", Image::helpFont, Image::helpTexture,
+		Core::drawText(&context, depthGenerationErrorText.load(), Image::helpFont, Image::helpTexture,
 			Image::helpTextSize, "Help Texture");
-		Image::displayHelp = true;
+		Image::displayTip = true;
+		displayTipTime = getTimeNow();
 		depthGenerationError = false;
 	}
 
@@ -6059,6 +6030,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		}
 	}
 	processBatchExport();
+	showFullscreen3DPromptIfReady();
 
 	if (windowDraggable && isFullscreen && SDL_GetMouseFocus() == context.window) {
 		auto mouseX = 0.0f, mouseY = 0.0f;
@@ -6278,8 +6250,9 @@ void checkMouseState() {
 				isIconCaptured = true;
 				continue;
 			}
-			if (icon.type != IconType::Loading && !persistentEmptyScreenButton(icon.type)) {
+			if (icon.type != IconType::Loading)
 				icon.state = IconState::Idle;
+			if (icon.type != IconType::Loading && !persistentEmptyScreenButton(icon.type)) {
 				icon.active = mainButtonPulseStartedAt >= 0.0 && available &&
 					icon.mode == IconMode::Button;
 			} else {
@@ -6945,8 +6918,9 @@ static int nativeDepthRun(void* ptr) {
 				depthGenAlive = false;
 				return 0;
 			}
-			std::cerr << "Native depth model download failed: "
-				<< nativeDepthEstimatorError << '\n';
+			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Native depth model download failed: %s",
+				nativeDepthEstimatorError.c_str());
+			depthGenerationErrorText = "Could Not Download Depth Model";
 			depthGenerationError = true;
 			depthGenAlive = false;
 			return 0;
@@ -6967,8 +6941,9 @@ static int nativeDepthRun(void* ptr) {
 	}
 	if (!nativeDepthEstimatorLoaded) {
 		SDL_DestroySurface(suppliedSurface);
-		std::cerr << "Native depth model failed to load: "
-			<< nativeDepthEstimatorError << '\n';
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Native depth model failed to load: %s",
+			nativeDepthEstimatorError.c_str());
+		depthGenerationErrorText = "Could Not Load Depth Model";
 		depthGenerationError = true;
 		depthGenAlive = false;
 		return 0;
@@ -7019,6 +6994,9 @@ static int nativeDepthRun(void* ptr) {
 		}
 	}
 	if (!color) {
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not prepare image for depth: %s",
+			SDL_GetError());
+		depthGenerationErrorText = "Could Not Prepare Depth Image";
 		depthGenerationError = true;
 		depthGenAlive = false;
 		return 0;
@@ -7037,10 +7015,14 @@ static int nativeDepthRun(void* ptr) {
 		: nativeDepthOutputPath(inputPath);
 	bool saved = false;
 	if (output && !result.empty()) {
-		create_directories(result.parent_path());
-		saved = mode == REAL_TIME
-			? saveTemporaryRgbdSurface(output, result)
-			: IMG_SaveJPG(output, result.string().c_str(), 90);
+		std::error_code directoryError;
+		std::filesystem::create_directories(result.parent_path(), directoryError);
+		if (!directoryError)
+			saved = mode == REAL_TIME
+				? saveTemporaryRgbdSurface(output, result)
+				: IMG_SaveJPG(output, result.string().c_str(), 90);
+		if (directoryError) error = directoryError.message();
+		else if (!saved) error = SDL_GetError();
 	}
 	SDL_DestroySurface(output);
 	SDL_DestroySurface(depthSurface);
@@ -7049,7 +7031,15 @@ static int nativeDepthRun(void* ptr) {
 	if (saved) {
 		conversionCompleted(result.string().c_str(), imageId, generation);
 	} else {
-		std::cerr << "Native depth inference failed: " << error << '\n';
+		if (output != nullptr) {
+			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not save depth image to %s: %s",
+				result.string().c_str(), error.c_str());
+			depthGenerationErrorText = "Could Not Save Depth Image";
+		} else {
+			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Native depth inference failed: %s",
+				error.c_str());
+			depthGenerationErrorText = "Could Not Generate Image Depth";
+		}
 		depthGenerationError = true;
 	}
 	depthGenAlive = false;
@@ -7147,6 +7137,7 @@ static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int 
 		delete request;
 		depthGenAlive = false;
 		isConverting = false;
+		depthGenerationErrorText = "Could Not Start Depth Conversion";
 		depthGenerationError = true;
 		isSpeculativeDepth = false;
 		return 1;

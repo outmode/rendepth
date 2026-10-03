@@ -450,7 +450,7 @@ void Core::drawText(Context* context, const std::string& text, TTF_Font* font,
 // Find the user's home directory from the platform's environment variable.
 std::filesystem::path Core::getHomeDirectory() {
 #ifdef _WIN32
-	const char* homeDir = std::getenv("USERPROFILE");
+	const wchar_t* homeDir = _wgetenv(L"USERPROFILE");
 #else
 	const char* homeDir = std::getenv("HOME");
 #endif

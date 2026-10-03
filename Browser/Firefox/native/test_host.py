@@ -34,6 +34,19 @@ class ProtocolTest(unittest.TestCase):
     def ready_input(self):
         return patch.object(host.winbridge, "input_ready", return_value=True) if os.name == "nt" else nullcontext()
 
+    @unittest.skipUnless(os.name == "nt", "Windows native-port lifecycle test")
+    def test_photo_host_waits_for_browser_disconnect(self):
+        closed = threading.Event()
+        with patch.object(host.winbridge, "input_ready", side_effect=lambda _: closed.is_set()):
+            worker = threading.Thread(target=host.wait_for_image_disconnect, args=(io.BytesIO(),))
+            worker.start()
+            try:
+                self.assertTrue(worker.is_alive(), "Photo host exited before Firefox closed the port")
+            finally:
+                closed.set()
+                worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+
     @unittest.skipUnless(os.name == "nt", "Windows file-sharing test")
     def test_publish_waits_for_state_reader(self):
         with tempfile.TemporaryDirectory() as temporary:
