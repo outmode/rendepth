@@ -53,8 +53,13 @@ bool SuperResolution::load(const Config& config, std::string& error) {
 #else
 	#ifndef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	const std::string runtimeVersion = OrtGetApiBase()->GetVersionString();
-	if (runtimeVersion.rfind("1.22.", 0) != 0) {
-		error = "Rendepth requires ONNX Runtime 1.22.x; loaded " + runtimeVersion + ".";
+	#ifdef RENDEPTH_ENABLE_COREML
+	constexpr const char* requiredVersion = "1.30.";
+	#else
+	constexpr const char* requiredVersion = "1.22.";
+	#endif
+	if (runtimeVersion.rfind(requiredVersion, 0) != 0) {
+		error = "Rendepth requires ONNX Runtime " + std::string(requiredVersion) + "x; loaded " + runtimeVersion + ".";
 		return false;
 	}
 	#endif

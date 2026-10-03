@@ -10,7 +10,7 @@ find_path(RENDEPTH_ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
 if(NOT RENDEPTH_ONNXRUNTIME_INCLUDE_DIR)
     message(FATAL_ERROR "Provide RENDEPTH_ONNXRUNTIME_INCLUDE_DIR (ORT headers shared by all packs)")
 endif()
-rendepth_require_ort_122_headers("${RENDEPTH_ONNXRUNTIME_INCLUDE_DIR}")
+rendepth_require_ort_headers("${RENDEPTH_ONNXRUNTIME_INCLUDE_DIR}")
 if(NOT EXISTS "${RENDEPTH_CPU_RUNTIME_LIBRARY}")
     message(FATAL_ERROR "Set RENDEPTH_CPU_RUNTIME_LIBRARY to a CPU-only ONNX Runtime .so")
 endif()

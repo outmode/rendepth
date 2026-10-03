@@ -6,7 +6,7 @@ find_path(RENDEPTH_ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
 if(NOT RENDEPTH_ONNXRUNTIME_INCLUDE_DIR)
     message(FATAL_ERROR "Provide RENDEPTH_ONNXRUNTIME_DIR (ORT SDK headers shared by the packs)")
 endif()
-rendepth_require_ort_122_headers("${RENDEPTH_ONNXRUNTIME_INCLUDE_DIR}")
+rendepth_require_ort_headers("${RENDEPTH_ONNXRUNTIME_INCLUDE_DIR}")
 foreach(required lib/onnxruntime.dll LICENSE ThirdPartyNotices.txt)
     if(NOT EXISTS "${RENDEPTH_CPU_RUNTIME_DIR}/${required}")
         message(FATAL_ERROR "RENDEPTH_CPU_RUNTIME_DIR must name a CPU-only Windows x64 ORT SDK (missing ${required})")
@@ -18,7 +18,7 @@ endif()
 if(EXISTS "${RENDEPTH_CPU_RUNTIME_DIR}/lib/onnxruntime_providers_cuda.dll")
     message(FATAL_ERROR "Use a CPU-only SDK for RENDEPTH_CPU_RUNTIME_DIR; CUDA belongs in an optional pack")
 endif()
-rendepth_require_ort_122_headers("${RENDEPTH_CPU_RUNTIME_DIR}/include")
+rendepth_require_ort_headers("${RENDEPTH_CPU_RUNTIME_DIR}/include")
 
 add_library(RendepthInference INTERFACE)
 target_compile_definitions(RendepthInference INTERFACE
