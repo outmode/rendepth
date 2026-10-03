@@ -325,6 +325,7 @@ auto mouseLastActive = 0.0;
 auto mouseMoveWait = 3.0;
 static bool mainButtonPulseUsed = false;
 static double mainButtonPulseStartedAt = -1.0;
+static bool pulseIconAnimation = true;
 auto displayInfoTime = 0.0;
 auto displayInfoEnabled = true;
 auto showDisplayInfoOnce = false;
@@ -3908,6 +3909,7 @@ void saveOptions() {
 	document.AddMember(rapidjson::StringRef("runtimeDirectory"), runtimeDirValue, allocator);
 	document.AddMember(rapidjson::StringRef("videoVolume"), currentVideoVolume, allocator);
 	document.AddMember(rapidjson::StringRef("losslessDepthmaps"), losslessDepthmaps, allocator);
+	document.AddMember(rapidjson::StringRef("pulseIconAnimation"), pulseIconAnimation, allocator);
 	document.AddMember(rapidjson::StringRef("hideGettingStarted"), GettingStarted::dontShowAgain, allocator);
 	const auto lastStereo = std::find(stereoModes.begin(), stereoModes.end(), lastUsedStereoMode);
 	document.AddMember(rapidjson::StringRef("Last 3D Mode"),
@@ -3949,6 +3951,8 @@ void loadOptions() {
 	if (!document.IsObject()) return;
 	if (document.HasMember("hideGettingStarted") && document["hideGettingStarted"].IsBool())
 		GettingStarted::dontShowAgain = document["hideGettingStarted"].GetBool();
+	if (document.HasMember("pulseIconAnimation") && document["pulseIconAnimation"].IsBool())
+		pulseIconAnimation = document["pulseIconAnimation"].GetBool();
 #if defined(_WIN32) && defined(_MSC_VER)
 	const bool oldStereoModeLayout = !document.HasMember("3D Mode Layout Version") ||
 		!document["3D Mode Layout Version"].IsInt() ||
@@ -4505,6 +4509,8 @@ static std::string beginBrowserCapture(const BrowserBridge::Request& request) {
 	if (SDL_GetWindowFlags(context.window) & SDL_WINDOW_MINIMIZED)
 		SDL_RestoreWindow(context.window);
 	SDL_RaiseWindow(context.window);
+	mainButtonPulseUsed = true;
+	mainButtonPulseStartedAt = -1.0;
 	return {};
 }
 
@@ -5030,6 +5036,9 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	refreshLicenseMenu(false);
 	std::string fileToLoad{};
 	if (argc >= 2) fileToLoad = std::string(argv[1]);
+	// Opening media through the OS is already an intentional action; reserve the
+	// introduction pulse for media selected after an empty launch.
+	if (!fileToLoad.empty()) mainButtonPulseUsed = true;
 
 	context.appName = "Rendepth";
 	// Keep the desktop entry name, Wayland app_id, and X11 window class aligned
@@ -5508,6 +5517,8 @@ static std::string openBrowserImage(const BrowserBridge::Request& request) {
 	checkMouseState();
 	if (result != 0) return "Could not display the browser image.";
 	browserImagePath = path;
+	mainButtonPulseUsed = true;
+	mainButtonPulseStartedAt = -1.0;
 	if (SDL_GetWindowFlags(context.window) & SDL_WINDOW_MINIMIZED)
 		SDL_RestoreWindow(context.window);
 	SDL_RaiseWindow(context.window);
@@ -5775,7 +5786,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 
 	// Introduce the available controls after the first real media frame appears.
 	// Keep the intro pending while the startup guide covers the viewer.
-	if (!mainButtonPulseUsed && !GettingStarted::visible && !discTitleMenu.visible() &&
+	if (pulseIconAnimation && !mainButtonPulseUsed && !GettingStarted::visible && !discTitleMenu.visible() &&
 		!context.loading &&
 		((activeScreenCapture && videoFrameLoaded) ||
 			(activeVideo && (videoFrameLoaded || videoPlayer.audioOnly())) ||
