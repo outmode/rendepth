@@ -1,5 +1,26 @@
 # Linux inference packaging
 
+## Build a portable Ubuntu DEB
+
+Build the DEB in an Ubuntu 24.04 environment with its development libraries,
+including `libbluray-dev` and `libdvdread-dev`. A Fedora-built executable can
+require newer glibc and libstdc++ symbols and a different libbluray SONAME even
+when CPack writes a valid DEB. Renaming the package or changing its dependency
+list cannot make that executable compatible. Use a fresh Ubuntu build directory
+and the CPU runtime inputs described below, then package it with
+`cpack --config <build-directory>/CPackConfig.cmake -G DEB`.
+
+The DEB step checks every staged ELF file against the Ubuntu 24.04 glibc and
+libstdc++ ABI, requires the Ubuntu `libbluray.so.2` and `libdvdread.so.8`
+interfaces, rejects machine-specific RPATHs, and checks that the loader can
+resolve the packaged libraries. CPack uses `dpkg-shlibdeps` to derive exact
+system-library package names and minimum versions. `tar`, Python 3, and the
+GStreamer plugins remain explicit dependencies because ELF scanning cannot
+discover them. Inspect the finished package with
+`dpkg-deb -f <package.deb> Depends` and install-test it on a clean supported
+Ubuntu system before publishing. Build the RPM separately against the Fedora
+libraries it targets.
+
 The RPM and DEB install Chrome's native messaging host system-wide at
 `/etc/opt/chrome/native-messaging-hosts/com.outmode.rendepth.json`. It permits
 the published Rendepth Companion ID `hffdjljngfgobaekdbgfgfodecmehgbh` and

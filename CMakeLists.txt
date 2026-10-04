@@ -1164,14 +1164,14 @@ set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
 set(CPACK_DEBIAN_PACKAGE_SECTION "graphics")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 # Increment both package revisions when rebuilding the same application version.
-set(CPACK_DEBIAN_PACKAGE_RELEASE 3)
+set(CPACK_DEBIAN_PACKAGE_RELEASE 4)
 set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
-# SDL and ONNX Runtime are bundled or supplied by the platform-specific
-# runtime setup. These are the Debian-family libraries used by the Linux
-# executable itself; alternatives cover the current t64 transitions.
+# dpkg-shlibdeps adds the exact shared-library packages and minimum versions
+# required by the staged ELF files. Keep only non-ELF runtime requirements here.
 set(CPACK_DEBIAN_PACKAGE_DEPENDS
-        "libc6, libstdc++6, libgcc-s1, libbluray2 | libbluray3, libdvdread8, libcurl4 | libcurl4t64, libssl3 | libssl3t64, tar, python3, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-nice")
+        "tar, python3, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-nice")
 if(UNIX AND NOT APPLE)
+    set(CPACK_PROJECT_CONFIG_FILE "${CMAKE_SOURCE_DIR}/Packaging/Linux/CPackProjectConfig.cmake")
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${CMAKE_SOURCE_DIR}/Packaging/Linux/postinst")
     set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION TRUE)
 endif()
@@ -1182,7 +1182,7 @@ set(CPACK_RPM_FILE_NAME RPM-DEFAULT)
 if(UNIX AND NOT APPLE)
     set(CPACK_PACKAGE_RELOCATABLE FALSE)
 endif()
-set(CPACK_RPM_PACKAGE_RELEASE 3)
+set(CPACK_RPM_PACKAGE_RELEASE 4)
 set(RENDEPTH_RPM_REQUIRES gstreamer1-plugins-good gstreamer1-plugins-bad-free libnice-gstreamer1 tar python3)
 if(UNIX AND NOT APPLE)
     set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_SOURCE_DIR}/Packaging/Linux/postinst")
