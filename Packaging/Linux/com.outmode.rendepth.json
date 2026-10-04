@@ -1,0 +1,7 @@
+{
+  "name": "com.outmode.rendepth",
+  "description": "Rendepth Chrome companion bridge",
+  "path": "/usr/libexec/rendepth/Browser/rendepth-chrome-host",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://hffdjljngfgobaekdbgfgfodecmehgbh/"]
+}

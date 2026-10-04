@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+# RPM passes 1 for install and 2 for upgrade; Debian passes "configure".
+case "${1:-}" in
+    1|2|configure)
+        /usr/bin/python3 /usr/libexec/rendepth/Browser/migrate-chrome-registration.py
+        ;;
+esac

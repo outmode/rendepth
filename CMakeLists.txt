@@ -1126,6 +1126,13 @@ if(UNIX AND NOT APPLE)
     install(PROGRAMS "${CMAKE_SOURCE_DIR}/Packaging/Linux/rendepth-launcher"
             DESTINATION bin
             RENAME rendepth)
+    install(PROGRAMS "${CMAKE_SOURCE_DIR}/Packaging/Linux/rendepth-chrome-host"
+            DESTINATION libexec/rendepth/Browser)
+    install(FILES "${CMAKE_SOURCE_DIR}/Browser/Firefox/native/host.py"
+            "${CMAKE_SOURCE_DIR}/Packaging/Linux/migrate-chrome-registration.py"
+            DESTINATION libexec/rendepth/Browser)
+    install(FILES "${CMAKE_SOURCE_DIR}/Packaging/Linux/com.outmode.rendepth.json"
+            DESTINATION /etc/opt/chrome/native-messaging-hosts)
     install(FILES "${CMAKE_SOURCE_DIR}/Packaging/Linux/rendepth.desktop"
             DESTINATION share/applications)
     install(FILES "${CMAKE_SOURCE_DIR}/Assets/Rendepth.png"
@@ -1156,18 +1163,30 @@ set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Outmode")
 set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
 set(CPACK_DEBIAN_PACKAGE_SECTION "graphics")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+# Increment both package revisions when rebuilding the same application version.
+set(CPACK_DEBIAN_PACKAGE_RELEASE 3)
+set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
 # SDL and ONNX Runtime are bundled or supplied by the platform-specific
 # runtime setup. These are the Debian-family libraries used by the Linux
 # executable itself; alternatives cover the current t64 transitions.
 set(CPACK_DEBIAN_PACKAGE_DEPENDS
-        "libc6, libstdc++6, libgcc-s1, libbluray2 | libbluray3, libdvdread8, libcurl4 | libcurl4t64, libssl3 | libssl3t64, tar, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-nice")
+        "libc6, libstdc++6, libgcc-s1, libbluray2 | libbluray3, libdvdread8, libcurl4 | libcurl4t64, libssl3 | libssl3t64, tar, python3, libva2, libva-drm2, libdrm2, libdav1d6 | libdav1d5, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-nice")
+if(UNIX AND NOT APPLE)
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${CMAKE_SOURCE_DIR}/Packaging/Linux/postinst")
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION TRUE)
+endif()
 # Application-level license; component terms are retained in THIRD_PARTY_LICENSING.
 set(CPACK_RPM_PACKAGE_LICENSE "GPL-3.0-only")
 set(CPACK_RPM_PACKAGE_ARCHITECTURE "x86_64")
-# Increment the RPM release for rebuilds of the same application version so
-# package managers do not treat a freshly built artifact as the old package.
-set(CPACK_RPM_PACKAGE_RELEASE 1)
-set(RENDEPTH_RPM_REQUIRES gstreamer1-plugins-good gstreamer1-plugins-bad-free libnice-gstreamer1 tar)
+set(CPACK_RPM_FILE_NAME RPM-DEFAULT)
+if(UNIX AND NOT APPLE)
+    set(CPACK_PACKAGE_RELOCATABLE FALSE)
+endif()
+set(CPACK_RPM_PACKAGE_RELEASE 3)
+set(RENDEPTH_RPM_REQUIRES gstreamer1-plugins-good gstreamer1-plugins-bad-free libnice-gstreamer1 tar python3)
+if(UNIX AND NOT APPLE)
+    set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_SOURCE_DIR}/Packaging/Linux/postinst")
+endif()
 if(RENDEPTH_ENABLE_FFMPEG AND DAV1D_FOUND)
     list(APPEND RENDEPTH_RPM_REQUIRES "libdav1d >= 0.5.0")
 endif()

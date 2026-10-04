@@ -1,5 +1,14 @@
 # Linux inference packaging
 
+The RPM and DEB install Chrome's native messaging host system-wide at
+`/etc/opt/chrome/native-messaging-hosts/com.outmode.rendepth.json`. It permits
+the published Rendepth Companion ID `hffdjljngfgobaekdbgfgfodecmehgbh` and
+launches the packaged Rendepth executable. Python 3 is a package dependency
+for the shared browser host. On upgrade, the package removes a per-user Chrome
+registration only when it permits exactly the obsolete unpacked development ID;
+other user registrations are left alone. The development checkout's separate
+manual registration is described in `Browser/Chrome/README.md`.
+
 The Linux application no longer links ONNX Runtime, CUDA, or ROCm at startup.
 It explicitly loads a runtime after reading Settings. CPU inference is the
 default. Rendering and video decoding retain their existing dependencies.

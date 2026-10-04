@@ -1,0 +1,3 @@
+#!/bin/sh
+exec /usr/bin/python3 -u /usr/libexec/rendepth/Browser/host.py \
+    --rendepth /usr/libexec/rendepth/Binary/Rendepth "$@"
