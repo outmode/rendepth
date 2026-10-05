@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(Rendepth VERSION 3.0.2 LANGUAGES C CXX)
+project(Rendepth VERSION 3.0.3 LANGUAGES C CXX)
 if(APPLE)
     enable_language(OBJCXX)
 endif()
@@ -1138,6 +1138,7 @@ if(UNIX AND NOT APPLE)
     install(FILES "${CMAKE_SOURCE_DIR}/Assets/Rendepth.png"
             DESTINATION share/icons/hicolor/512x512/apps
             RENAME rendepth.png)
+    install(SCRIPT "${CMAKE_SOURCE_DIR}/Packaging/Linux/BundleLinuxLibraries.cmake")
 endif()
 
 if(WIN32)
@@ -1164,7 +1165,7 @@ set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
 set(CPACK_DEBIAN_PACKAGE_SECTION "graphics")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 # Increment both package revisions when rebuilding the same application version.
-set(CPACK_DEBIAN_PACKAGE_RELEASE 4)
+set(CPACK_DEBIAN_PACKAGE_RELEASE 1)
 set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
 # dpkg-shlibdeps adds the exact shared-library packages and minimum versions
 # required by the staged ELF files. Keep only non-ELF runtime requirements here.
@@ -1182,13 +1183,10 @@ set(CPACK_RPM_FILE_NAME RPM-DEFAULT)
 if(UNIX AND NOT APPLE)
     set(CPACK_PACKAGE_RELOCATABLE FALSE)
 endif()
-set(CPACK_RPM_PACKAGE_RELEASE 4)
+set(CPACK_RPM_PACKAGE_RELEASE 1)
 set(RENDEPTH_RPM_REQUIRES gstreamer1-plugins-good gstreamer1-plugins-bad-free libnice-gstreamer1 tar python3)
 if(UNIX AND NOT APPLE)
     set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_SOURCE_DIR}/Packaging/Linux/postinst")
-endif()
-if(RENDEPTH_ENABLE_FFMPEG AND DAV1D_FOUND)
-    list(APPEND RENDEPTH_RPM_REQUIRES "libdav1d >= 0.5.0")
 endif()
 if(RENDEPTH_RPM_REQUIRES)
     list(JOIN RENDEPTH_RPM_REQUIRES ", " CPACK_RPM_PACKAGE_REQUIRES)

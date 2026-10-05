@@ -134,7 +134,7 @@
   },
   {
     "name": "dav1d",
-    "note": "Bundled or compiled into the application, depending on platform and build options.",
+    "note": "Bundled or compiled into the application, depending on platform and build options. Linux packages also copy the FFmpeg-linked system library; the Fedora 44 release input is dav1d 1.5.4-1.fc44.",
     "files": [
       "ThirdParty/SDL_image/external/dav1d/COPYING",
       "ThirdParty/SDL_image/external/dav1d/doc/PATENTS"
@@ -386,7 +386,7 @@
   },
   {
     "name": "libbluray",
-    "note": "System dependency snapshot: libbluray 1.4.0-3.fc44. Normally supplied by the operating system on Linux; retain matching notices if redistributed on another platform.",
+    "note": "Linux packages bundle the libbluray library selected by the build. The Fedora 44 release input is libbluray 1.4.0-3.fc44.",
     "files": [
       "Tools/Legal/inputs/libbluray-COPYING.txt"
     ],
@@ -396,12 +396,22 @@
   },
   {
     "name": "libdvdread",
-    "note": "System dependency snapshot: libdvdread 7.0.1-1.fc44. Normally supplied by the operating system on Linux; retain matching notices if redistributed on another platform.",
+    "note": "Linux packages bundle the libdvdread library selected by the build. The Fedora 44 release input is libdvdread 7.0.1-1.fc44.",
     "files": [
       "Tools/Legal/inputs/libdvdread-COPYING.txt"
     ],
     "source_urls": [
       "https://code.videolan.org/videolan/libdvdread"
+    ]
+  },
+  {
+    "name": "libudfread",
+    "note": "Linux packages bundle libudfread when libbluray needs it. The Fedora 44 release input is libudfread 1.2.0-3.fc44.",
+    "files": [
+      "Tools/Legal/inputs/libudfread-COPYING.txt"
+    ],
+    "source_urls": [
+      "https://code.videolan.org/videolan/libudfread"
     ]
   },
   {

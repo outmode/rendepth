@@ -326,6 +326,7 @@ auto mouseMoveWait = 3.0;
 static bool mainButtonPulseUsed = false;
 static double mainButtonPulseStartedAt = -1.0;
 static bool pulseIconAnimation = true;
+static bool startupEngineTipShown = false;
 auto displayInfoTime = 0.0;
 auto displayInfoEnabled = true;
 auto showDisplayInfoOnce = false;
@@ -368,6 +369,11 @@ auto slideshowWaitTime = 8.0;
 auto lastSlideshowTime = 0.0;
 auto displayTipTime = 0.0;
 auto displayTipWait = 2.0;
+static double startupEngineTipTime = -1.0;
+static std::string startupEnginePreviousHelpText;
+static double currentDisplayTipWait() {
+	return displayTipTime == startupEngineTipTime ? 4.0 : displayTipWait;
+}
 auto swapLeftRight = false;
 auto mouseLeftWindow = false;
 auto mouseStateInitialized = false;
@@ -1815,7 +1821,7 @@ static bool downloadBlocksInput() {
 }
 
 Choice ChoiceVersion {
-	.label = "Rendepth 3.0.2 (Free Version)",
+	.label = "Rendepth 3.0.3 (Free Version)",
 	.options = {},
 	.inlineText = true,
 	.bold = true,
@@ -2732,7 +2738,7 @@ static void pollModelDownloadProgress() {
 		unknownSizeShown = false;
 		// Keep the initial loading tip unless it was hidden behind the menu.
 		showProgressAt = closedOptions ? now :
-			(Image::displayTip ? displayTipTime + displayTipWait : now);
+			(Image::displayTip ? displayTipTime + currentDisplayTipWait() : now);
 		nextUpdate = 0.0;
 	}
 	if (closedOptions) {
@@ -2785,6 +2791,26 @@ static void showInfoTip(const std::string& text) {
 	Image::displayInfo = true;
 	Image::infoTargetVisibility = 1.0;
 	displayInfoTime = getTimeNow();
+}
+
+// Show the active AI engine once after the user starts from the welcome guide.
+static void showStartupEngineTip() {
+	if (startupEngineTipShown) return;
+	startupEngineTipShown = true;
+	if (Image::displayHelp) startupEnginePreviousHelpText = Core::lastDrawnText;
+	bool usingGpu = false;
+#ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
+	usingGpu = inferenceRuntimeLoaded &&
+		InferenceRuntime::provider() != DepthEstimator::Provider::CPU;
+#elif defined(RENDEPTH_ENABLE_COREML) || defined(RENDEPTH_ENABLE_CUDA) || defined(RENDEPTH_ENABLE_ROCM)
+	usingGpu = true;
+#endif
+	Core::drawText(&context, std::string("Running on ") + (usingGpu ? "GPU" : "CPU") +
+		". Check Options to Configure AI Engine", Image::helpFont,
+		Image::helpTexture, Image::helpTextSize, "Help Texture");
+	Image::displayTip = true;
+	displayTipTime = getTimeNow();
+	startupEngineTipTime = displayTipTime;
 }
 
 // Remind the user after any loading tip has cleared, including when already maximized.
@@ -5012,7 +5038,7 @@ static void refreshLicenseMenu(bool rebuild) {
         menuSelection[label] = -1; menuRollover[label] = -1;
         original.label = label;
     };
-    rename(ChoiceVersion, licensed ? "Rendepth 3.0.2 (Pro License)" : "Rendepth 3.0.2 (Free Version)");
+    rename(ChoiceVersion, licensed ? "Rendepth 3.0.3 (Pro License)" : "Rendepth 3.0.3 (Free Version)");
     rename(ChoiceLicense, licensed ? "Manage Rendepth Pro License" : "Upgrade to Rendepth Pro");
     if (rebuild) {
         Image::initMenuTexture();
@@ -5043,7 +5069,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	context.appName = "Rendepth";
 	// Keep the desktop entry name, Wayland app_id, and X11 window class aligned
 	// so the running window is grouped under the installed launcher icon.
-	SDL_SetAppMetadata("Rendepth", "3.0.2", "rendepth");
+	SDL_SetAppMetadata("Rendepth", "3.0.3", "rendepth");
 	context.windowSize = { 1920, 1080 };
 	context.appIcons = &appIcons;
 	context.menuChoices = &menuChoices;
@@ -5786,7 +5812,8 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 
 	// Introduce the available controls after the first real media frame appears.
 	// Keep the intro pending while the startup guide covers the viewer.
-	if (pulseIconAnimation && !mainButtonPulseUsed && !GettingStarted::visible && !discTitleMenu.visible() &&
+	if (pulseIconAnimation && displayInfoEnabled && !mainButtonPulseUsed &&
+		!GettingStarted::visible && !discTitleMenu.visible() &&
 		!context.loading &&
 		((activeScreenCapture && videoFrameLoaded) ||
 			(activeVideo && (videoFrameLoaded || videoPlayer.audioOnly())) ||
@@ -5801,8 +5828,8 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		mainButtonPulseStartedAt = -1.0;
 		checkMouseState();
 	}
-	const bool mainButtonPulseActive = mainButtonPulseStartedAt >= 0.0;
-	const double pulsePhase = pulseElapsed - std::floor(pulseElapsed);
+	const bool mainButtonPulseActive = displayInfoEnabled && mainButtonPulseStartedAt >= 0.0;
+	const double pulsePhase = pulseElapsed / mainButtonPulseDuration;
 	const double pulseOpacity = 0.5 - 0.5 * std::cos(2.0 * 3.14159265358979323846 * pulsePhase);
 	static auto iconVisibilitySpeed = 16.0;
 
@@ -5940,8 +5967,12 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 
 	pollExportSaves();
 	if (Image::displayTip) {
-		if (timeNow - displayTipTime > displayTipWait) {
+		if (timeNow - displayTipTime > currentDisplayTipWait()) {
 			Image::displayTip = false;
+			if (displayTipTime == startupEngineTipTime && Image::displayHelp &&
+				!startupEnginePreviousHelpText.empty())
+				Core::drawText(&context, startupEnginePreviousHelpText, Image::helpFont,
+					Image::helpTexture, Image::helpTextSize, "Help Texture");
 			doingFileOp = false;
 		}
 	}
@@ -7289,6 +7320,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		const bool droppedFile = event->type == SDL_EVENT_DROP_FILE;
 		if (action == GettingStarted::Action::Dismiss || droppedFile) {
 			dismissGuide();
+			if (action == GettingStarted::Action::Dismiss &&
+				(event->type == SDL_EVENT_MOUSE_BUTTON_UP ||
+					(event->type == SDL_EVENT_KEY_DOWN &&
+						(event->key.key == SDLK_RETURN || event->key.key == SDLK_KP_ENTER ||
+							event->key.key == SDLK_SPACE))))
+				showStartupEngineTip();
 		}
 		// The release that dismisses the guide belongs to the guide, not a control underneath it.
 		if ((event->type >= SDL_EVENT_KEY_DOWN && event->type <= SDL_EVENT_TEXT_INPUT) ||

@@ -13,7 +13,10 @@ and the CPU runtime inputs described below, then package it with
 The DEB step checks every staged ELF file against the Ubuntu 24.04 glibc and
 libstdc++ ABI, requires the Ubuntu `libbluray.so.2` and `libdvdread.so.8`
 interfaces, rejects machine-specific RPATHs, and checks that the loader can
-resolve the packaged libraries. CPack uses `dpkg-shlibdeps` to derive exact
+resolve the packaged libraries. Linux packages copy the actual disc libraries,
+their UDF reader dependency, and the system dav1d codec used by FFmpeg into
+`libexec/rendepth/Library`, with relative loader paths. Install `patchelf` on
+the packaging machine. CPack uses `dpkg-shlibdeps` to derive exact remaining
 system-library package names and minimum versions. `tar`, Python 3, and the
 GStreamer plugins remain explicit dependencies because ELF scanning cannot
 discover them. Inspect the finished package with
