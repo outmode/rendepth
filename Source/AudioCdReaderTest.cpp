@@ -100,6 +100,7 @@ int main() {
     assert(DiscSource::detect(root) == DiscSource::Type::None);
     std::ofstream(root / "BDMV/index.bdmv").put('\0');
     assert(DiscSource::detect(root) == DiscSource::Type::Bluray);
+    assert(DiscSource::detect(root / "BDMV/index.bdmv") == DiscSource::Type::Bluray);
     std::filesystem::remove_all(root / "BDMV");
     std::filesystem::create_directories(root / "VIDEO_TS");
     std::ofstream(root / "VIDEO_TS/VIDEO_TS.IFO").put('\0');

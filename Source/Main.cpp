@@ -97,6 +97,7 @@
 #include "DepthEstimator.h"
 #include "SuperResolution.h"
 #include "ModelDownloader.h"
+#include "DiagnosticLog.h"
 #if defined(_WIN32) || defined(__linux__)
 #include "RuntimePackDownloader.h"
 #endif
@@ -224,14 +225,20 @@ static void clearAudioAlbumArt() {
 	Image::audioWaveform = {};
 }
 
+// SDL supplies UTF-8 paths, including on Windows where filesystem::path uses UTF-16.
+static std::string pathUtf8(const std::filesystem::path& path) {
+	const auto bytes = path.u8string();
+	return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
 // Check whether the playback backend recognizes this video or disc source.
 static bool isSupportedVideo(const std::string& path) {
-	return VideoPlayer::supported(std::filesystem::path(path));
+	return VideoPlayer::supported(std::filesystem::u8path(path));
 }
 
 // Recognize supported audio files by their case-insensitive extension.
 static bool isSupportedAudio(const std::string& path) {
-	auto extension = std::filesystem::path(path).extension().string();
+	auto extension = pathUtf8(std::filesystem::u8path(path).extension());
 	std::transform(extension.begin(), extension.end(), extension.begin(),
 		[](unsigned char character) { return static_cast<char>(std::tolower(character)); });
 	return extension == ".aac" || extension == ".flac" || extension == ".m4a" ||
@@ -252,8 +259,8 @@ static const std::vector<std::string> supportedExts { ".jpeg", ".jpg", ".jpe",
 };
 // Check the image extension against the formats offered by the application.
 bool isSupportedImage(const std::string& path) {
-	auto filePath = std::filesystem::path(path);
-	auto fileExt = stringLower(filePath.extension().string());
+	auto filePath = std::filesystem::u8path(path);
+	auto fileExt = stringLower(pathUtf8(filePath.extension()));
 	for (const auto& ext : supportedExts) {
 		if (fileExt == ext) return true;
 	}
@@ -383,6 +390,9 @@ auto deltaIndex = 0;
 const int deltaCount = 16;
 std::array<double, deltaCount> deltaTimes{};
 std::string openFolderResult;
+std::mutex openFolderResultMutex;
+enum class FolderPurpose { Disc, Batch };
+FolderPurpose openFolderPurpose = FolderPurpose::Batch;
 std::string upscaleResolution = "1920";
 std::string depthSize = "540";
 StereoFormat exportFormat = Color_Anaglyph;
@@ -652,9 +662,10 @@ static void serviceVideo() {
 	// decoded stereo video to bridge drive seeks, and prime it before audio
 	// starts instead of using the short inference lookahead of ordinary video.
 	const bool nativeStereo = videoPlayer.nativeStereo();
-	// Leave room for the decoder's own queue within the three-second audio
-	// buffer, so read-ahead does not force audio samples to be discarded.
-	const double maximumBufferDuration = nativeStereo ? 1.5 : 1.0;
+	const bool discSource = videoPlayer.discSource();
+	// Keep enough decoded stereo frames to cover a slow optical seek between
+	// the base and dependent views. The decoder holds up to another 24 frames.
+	const double maximumBufferDuration = nativeStereo ? 2.5 : discSource ? 1.5 : 1.0;
 	while (bufferedVideoFrames.empty() ||
 		bufferedVideoFrames.back().frame->presentationTime -
 		bufferedVideoFrames.front().frame->presentationTime < maximumBufferDuration) {
@@ -695,7 +706,8 @@ static void serviceVideo() {
 		}
 	}
 
-	const double targetBufferDuration = nativeStereo ? 1.0 : videoDepthLookaheadDuration;
+	const double targetBufferDuration = nativeStereo ? 2.0 :
+		discSource ? 0.75 : videoDepthLookaheadDuration;
 	if (!videoPlaybackBufferReady && !bufferedVideoFrames.empty()) {
 		const double bufferedDuration = bufferedVideoFrames.back().frame->presentationTime -
 			bufferedVideoFrames.front().frame->presentationTime;
@@ -712,6 +724,19 @@ static void serviceVideo() {
 	}
 
 	const bool playing = videoPlayer.playing();
+	if (discSource && playing && videoPlaybackBufferReady && bufferedVideoFrames.empty() &&
+		lastVideoFrame != nullptr) {
+		const double audioPosition = videoPlayer.audioPlaybackPosition();
+		static double lastUnderrunLog = -1.0;
+		if (audioPosition > lastVideoFrame->presentationTime + 0.15 &&
+			(lastUnderrunLog < 0.0 || now - lastUnderrunLog >= 1.0)) {
+			DiagnosticLog::write("WARN", "disc_video_underrun", std::format(
+				"behind_ms={} audio_buffer_ms={}",
+				static_cast<int>((audioPosition - lastVideoFrame->presentationTime) * 1000.0),
+				static_cast<int>(videoPlayer.bufferedAudioDuration() * 1000.0)));
+			lastUnderrunLog = now;
+		}
+	}
 	if (!playing) {
 		videoPresentationClockValid = false;
 	} else if (videoPlaybackBufferReady && !videoPresentationClockValid &&
@@ -1173,6 +1198,7 @@ static void toggleScreenCapture();
 static void toggleSlideshow();
 static void openFile();
 static void openFolder();
+static void openDiscFolder();
 static void saveFile();
 static void saveOptions();
 static void loadOptions();
@@ -1505,7 +1531,7 @@ Icon IconOpen = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Open 2D/3D Media",
+	"Open Media Files",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
@@ -1556,12 +1582,16 @@ Icon IconBatch = {
 	IconGroup::None,
 	IconMode::Button,
 	IconState::Idle,
-	"Convert Folder to RGBD",
+	"Batch Convert Folder to RGBD",
 	style.getColor(Style::Color::White, Style::Alpha::Solid),
 	[]()->Canvas {
 		return {
 			sizeStandard,
-	{ positionEdge, style.getIconRadius(Style::getCurrentScale()) * 3.0 + style.getIconSpacer(Style::getCurrentScale()) * 2.0 + style.getInfo(Style::getCurrentScale()) },
+	{ (positionEdge + style.getIconRadius(Style::getCurrentScale()) +
+		style.getIconGutter(Style::getCurrentScale()) +
+		style.getIconSpacer(Style::getCurrentScale()) * 2.0f),
+		style.getIconRadius(Style::getCurrentScale()) * 3.0f +
+		style.getIconSpacer(Style::getCurrentScale()) * 2.0f + style.getInfo(Style::getCurrentScale()) },
 		{ 0.0, 0.0 },
 		{0.0, style.getInfo(Style::getCurrentScale()), 0.0, 0.0},
 	{positionEdge * 3.0, positionEdge * 3.0 + style.getInfo(Style::getCurrentScale()),
@@ -1570,6 +1600,30 @@ Icon IconBatch = {
 	[]() {
 		openFolder();
 	},
+	1.0,
+	false,
+	false
+};
+
+Icon IconDisc = {
+	IconType::BluRay,
+	IconType::BluRay,
+	IconGroup::None,
+	IconMode::Button,
+	IconState::Idle,
+	"Open Blu-ray or DVD Disc Folder",
+	style.getColor(Style::Color::White, Style::Alpha::Solid),
+	[]()->Canvas {
+		return {
+			sizeStandard,
+			{ positionEdge, style.getIconRadius(Style::getCurrentScale()) * 3.0f +
+				style.getIconSpacer(Style::getCurrentScale()) * 2.0f + style.getInfo(Style::getCurrentScale()) },
+			{ 0.0, 0.0 },
+			{0.0, style.getInfo(Style::getCurrentScale()), 0.0, 0.0},
+			{positionEdge * 3.0f, positionEdge * 3.0f + style.getInfo(Style::getCurrentScale()),
+				0.0, 0.0}};
+	},
+	[]() { openDiscFolder(); },
 	1.0,
 	false,
 	false
@@ -3216,7 +3270,7 @@ static void jumpPreviousChapter() {
 	showInfoTip(std::string(videoPlayer.audioCd() ? "Track " : "Chapter ") + std::to_string(target + 1) + " of " + std::to_string(count));
 }
 
-static std::vector appIcons = { IconLoading, IconMinimize, IconFullscreen, IconOpen, IconBatch, IconSave, IconTrackSelection,
+static std::vector appIcons = { IconLoading, IconMinimize, IconFullscreen, IconOpen, IconDisc, IconBatch, IconSave, IconTrackSelection,
 	IconOptions, IconSettings, IconBack, IconForward, IconStereo3D,
 	IconStrength, IconDepth, IconOffset, IconPlay, IconVideoSeek, IconVideoVolume,
 	IconVideoAudio, IconVideoCaption, IconHelp, IconClose };
@@ -3225,7 +3279,8 @@ static std::vector appIcons = { IconLoading, IconMinimize, IconFullscreen, IconO
 // Keep the empty viewer's controls visible until the Options menu opens.
 static bool persistentEmptyScreenButton(IconType type) {
 	return fileList.empty() && !activeScreenCapture && !context.displayMenu &&
-		(type == IconType::File || type == IconType::Minimize || type == IconType::Close);
+		(type == IconType::File || type == IconType::BluRay ||
+			type == IconType::Minimize || type == IconType::Close);
 }
 
 // Finish or cancel slider scrubbing, restore playback, and release mouse capture.
@@ -3327,7 +3382,7 @@ static void updateVideoSlider() {
 }
 
 static constexpr const char* videoFilterExtensions =
-	"mp4;m4v;mov;mkv;webm;avi;wmv;mpeg;mpg;vob;ifo;iso;ssif;m2ts;ts;gif";
+	"mp4;m4v;mov;mkv;webm;avi;wmv;mpeg;mpg;vob;ifo;iso;bdmv;BDMV;ssif;m2ts;ts;gif";
 static constexpr const char* audioFilterExtensions =
 	"aac;flac;m4a;mp3;oga;ogg;opus;wav;cda";
 static constexpr const char* imageFilterExtensions =
@@ -3336,7 +3391,7 @@ static constexpr const char* imageFilterExtensions =
 static constexpr const char* allMediaFilterExtensions =
 	"jpg;jpeg;jpe;jfif;jif;jps;png;pns;tga;bmp;dib;tif;tiff;ico;cur;qoi"
 	";avif;avifs;jxl;webp"
-	";mp4;m4v;mov;mkv;webm;avi;wmv;mpeg;mpg;vob;ifo;iso;ssif;m2ts;ts;gif"
+	";mp4;m4v;mov;mkv;webm;avi;wmv;mpeg;mpg;vob;ifo;iso;bdmv;BDMV;ssif;m2ts;ts;gif"
 	";aac;flac;m4a;mp3;oga;ogg;opus;wav;cda";
 
 static const SDL_DialogFileFilter filters[] = {
@@ -3365,6 +3420,7 @@ static void SDLCALL openFileCallback(void* userdata, const char* const* filelist
 	}
 
 	if (!fileNames.empty()) {
+		DiagnosticLog::write("INFO", "media_selection_queued", std::format("source=dialog count={}", fileNames.size()));
 		deferMediaLoad(fileNames);
 	}
 
@@ -3373,6 +3429,7 @@ static void SDLCALL openFileCallback(void* userdata, const char* const* filelist
 
 // Store the selected folder or a cancellation marker for the main loop to consume.
 static void SDLCALL openFolderCallback(void* userdata, const char* const* filelist, int filter) {
+	std::lock_guard lock(openFolderResultMutex);
 	if (!filelist || !*filelist) {
 		*static_cast<std::string*>(userdata) = "ERROR";
 	} else {
@@ -3382,16 +3439,20 @@ static void SDLCALL openFolderCallback(void* userdata, const char* const* fileli
 
 // Open the media chooser with the application's supported file filters.
 static void openFile() {
-	doingFileOp = true;
+	if (doingFileOp.exchange(true)) return;
 	auto filterNum = sizeof(filters) / sizeof(filters[0]);
 	MediaOpenDialog::open(openFileCallback, context.window, filters, filterNum);
 }
 
-// Open the folder chooser for a directory-based operation.
-static void openFolder() {
-	doingFileOp = true;
+// Route the native folder chooser result to its requested action on the main loop.
+static void showFolderDialog(FolderPurpose purpose) {
+	if (doingFileOp.exchange(true)) return;
+	openFolderPurpose = purpose;
 	SDL_ShowOpenFolderDialog(openFolderCallback, &openFolderResult, context.window, nullptr, false);
 }
+
+static void openFolder() { showFolderDialog(FolderPurpose::Batch); }
+static void openDiscFolder() { showFolderDialog(FolderPurpose::Disc); }
 
 // Encode a frame timestamp as a filename-safe tag with millisecond precision.
 static std::string formatVideoTimeTag(double presentationTime) {
@@ -4810,26 +4871,29 @@ static void toggleMaximized() {
 
 // Add a supported source to the browsing list with its metadata and import format.
 static void pushFileInfo(const std::filesystem::path& filePath) {
-	std::string fileName = filePath.string();
+	std::string fileName = pathUtf8(filePath);
 	if (isSupportedImage(fileName) || isSupportedMedia(fileName)) {
 		if (fileName.empty()) return;
-		if (filePath.filename().string().empty() && !isSupportedMedia(fileName)) return;
+		if (filePath.filename().empty() && !isSupportedMedia(fileName)) return;
 		std::error_code ec;
 		std::filesystem::file_time_type modifiedTime{};
 		uintmax_t fileSize = 0;
 		if (std::filesystem::is_regular_file(filePath, ec)) {
 			modifiedTime = std::filesystem::last_write_time(filePath, ec);
+			if (ec) modifiedTime = {};
 			fileSize = std::filesystem::file_size(filePath, ec);
+			if (ec) fileSize = 0;
 		} else if (std::filesystem::is_directory(filePath, ec)) {
 			modifiedTime = std::filesystem::last_write_time(filePath, ec);
+			if (ec) modifiedTime = {};
 		}
 		auto sizeText = formatFileSize(fileSize);
 		FileInfo info;
 		info.link = fileName;
 		info.path = fileName;
-		info.name = filePath.filename().string();
-		if (info.name.empty()) info.name = filePath.string();
-		info.base = filePath.stem().string();
+		info.name = pathUtf8(filePath.filename());
+		if (info.name.empty()) info.name = fileName;
+		info.base = pathUtf8(filePath.stem());
 		if (info.base.empty()) info.base = info.name;
 		info.size = sizeText;
 		info.date = std::format("{:%Y-%m-%d}", modifiedTime);
@@ -4845,7 +4909,7 @@ static void pushFileInfo(const std::filesystem::path& filePath) {
 static void parseFileList(const std::vector<std::string>& filesToLoad) {
 	resetRapidBrowseState();
 	if (doingPreload) endPreload(true);
-	const std::filesystem::path filePath = filesToLoad[0];
+	const std::filesystem::path filePath = std::filesystem::u8path(filesToLoad[0]);
 	auto parentPath = filePath.parent_path();
 	fileList.clear();
 	fileIndex = -1;
@@ -4861,12 +4925,25 @@ static void parseFileList(const std::vector<std::string>& filesToLoad) {
 	} else {
 		if (!parentPath.empty()) {
 			std::error_code ec;
-			for (const auto& entry : std::filesystem::directory_iterator(parentPath, ec)) {
-				pushFileInfo(entry.path());
+			std::filesystem::directory_iterator entry(parentPath, ec);
+			const std::filesystem::directory_iterator end;
+			while (!ec && entry != end) {
+				pushFileInfo(entry->path());
+				entry.increment(ec);
+			}
+			if (ec) {
+				SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+					"Could not finish scanning media folder: %s", ec.message().c_str());
+				DiagnosticLog::write("ERROR", "media_scan", "result=failed");
 			}
 		}
 	}
-	if (fileList.empty()) {
+	// A dropped file may be readable even when its parent cannot be enumerated,
+	// or the directory may change while it is being scanned.
+	if (std::none_of(fileList.begin(), fileList.end(), [&](const FileInfo& file) {
+		return file.link == filesToLoad[0];
+	})) {
+		DiagnosticLog::write("INFO", "media_scan", "result=selected_missing");
 		pushFileInfo(filePath);
 	}
 
@@ -4882,12 +4959,13 @@ static void parseFileList(const std::vector<std::string>& filesToLoad) {
 
 		auto sortIndex = 0;
 		for (const auto& file : fileList) {
-			if (filePath.string() == file.link) {
+			if (filesToLoad[0] == file.link) {
 				fileIndex = sortIndex;
 				break;
 			}
 			sortIndex++;
 		}
+		if (fileIndex < 0) fileIndex = 0;
 		randImage.param(std::uniform_int_distribution<>::param_type(0, (int)fileList.size() - 1));
 		currentRandIndex = -1;
 		nextRandIndex = -1;
@@ -5049,6 +5127,8 @@ static void refreshLicenseMenu(bool rebuild) {
 
 // Initialize application services, the SDL window and GPU, preferences, and the initial media source.
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
+	if (!homeDir.empty()) DiagnosticLog::start(homePath);
+	DiagnosticLog::write("INFO", "app_start", "version=3.0.3");
 	// Keep fullscreen visible when a native dialog or another application takes focus.
 	SDL_SetHintWithPriority(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0", SDL_HINT_OVERRIDE);
 #if defined(__APPLE__) && defined(RENDEPTH_ENABLE_ONNX_RUNTIME)
@@ -5112,6 +5192,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 		parseFileList({ fileToLoad });
 
 	if (!SDL_Init(SDL_INIT_VIDEO)) {
+		DiagnosticLog::write("ERROR", "app_init", "stage=sdl_video");
 		SDL_Log("Failed To Initialize SDL: %s", SDL_GetError());
 		return SDL_APP_FAILURE;
 	}
@@ -5124,6 +5205,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 		FileInfo& initialImage = isSupportedMedia(fileList[fileIndex].link)
 			? emptyFile : fileList[fileIndex];
 		if (Image::init(&context, initialImage) < 0) {
+			DiagnosticLog::write("ERROR", "app_init", "stage=image");
 			SDL_Log("Could Not Initialize Image.");
 			return SDL_APP_FAILURE;
 		}
@@ -5136,6 +5218,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	} else {
 		FileInfo emptyFile{};
 		if (Image::init(&context, emptyFile) < 0) {
+			DiagnosticLog::write("ERROR", "app_init", "stage=image");
 			SDL_Log("Could Not Initialize Image.");
 			return SDL_APP_FAILURE;
 		}
@@ -5188,6 +5271,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	if (fileToLoad.empty() && !GettingStarted::dontShowAgain) GettingStarted::show();
 	if (GettingStarted::visible) showCustomCursor(true);
 
+	DiagnosticLog::write("INFO", "app_ready");
 	return SDL_APP_CONTINUE;
 }
 
@@ -5252,7 +5336,7 @@ static int loadAudioDepthImage() {
 // Load the selected image, audio, video, or disc title and initialize the matching presentation state.
 static int loadImage(void* ptr) {
 	if (fileList.empty() || fileIndex < 0 || fileIndex >= static_cast<int>(fileList.size())) return 1;
-	const std::filesystem::path mediaPath = fileList[fileIndex].link;
+	const std::filesystem::path mediaPath = std::filesystem::u8path(fileList[fileIndex].link);
 	const auto discType = DiscSource::detect(mediaPath);
 	if (discType == DiscSource::Type::Bluray && !Licensing::Service::isLicensed()) {
 		blurayMediaActive = false;
@@ -5450,7 +5534,11 @@ static int loadImage(void* ptr) {
 	if (imageData == nullptr)
 		imageData = Core::loadImageDirect(currentFile.path);
 	if (imageData != nullptr)
+		DiagnosticLog::write("INFO", "image_prepare_start", std::format(
+			"width={} height={} mode3d={}", imageData->w, imageData->h, display3D ? 1 : 0));
+	if (imageData != nullptr)
 		imageData = prepareNativeColorSurface(imageData, sourceType);
+	DiagnosticLog::write("INFO", "image_prepare_end", imageData ? "result=ready" : "result=decode_failed");
 	auto result = Image::load(&context, currentFile, imageData);
 	currentFile.preload = nullptr;
 	doneLoadingImage = true;
@@ -5482,6 +5570,7 @@ static void serviceDeferredMediaLoad() {
 		if (deferredMediaFiles.empty()) return;
 		files.swap(deferredMediaFiles);
 	}
+	DiagnosticLog::write("INFO", "media_load_start", std::format("count={}", files.size()));
 	if (isPlayingSlideshow) cancelSlideshow();
 	switchedImage = false;
 	context.gotoPrev = false;
@@ -5497,6 +5586,7 @@ static void serviceDeferredMediaLoad() {
 	selectedDiscTitle = -1;
 	if (activeScreenCapture) stopCapture();
 	parseFileList(files);
+	DiagnosticLog::write("INFO", "media_list_ready", std::format("count={}", fileList.size()));
 	updateStereoIcon();
 	loadImage(nullptr);
 	checkMouseState();
@@ -5935,7 +6025,17 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 #endif
 	if (doingFileOp) hideUI(false);
 
-	if (Image::draw(&context) < 0) {
+	const bool measuringDiscDraw = activeVideo && videoPlayer.discSource();
+	const Uint64 drawStartedAt = measuringDiscDraw ? SDL_GetTicksNS() : 0;
+	const int drawResult = Image::draw(&context);
+	if (measuringDiscDraw) {
+		const Uint64 elapsed = SDL_GetTicksNS() - drawStartedAt;
+		if (elapsed > 100000000)
+			DiagnosticLog::write("WARN", "disc_render_stall", std::format(
+				"duration_ms={}", elapsed / 1000000));
+	}
+	if (drawResult < 0) {
+		DiagnosticLog::write("ERROR", "app_draw", "result=failed");
 		SDL_Log("Image Draw Failed.");
 		return SDL_APP_FAILURE;
 	}
@@ -5995,49 +6095,55 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 
 	// Handle the folder chooser result after rendering so its disc or batch operation can start from
 	// the main loop.
-	if (doingFileOp && !openFolderResult.empty()) {
-		if (openFolderResult == "ERROR") {
-			doingFileOp = false;
-		} else {
-			auto fileListPath = std::filesystem::path(openFolderResult);
+	std::string folderResult;
+	if (doingFileOp) {
+		std::lock_guard lock(openFolderResultMutex);
+		folderResult.swap(openFolderResult);
+	}
+	if (!folderResult.empty()) {
+		doingFileOp = false;
+		if (folderResult != "ERROR") {
+			auto fileListPath = std::filesystem::u8path(folderResult);
 			if (is_directory(fileListPath)) {
-				if (BlurayReader::isBluraySource(fileListPath) || DvdReader::isDvdSource(fileListPath)) {
-					deferMediaLoad({fileListPath.string()});
-					doingFileOp = false;
-					openFolderResult.clear();
-					return SDL_APP_CONTINUE;
-				}
-				auto displayName = fileListPath.filename().string();
-				if (displayName == exportFolderName) {
-					Core::drawText(&context, "Invalid Batch Folder", Image::helpFont,
+				const bool discFolder = BlurayReader::isBluraySource(fileListPath) ||
+					DvdReader::isDvdSource(fileListPath);
+				auto showFolderTip = [&](const char* message) {
+					Core::drawText(&context, message, Image::helpFont,
 						Image::helpTexture, Image::helpTextSize, "Help Texture");
 					Image::displayTip = true;
 					displayTipTime = getTimeNow();
+				};
+				if (openFolderPurpose == FolderPurpose::Disc) {
+					if (discFolder) deferMediaLoad({pathUtf8(fileListPath)});
+					else showFolderTip("No Blu-ray or DVD Disc Found");
+				} else if (discFolder) {
+					showFolderTip("Use Open Disc for Disc Folders");
 				} else {
-					batchFolderPath = fileListPath;
-					batchExportIndex = 0;
-					batchExportActive = false;
-					batchDepthGeneration = true;
-					auto result = callDepthGenOnce(fileListPath.string(), BATCH_FOLDER, -1);
-					if (result == 0) {
-						isConverting = true;
-						auto nameMaxLen = 18;
-						if (displayName.length() > nameMaxLen) {
-							displayName = displayName.substr(0, nameMaxLen - 3) + "...";
-						}
-						Core::drawText(&context, "Converting " + displayName + " to " +
-							getExportDisplayName(),
-							Image::helpFont, Image::helpTexture, Image::helpTextSize, "Help Texture");
-						Image::displayTip = true;
-						displayTipTime = getTimeNow();
+					auto displayName = fileListPath.filename().string();
+					if (displayName == exportFolderName) {
+						showFolderTip("Invalid Batch Folder");
 					} else {
-						batchDepthGeneration = false;
-						isConverting = false;
+						batchFolderPath = fileListPath;
+						batchExportIndex = 0;
+						batchExportActive = false;
+						batchDepthGeneration = true;
+						auto result = callDepthGenOnce(pathUtf8(fileListPath), BATCH_FOLDER, -1);
+						if (result == 0) {
+							isConverting = true;
+							constexpr size_t nameMaxLen = 18;
+							if (displayName.length() > nameMaxLen) {
+								displayName = displayName.substr(0, nameMaxLen - 3) + "...";
+							}
+							showFolderTip(("Converting " + displayName + " to " +
+								getExportDisplayName()).c_str());
+						} else {
+							batchDepthGeneration = false;
+							isConverting = false;
+						}
 					}
 				}
 			}
 		}
-		openFolderResult.clear();
 	}
 
 	if (depthGenerationError) {
@@ -6144,7 +6250,8 @@ void checkMouseState() {
 			icon.label = discBrowser ? "Return to Movie" : "Track Selection";
 		const bool displayDiscControl = !discBrowser || (icon.type != IconType::Play &&
 			icon.type != IconType::Stereo_3D && icon.type != IconType::Save &&
-			icon.type != IconType::Folder && icon.type != IconType::Settings && icon.type != IconType::Crop);
+			icon.type != IconType::Folder && icon.type != IconType::Settings &&
+			icon.type != IconType::Crop);
 		if (icon.type == IconType::Back) icon.label = discBrowser ? "Previous Page" : "Previous Image";
 		if (icon.type == IconType::Forward) icon.label = discBrowser ? "Next Page" : "Next Image";
 		if (icon.type == IconType::Info) {
@@ -6172,19 +6279,22 @@ void checkMouseState() {
 		auto displayParallax = !(icon.type == IconType::Focus &&
 			(!fileList.empty() && fileList[fileIndex].type == Light_Field_LKG));
 		auto displayCaptureFileActions = !(activeScreenCapture &&
-			(icon.type == IconType::Folder ||
+			(icon.type == IconType::Folder || icon.type == IconType::BluRay ||
 				(!browserCapture && (icon.type == IconType::File || icon.type == IconType::Save))));
 		const bool displayBatch = icon.type != IconType::Folder ||
 			(!activeVideo && !activeScreenCapture && !discBrowser && !context.loading &&
 				!fileList.empty() && fileIndex >= 0 && fileIndex < static_cast<int>(fileList.size()) &&
 				isSupportedImage(fileList[fileIndex].link));
+		const bool displayDisc = icon.type != IconType::BluRay ||
+			(!activeScreenCapture && !context.loading);
 		auto displayOpen = !((icon.type != IconType::File && icon.type != IconType::Options &&
-			icon.type != IconType::Close &&
+			icon.type != IconType::BluRay && icon.type != IconType::Close &&
 			icon.type != IconType::Minimize &&
 			icon.type != IconType::Crop)
 			&& fileList.empty() && !activeScreenCapture);
 		auto displayMenu = !(context.displayMenu && (icon.type == IconType::Forward || icon.type == IconType::Back ||
-			icon.type == IconType::File || icon.type == IconType::Folder || icon.type == IconType::Save || icon.type == IconType::Window ||
+			icon.type == IconType::File || icon.type == IconType::BluRay ||
+			icon.type == IconType::Folder || icon.type == IconType::Save || icon.type == IconType::Window ||
 			(icon.type == IconType::Fullscreen && !blockingInputForDownload) ||
 			icon.type == IconType::Play || icon.type == IconType::Pause ||
 			icon.type == IconType::Crop ||
@@ -6223,7 +6333,8 @@ void checkMouseState() {
 				(icon.type != IconType::Back && icon.type != IconType::Forward);
 		const bool available = displayLoading && displaySettings && displayStereo && displayParallax &&
 			displayOpen && displaySave && displayMenu && displayXD && displayVideo &&
-			displayCaptureFileActions && displayFileNavigation && displayDiscControl && displayBatch &&
+			displayCaptureFileActions && displayFileNavigation && displayDiscControl &&
+			displayBatch && displayDisc &&
 			displayCaptureNavigation &&
 			(icon.type != IconType::TrackSelection || canShowTrackSelection());
 		if (withinArea(context.mouse, getCoordinates(icon.canvas().topLeft, aspectScale),
@@ -6827,10 +6938,14 @@ static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
 	if (color == nullptr || sourceType == Color_Plus_Depth) return color;
 	std::lock_guard lock(nativeSuperResolutionMutex);
 	const int scale = nativeSuperResolutionScale(color);
-	if (scale == 0) return color;
+	if (scale == 0) {
+		DiagnosticLog::write("INFO", "super_resolution_skip", "reason=large_image");
+		return color;
+	}
 
 	if (!nativeSuperResolutionAttempted) {
 		nativeSuperResolutionAttempted = true;
+		DiagnosticLog::write("INFO", "super_resolution_model_start");
 		SuperResolution::Config config;
 		const auto modelDirectoryPath = modelDirectory.empty()
 			? homePath / "Models" : std::filesystem::path(modelDirectory);
@@ -6845,23 +6960,21 @@ static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
 		if (!config.modelPath.empty())
 			nativeSuperResolutionLoaded = nativeSuperResolution.load(
 				config, nativeSuperResolutionError);
-		if (nativeSuperResolutionLoaded)
-			SDL_Log("Native RFDN x%d model loaded at %s using %s provider.", scale,
-				config.modelPath.string().c_str(),
-				nativeSuperResolution.providerName().c_str());
-		else
-			SDL_Log("Native RFDN x%d model unavailable; using original color: %s", scale,
-				nativeSuperResolutionError.c_str());
+		if (nativeSuperResolutionLoaded) {
+			DiagnosticLog::write("INFO", "super_resolution_model_ready");
+		} else {
+			DiagnosticLog::write("ERROR", "super_resolution_model", "result=unavailable");
+		}
 	}
 	if (!nativeSuperResolutionLoaded) return color;
 
 	std::string error;
 	SDL_Surface* result = nativeSuperResolution.predict(color, error);
 	if (result == nullptr) {
-		SDL_Log("Native RFDN x%d inference failed; using original color: %s", scale,
-			error.c_str());
+		DiagnosticLog::write("ERROR", "super_resolution_predict", "result=failed");
 		return color;
 	}
+	DiagnosticLog::write("INFO", "super_resolution_predict", "result=ready");
 	SDL_DestroySurface(color);
 	return result;
 }
@@ -6871,12 +6984,16 @@ static SDL_Surface* upscaleNativeColorSurface(SDL_Surface* color) {
 	if (color == nullptr) return color;
 	const auto outputSize = getNativeDepthSize(color->w, color->h);
 	if (outputSize.x == color->w && outputSize.y == color->h) return color;
+	DiagnosticLog::write("INFO", "image_gpu_upscale_start", std::format(
+		"width={} height={}", outputSize.x, outputSize.y));
 	SDL_Surface* result = upscaleNativeSurfaceOnRenderThread(
 		color, outputSize.x, outputSize.y);
 	if (result == nullptr) {
+		DiagnosticLog::write("ERROR", "image_gpu_upscale", "result=failed");
 		SDL_Log("GPU color upscale failed; using the available color resolution.");
 		return color;
 	}
+	DiagnosticLog::write("INFO", "image_gpu_upscale", "result=ready");
 	SDL_DestroySurface(color);
 	return result;
 }
@@ -6955,6 +7072,7 @@ static int nativeDepthRun(void* ptr) {
 			modelDirectoryPath, depthModelFiles[modelOption], nativeDepthEstimatorError,
 			&stillDepthModelDownload);
 		if (config.modelPath.empty()) {
+			DiagnosticLog::write("ERROR", "depth_model", "result=unavailable");
 			SDL_DestroySurface(suppliedSurface);
 			if (stillDepthModelDownload.cancel.load()) {
 				depthGenAlive = false;
@@ -6976,12 +7094,12 @@ static int nativeDepthRun(void* ptr) {
 		nativeDepthEstimatorLoaded = nativeDepthEstimator.load(
 			config, nativeDepthEstimatorError);
 		if (nativeDepthEstimatorLoaded) {
-			SDL_Log("Native depth model loaded: %s at %dx%d using %s provider.",
-				config.modelPath.string().c_str(), config.processSize, config.processSize,
-				nativeDepthEstimator.providerName().c_str());
+			DiagnosticLog::write("INFO", "depth_model_ready", std::format(
+				"size={}", config.processSize));
 		}
 	}
 	if (!nativeDepthEstimatorLoaded) {
+		DiagnosticLog::write("ERROR", "depth_model", "result=load_failed");
 		SDL_DestroySurface(suppliedSurface);
 		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Native depth model failed to load: %s",
 			nativeDepthEstimatorError.c_str());
@@ -7591,6 +7709,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 									setSlideshow(false);
 								}
 								if (icon.type == IconType::File ||
+									icon.type == IconType::BluRay ||
 									icon.type == IconType::Folder ||
 									icon.type == IconType::Save) {
 									queueCallback = true;
@@ -7760,8 +7879,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		}
 		mouseLastActive = getTimeNow();
 	} else if (event->type == SDL_EVENT_DROP_FILE) {
-		std::string droppedFile = event->drop.data;
+		std::string droppedFile = event->drop.data ? event->drop.data : "";
 		if (isSupportedImage(droppedFile) || isSupportedMedia(droppedFile)) {
+			DiagnosticLog::write("INFO", "media_selection_queued", "source=drop count=1");
 			float mouseX = 0.0f;
 			float mouseY = 0.0f;
 			SDL_GetMouseState(&mouseX, &mouseY);
@@ -7780,6 +7900,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 
 // Stop workers and services, save preferences, and release session media and graphics resources.
 void SDL_AppQuit(void *appstate, SDL_AppResult result) {
+	DiagnosticLog::write("INFO", "app_quit", result == SDL_APP_SUCCESS
+		? "result=success" : result == SDL_APP_FAILURE ? "result=failure" : "result=other");
 	if (exportSaveThread) {
 		{
 			std::lock_guard lock(exportSaveMutex);
@@ -7826,4 +7948,5 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result) {
 		windowIcon = nullptr;
 	}
 	SDL_Quit();
+	DiagnosticLog::write("INFO", "app_closed");
 }

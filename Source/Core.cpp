@@ -19,14 +19,40 @@
 // SOFTWARE.
 
 #include "Core.h"
+#include "DiagnosticLog.h"
 #include "SDL3_image/SDL_image.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
 #include <algorithm>
+#include <cctype>
 #include <regex>
+#include <string_view>
 
 namespace {
+	// Use a fixed format label so diagnostic entries never include a media path.
+	std::string_view diagnosticImageFormat(const std::string& path) {
+		const auto dot = path.find_last_of('.');
+		const auto separator = path.find_last_of("/\\");
+		if (dot == std::string::npos || (separator != std::string::npos && dot <= separator))
+			return "other";
+		std::string extension = path.substr(dot + 1);
+		std::transform(extension.begin(), extension.end(), extension.begin(),
+			[](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+		if (extension == "jpg" || extension == "jpeg" || extension == "jpe" ||
+			extension == "jfif" || extension == "jif" || extension == "jps") return "jpeg";
+		if (extension == "png" || extension == "pns") return "png";
+		if (extension == "tif" || extension == "tiff") return "tiff";
+		if (extension == "avif" || extension == "avifs") return "avif";
+		if (extension == "jxl") return "jxl";
+		if (extension == "webp") return "webp";
+		if (extension == "bmp" || extension == "dib") return "bmp";
+		if (extension == "tga") return "tga";
+		if (extension == "qoi") return "qoi";
+		if (extension == "ico" || extension == "cur") return "icon";
+		return "other";
+	}
+
 	// Read JPEG EXIF orientation from a bounded header scan, defaulting to normal orientation when
 	// absent.
 	int readExifOrientation(const std::string& path) {
@@ -67,7 +93,8 @@ namespace {
 							};
 							if (read16(tiff + 2) == 0x002A) {
 								uint32_t ifdOffset = read32(tiff + 4);
-								if (ifdOffset + 2 <= tiffLen) {
+								// Compare before adding: an untrusted 32-bit offset can wrap.
+								if (ifdOffset <= tiffLen - 2) {
 									uint16_t numEntries = read16(tiff + ifdOffset);
 									size_t entryOffset = ifdOffset + 2;
 									for (uint16_t i = 0; i < numEntries && entryOffset + 12 <= tiffLen; ++i, entryOffset += 12) {
@@ -325,11 +352,18 @@ SDL_Surface* Core::orientSurface(SDL_Surface* surface, const std::string& filepa
 
 // Load an image, apply orientation, and normalize its pixel format for rendering.
 SDL_Surface* Core::loadImageDirect(const std::string& imageFilename) {
+	DiagnosticLog::write("INFO", "image_decode_start", diagnosticImageFormat(imageFilename));
 	SDL_Surface* surface = IMG_Load(imageFilename.c_str());
-	if (surface == nullptr) return nullptr;
+	if (surface == nullptr) {
+		DiagnosticLog::write("ERROR", "image_decode_end", "result=failed stage=decoder");
+		return nullptr;
+	}
 
 	surface = orientSurface(surface, imageFilename);
-	if (surface == nullptr) return nullptr;
+	if (surface == nullptr) {
+		DiagnosticLog::write("ERROR", "image_decode_end", "result=failed stage=orientation");
+		return nullptr;
+	}
 
 	SDL_PixelFormat format= SDL_PIXELFORMAT_ABGR8888;
 	if (surface->format != format) {
@@ -338,6 +372,8 @@ SDL_Surface* Core::loadImageDirect(const std::string& imageFilename) {
 		surface = next;
 	}
 
+	DiagnosticLog::write(surface ? "INFO" : "ERROR", "image_decode_end",
+		surface ? "result=ready" : "result=failed stage=conversion");
 	return surface;
 }
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "ModelDownloader.h"
+#include "DiagnosticLog.h"
 
 #include <unzip.h>
 #ifdef _WIN32
@@ -14,6 +15,7 @@
 #include <cctype>
 #include <cstdio>
 #include <fstream>
+#include <format>
 #include <limits>
 #include <memory>
 #include <string_view>
@@ -266,12 +268,16 @@ bool downloadFile(const std::string& filename, FILE* output, Progress* progress,
 	}
 	bool success = request != nullptr && WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS,
 		0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(request, nullptr);
+	const DWORD connectionError = success ? 0 : GetLastError();
 	DWORD status = 0;
 	DWORD statusLength = sizeof(status);
 	if (success && (!WinHttpQueryHeaders(request,
 		WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
 		&status, &statusLength, WINHTTP_NO_HEADER_INDEX) || status != 200))
 		success = false;
+	if (!success)
+		DiagnosticLog::write("ERROR", "model_http", std::format("status={} win_error={}",
+			status, connectionError));
 	if (success && progress != nullptr) {
 		DWORD total = 0;
 		DWORD length = sizeof(total);
@@ -290,24 +296,35 @@ bool downloadFile(const std::string& filename, FILE* output, Progress* progress,
 		}
 	}
 	std::uint64_t receivedBytes = 0;
+	DWORD transferError = 0;
+	const char* transferStage = "none";
 	while (success) {
 		if (progress != nullptr && progress->cancel.load()) {
 			success = false;
+			transferStage = "cancelled";
 			break;
 		}
 		DWORD available = 0;
 		if (!WinHttpQueryDataAvailable(request, &available)) {
 			success = false;
+			transferError = GetLastError();
+			transferStage = "available";
 			break;
 		}
 		if (available == 0) break;
 		std::array<char, 64 * 1024> buffer{};
 		DWORD received = 0;
 		if (!WinHttpReadData(request, buffer.data(),
-			std::min<DWORD>(available, static_cast<DWORD>(buffer.size())), &received) ||
-			received > maxBytes - receivedBytes ||
+			std::min<DWORD>(available, static_cast<DWORD>(buffer.size())), &received)) {
+			success = false;
+			transferError = GetLastError();
+			transferStage = "read";
+			break;
+		}
+		if (received > maxBytes - receivedBytes ||
 			std::fwrite(buffer.data(), 1, received, output) != received) {
 			success = false;
+			transferStage = "write_or_size";
 			break;
 		}
 		receivedBytes += received;
@@ -317,6 +334,9 @@ bool downloadFile(const std::string& filename, FILE* output, Progress* progress,
 	if (connection != nullptr) WinHttpCloseHandle(connection);
 	WinHttpCloseHandle(session);
 	if (!success && error.empty()) error = "Could not download model data or it exceeded the size limit.";
+	if (!success) DiagnosticLog::write("ERROR", "model_transfer", std::format(
+		"stage={} win_error={} received={}", transferStage, transferError, receivedBytes));
+	else DiagnosticLog::write("INFO", "model_http", std::format("status={} received={}", status, receivedBytes));
 	return success;
 }
 #else
@@ -363,13 +383,18 @@ bool downloadFile(const std::string& filename, FILE* output, Progress* progress,
 		curl_easy_setopt(curl, CURLOPT_XFERINFODATA, progress);
 	}
 	const CURLcode result = trustConfigured ? curl_easy_perform(curl) : CURLE_SSL_CACERT_BADFILE;
+	long status = 0;
+	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
 	curl_easy_cleanup(curl);
 	curl_global_cleanup();
 	if (result != CURLE_OK) {
+		DiagnosticLog::write("ERROR", "model_http", std::format(
+			"curl_code={} status={} received={}", static_cast<int>(result), status, sink.received));
 		error = trustConfigured ? curl_easy_strerror(result) :
 			"Bundled CA certificates are unavailable.";
 		return false;
 	}
+	DiagnosticLog::write("INFO", "model_http", std::format("status={} received={}", status, sink.received));
 	return true;
 }
 #endif
@@ -397,10 +422,14 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 	}
 
 	const auto destination = directory / filename;
+	DiagnosticLog::write("INFO", "model_check", std::format("model={}", filename));
 	if (std::filesystem::is_regular_file(destination, filesystemError) && !filesystemError) {
 		std::string cachedHash;
-		if (sha256File(destination, cachedHash) && cachedHash == model->modelSha256)
+		if (sha256File(destination, cachedHash) && cachedHash == model->modelSha256) {
+			DiagnosticLog::write("INFO", "model_cached", std::format("model={}", filename));
 			return destination;
+		}
+		DiagnosticLog::write("ERROR", "model_cached_hash", std::format("model={}", filename));
 		error = "Cached model failed its SHA-256 integrity check: " + destination.string();
 		return {};
 	}
@@ -431,6 +460,7 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 #endif
 	};
 	FILE* checksumOutput = openOutput(temporaryChecksum);
+	DiagnosticLog::write("INFO", "model_sidecar_start", std::format("model={}", filename));
 	if (checksumOutput == nullptr) {
 		finish();
 		error = "Could not create temporary model checksum file.";
@@ -440,6 +470,7 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 		checksumOutput, progress, 256, error);
 	const bool checksumClosed = std::fclose(checksumOutput) == 0;
 	if (!checksumDownloaded || !checksumClosed) {
+		DiagnosticLog::write("ERROR", "model_sidecar_transfer", std::format("model={}", filename));
 		finish();
 		std::filesystem::remove(temporaryChecksum, filesystemError);
 		if (error.empty()) error = "Could not download model ZIP checksum.";
@@ -453,6 +484,7 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 	const std::string expectedLine = std::string(model->archiveSha256) + "  " + archiveFilename;
 	if (filesystemError || (checksum != expectedLine + "\n" &&
 		checksum != expectedLine + "\r\n")) {
+		DiagnosticLog::write("ERROR", "model_sidecar_mismatch", std::format("model={}", filename));
 		finish();
 		error = "Model ZIP checksum does not match this app release.";
 		return {};
@@ -462,6 +494,7 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 		progress->total = 0;
 	}
 	FILE* output = openOutput(temporaryArchive);
+	DiagnosticLog::write("INFO", "model_archive_start", std::format("model={}", filename));
 	if (output == nullptr) {
 		finish();
 		error = "Could not create temporary model ZIP: " + temporaryArchive.string();
@@ -472,6 +505,7 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 	const bool closeSucceeded = std::fclose(output) == 0;
 
 	if (!downloadSucceeded || !closeSucceeded) {
+		DiagnosticLog::write("ERROR", "model_archive_transfer", std::format("model={}", filename));
 		finish();
 		std::filesystem::remove(temporaryArchive, filesystemError);
 		if (!closeSucceeded) error = "Could not finish writing model ZIP.";
@@ -483,6 +517,8 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 		std::error_code sizeError;
 		const auto actualSize = std::filesystem::file_size(temporaryArchive, sizeError);
 		if (sizeError || actualSize != expectedSize) {
+			DiagnosticLog::write("ERROR", "model_archive_size", std::format(
+				"model={} expected={} actual={}", filename, expectedSize, actualSize));
 			finish();
 			std::filesystem::remove(temporaryArchive, filesystemError);
 			error = "The model ZIP download ended before the complete file was received.";
@@ -491,12 +527,14 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 	}
 	std::string archiveHash;
 	if (!sha256File(temporaryArchive, archiveHash) || archiveHash != model->archiveSha256) {
+		DiagnosticLog::write("ERROR", "model_archive_hash", std::format("model={}", filename));
 		finish();
 		std::filesystem::remove(temporaryArchive, filesystemError);
 		error = "Downloaded model ZIP failed its SHA-256 integrity check.";
 		return {};
 	}
 
+	DiagnosticLog::write("INFO", "model_extract_start", std::format("model={}", filename));
 	const bool extracted = extractModel(temporaryArchive, temporaryModel, filename, progress, error);
 	std::filesystem::remove(temporaryArchive, filesystemError);
 	finish();
@@ -506,11 +544,13 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 		return {};
 	}
 	if (!extracted) {
+		DiagnosticLog::write("ERROR", "model_extract", std::format("model={}", filename));
 		std::filesystem::remove(temporaryModel, filesystemError);
 		return {};
 	}
 	std::string modelHash;
 	if (!sha256File(temporaryModel, modelHash) || modelHash != model->modelSha256) {
+		DiagnosticLog::write("ERROR", "model_file_hash", std::format("model={}", filename));
 		std::filesystem::remove(temporaryModel, filesystemError);
 		error = "Extracted model failed its SHA-256 integrity check.";
 		return {};
@@ -522,6 +562,7 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 		error = "Could not install downloaded model: " + reason;
 		return {};
 	}
+	DiagnosticLog::write("INFO", "model_installed", std::format("model={}", filename));
 	return destination;
 }
 

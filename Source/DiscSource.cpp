@@ -6,6 +6,10 @@
 
 namespace DiscSource {
 namespace {
+std::string utf8(const std::filesystem::path& path) {
+    const auto bytes = path.u8string();
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
 // Normalize disc paths and extensions for case-insensitive identification.
 std::string lower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return char(std::tolower(c)); });
@@ -14,9 +18,9 @@ std::string lower(std::string value) {
 // Recognize extracted Blu-ray and DVD directory layouts, including selected metadata files.
 Type directoryType(std::filesystem::path path) {
     std::error_code ec;
-    const auto name = lower(path.filename().string());
-    if (name == "index.bdmv" || name == "movieobject.bdmv" || lower(path.extension().string()) == ".ifo") path = path.parent_path();
-    if (lower(path.filename().string()) == "bdmv" || lower(path.filename().string()) == "video_ts") path = path.parent_path();
+    const auto name = lower(utf8(path.filename()));
+    if (name == "index.bdmv" || name == "movieobject.bdmv" || lower(utf8(path.extension())) == ".ifo") path = path.parent_path();
+    if (lower(utf8(path.filename())) == "bdmv" || lower(utf8(path.filename())) == "video_ts") path = path.parent_path();
     for (const auto* dir : {"BDMV", "bdmv"})
         for (const auto* file : {"index.bdmv", "INDEX.BDMV"})
             if (std::filesystem::is_regular_file(path / dir / file, ec)) return Type::Bluray;
@@ -28,7 +32,7 @@ Type directoryType(std::filesystem::path path) {
 }
 // Identify paths worth probing as disc folders, ISO images, or optical drives.
 bool candidate(const std::filesystem::path& path) {
-    return directoryType(path) != Type::None || lower(path.extension().string()) == ".iso" ||
+    return directoryType(path) != Type::None || lower(utf8(path.extension())) == ".iso" ||
         !AudioCdReader::devicePath(path).empty();
 }
 // Determine the disc type by inspecting its directory layout or probing the available disc backends.
@@ -36,7 +40,7 @@ Type detect(const std::filesystem::path& path) {
     if (const auto type = directoryType(path); type != Type::None) return type;
     const auto device = AudioCdReader::devicePath(path);
     if (!device.empty() && AudioCdReader::isAudioCd(path)) return Type::AudioCd;
-    if (device.empty() && lower(path.extension().string()) != ".iso") return Type::None;
+    if (device.empty() && lower(utf8(path.extension())) != ".iso") return Type::None;
     const auto source = device.empty() ? path : device;
 #ifdef RENDEPTH_ENABLE_BLURAY
     if (auto* bd = bd_open(source.string().c_str(), nullptr)) {

@@ -6,6 +6,12 @@ Converts Any Standard Image/Video to 3D and Supports Native Stereo Media.
 
 Visit https://rendepth.com to Download the App.
 
+For a conversion or image-loading problem, attach `error_log.txt` from the same
+`.Rendepth` folder as the settings (`~/.Rendepth` on Linux/macOS or
+`%USERPROFILE%\.Rendepth` on Windows). The log records recent session events,
+image format and dimensions, and model transfer results. It does not include
+media file names, system paths, image content, or license details.
+
 Original Rendepth source code is available under the [MIT License](LICENSE).
 The combined application is distributed under [GNU GPL version 3](Legal/RENDEPTH_APP_LICENSE).
 Dependencies retain their own licenses; the collected texts and attributions are in

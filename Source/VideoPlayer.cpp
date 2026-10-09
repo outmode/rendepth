@@ -248,6 +248,7 @@ struct VideoPlayer::Impl {
 	static constexpr int audioChannels = 2;
 	static constexpr int audioBytesPerFrame = audioChannels * static_cast<int>(sizeof(float));
 	static constexpr int maxQueuedAudioBytes = audioSampleRate * audioBytesPerFrame * 3;
+	static constexpr int maxDiscQueuedAudioBytes = audioSampleRate * audioBytesPerFrame * 5;
 
 	// Decode embedded cover art into an oriented surface suitable for the audio display.
 	SDL_Surface* decodeAlbumArt() {
@@ -620,17 +621,18 @@ struct VideoPlayer::Impl {
 		state->started = false;
 	}
 
-	// Queue converted samples, waiting for space when audio-only playback must preserve every sample.
+	// Queue converted samples without losing disc audio when the drive or decoder runs ahead.
 	bool queueAudio(const float* samples, int sampleFrames) {
 		const auto state = audioState;
 		if (sampleFrames <= 0) return true;
 		if (audioSeekPending) return false;
 		const int sampleBytes = sampleFrames * audioBytesPerFrame;
-		// Video playback can keep decoding while its audio queue is full because
-		// video frames provide their own timing. Audio-only playback must retain
-		// every decoded sample, otherwise it can reach EOF several seconds early
-		// and the loop handler will seek back to the beginning.
-		const bool waitForAudioSpace = audioOnly;
+		const bool discVideo = blurayReader != nullptr || dvdReader != nullptr;
+		const int queueLimit = discVideo ? maxDiscQueuedAudioBytes : maxQueuedAudioBytes;
+		// Without an audio device, bounded startup samples may be discarded.
+		// Once a disc has an output, preserve samples so its playback clock stays
+		// aligned with the decoded video across bursts of optical I/O.
+		bool waitForAudioSpace = audioOnly;
 		const auto waitStart = std::chrono::steady_clock::now();
 		for (;;) {
 			// Pausing is not a decode failure. Retain this frame until playback
@@ -648,7 +650,7 @@ struct VideoPlayer::Impl {
 				if (state->closing || audioSeekPending) return false;
 				if (!isPlaying) continue;
 				if (state->output == nullptr) {
-					if (state->pendingBytes + sampleBytes <= maxQueuedAudioBytes) {
+					if (state->pendingBytes + sampleBytes <= queueLimit) {
 						state->pending.emplace_back(samples, samples +
 							static_cast<size_t>(sampleFrames) * audioChannels);
 						state->pendingBytes += sampleBytes;
@@ -657,8 +659,9 @@ struct VideoPlayer::Impl {
 					}
 					if (!waitForSpace) return true;
 				}
+				if (state->output != nullptr) waitForAudioSpace |= discVideo;
 				if (state->output != nullptr &&
-					SDL_GetAudioStreamQueued(state->output) <= maxQueuedAudioBytes) {
+					SDL_GetAudioStreamQueued(state->output) <= queueLimit) {
 					if (!SDL_PutAudioStreamData(state->output, samples, sampleBytes)) {
 						setRuntimeError(std::string("Could not queue video audio: ") + SDL_GetError());
 						return false;

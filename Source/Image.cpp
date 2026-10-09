@@ -19,6 +19,7 @@
 // SOFTWARE.
 
 #include "Image.h"
+#include "DiagnosticLog.h"
 #include "GettingStarted.h"
 #include "Utils.h"
 #include "WindowsCalibration.h"
@@ -41,6 +42,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <filesystem>
+#include <format>
 #include <limits>
 #include <string_view>
 
@@ -52,6 +55,18 @@
 #endif
 
 namespace {
+	std::string diagnosticImageExtension(const std::string& path) {
+		const auto bytes = std::filesystem::u8path(path).extension().u8string();
+		std::string extension(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+		std::transform(extension.begin(), extension.end(), extension.begin(),
+			[](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+		for (const char* known : { ".png", ".jpg", ".jpeg", ".jpe", ".jfif",
+			".jif", ".jps", ".pns", ".bmp", ".dib", ".tga", ".tif",
+			".tiff", ".webp", ".avif", ".avifs", ".jxl", ".qoi",
+			".ico", ".cur" })
+			if (extension == known) return extension.substr(1);
+		return "other";
+	}
 	static_assert(sizeof(Image::ImageDataFrag) % 16 == 0,
 		"Image shader uniform data must remain 16-byte aligned.");
 	static_assert(sizeof(Image::InterlacerDataFrag) == 128,
@@ -876,12 +891,14 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData,
 		StereoFormat forcedType) {
 	if (imageInfo.path.empty()) {
 		SDL_SetWindowTitle(context->window, context->appName);
-		Core::drawText(context, "Drag & Drop or Click Load Icon", helpFont,
+		Core::drawText(context, "Drag & Drop, Open File, or Open Disc Folder", helpFont,
 			helpTexture, helpTextSize, "Help Texture");
 		displayHelp = true;
 		return 1;
 	}
 	displayHelp = false;
+	DiagnosticLog::write("INFO", "image_open", std::format("format={}",
+		diagnosticImageExtension(imageInfo.path)));
 	context->currentZoom = 1.0f;
 	context->loading = true;
 	if (imageData == nullptr) {
@@ -890,6 +907,7 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData,
 			imageInfo.path = imageInfo.link;
 			imageData = Core::loadImageDirect(imageInfo.link);
 			if (imageData == nullptr) {
+				DiagnosticLog::write("ERROR", "image_decode", "result=failed");
 				SDL_SetWindowTitle(context->window, imageInfo.name.c_str());
 				Core::drawText(context, "Could Not Load Media", helpFont, helpTexture,
 				    helpTextSize, "Help Texture");
@@ -899,8 +917,11 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData,
 			}
 		}
 	}
+	DiagnosticLog::write("INFO", "image_decoded", std::format("width={} height={}",
+		imageData->w, imageData->h));
 
 	if (imageData->w > maxImageSize || imageData->h > maxImageSize) {
+		DiagnosticLog::write("ERROR", "image_dimensions", "result=too_large");
 		SDL_SetWindowTitle(context->window, context->appName);
 		Core::drawText(context, "Image Dimensions Exceeded", helpFont,
 			helpTexture, helpTextSize, "Help Texture");
@@ -938,6 +959,7 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData,
 		(Uint32)imageData->h, false, false);
 	clearColorSolid = getBackgroundColor(imageData, 4, imageData->w, imageData->h);
 	SDL_DestroySurface(imageData);
+	DiagnosticLog::write("INFO", "image_ready");
 
 	return 0;
 }
@@ -1661,11 +1683,15 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	SDL_Surface* imageData = nullptr;
 
 	if (!imageInfo.path.empty()) {
+		DiagnosticLog::write("INFO", "startup_image_open", std::format("format={}",
+			diagnosticImageExtension(imageInfo.path)));
 		imageData = Core::loadImageDirect(imageInfo.path);
 		if (imageData == nullptr) {
-			SDL_Log("Could Not Load Image: %s", imageInfo.path.c_str());
+			DiagnosticLog::write("ERROR", "startup_image_decode", "result=failed");
 			return -1;
 		}
+		DiagnosticLog::write("INFO", "startup_image_decoded", std::format(
+			"width={} height={}", imageData->w, imageData->h));
 
 		firstImageSize = glm::vec2((float)imageData->w, (float)imageData->h);
 		if (imageInfo.type == Color_Plus_Depth || imageInfo.type == Side_By_Side_Full ||
@@ -1759,6 +1785,35 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 	if (iconData == nullptr) {
 		SDL_Log("Could Not Load Icon Image.");
 		return -1;
+	}
+	// The atlas reserves a transparent Blu-ray tile. Draw a disc there so the
+	// disc-folder action has its own symbol without changing the other icons.
+	if (iconData->format == SDL_PIXELFORMAT_ABGR8888 &&
+		iconData->w % gridSize == 0 && iconData->h % gridSize == 0 &&
+		SDL_LockSurface(iconData)) {
+		const int tileWidth = iconData->w / gridSize;
+		const int tileHeight = iconData->h / gridSize;
+		const int tileIndex = static_cast<int>(IconType::BluRay);
+		const int left = tileIndex % gridSize * tileWidth;
+		const int top = tileIndex / gridSize * tileHeight;
+		const float centerX = left + tileWidth * 0.5f;
+		const float centerY = top + tileHeight * 0.5f;
+		const float radius = std::min(tileWidth, tileHeight) * 0.36f;
+		const float holeRadius = radius * 0.26f;
+		for (int y = top; y < top + tileHeight; ++y) {
+			for (int x = left; x < left + tileWidth; ++x) {
+				const float dx = x + 0.5f - centerX;
+				const float dy = y + 0.5f - centerY;
+				const float distance = std::sqrt(dx * dx + dy * dy);
+				const float coverage = std::clamp(std::min(radius - distance + 0.5f,
+					distance - holeRadius + 0.5f), 0.0f, 1.0f);
+				const Uint32 pixel = SDL_MapSurfaceRGBA(iconData, 255, 255, 255,
+					static_cast<Uint8>(coverage * 255.0f));
+				SDL_memcpy(static_cast<Uint8*>(iconData->pixels) + y * iconData->pitch +
+					x * sizeof(pixel), &pixel, sizeof(pixel));
+			}
+		}
+		SDL_UnlockSurface(iconData);
 	}
 	uploadTexture(context, iconData, &iconTexture, "Icon Texture");
 	SDL_DestroySurface(iconData);
@@ -2205,7 +2260,7 @@ int Image::init(Context* context, FileInfo& imageInfo) {
 
 	if (imageInfo.path.empty()) {
 		SDL_SetWindowTitle(context->window, context->appName);
-		Core::drawText(context, "Drag & Drop or Click Load Icon", helpFont,
+		Core::drawText(context, "Drag & Drop, Open File, or Open Disc Folder", helpFont,
 			helpTexture, helpTextSize, "Help Texture");
 		displayHelp = true;
 		return 1;
@@ -4339,14 +4394,13 @@ void Image::updateInterlacerUniforms(Context* context, int width, int height, Na
 			context->imageType != Light_Field_LKG) ? 1 : 0;
 	}
 	// invView orders supplied views. RGB-D views are generated from depth in
-	// screen-phase order, so reversing their indices flips the parallax. The
-	// Looking Glass quilt path reverses source view order in the shader; its
-	// two-eye stereo path needs the same reversal. CubeVI uses its own order.
+	// screen-phase order, so reversing their indices flips the parallax. Both
+	// native display types need the left/right order reversed for two-eye
+	// sources; CubeVI's quilt ordering is handled separately in the shader.
 	const bool generatedLightField = !config.cubeViC1 && config.viewCount > 2 &&
 		context->imageType == Color_Plus_Depth;
-	const bool reverseLookingGlassStereo = nativeStereoSource && !config.cubeViC1;
 	interlacerDataFrag.invertView =
-		generatedLightField ? 0 : (config.invertView != reverseLookingGlassStereo ? 1 : 0);
+		generatedLightField ? 0 : (config.invertView != nativeStereoSource ? 1 : 0);
 	interlacerDataFrag.flipImageX = config.flipImageX ? 1 : 0;
 	interlacerDataFrag.flipImageY = config.flipImageY ? 1 : 0;
 	interlacerDataFrag.separateDepth = videoDepthTexture != nullptr ? 1 : 0;

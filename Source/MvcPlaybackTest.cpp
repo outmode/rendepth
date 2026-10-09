@@ -8,13 +8,15 @@
 #include <iostream>
 #include <algorithm>
 #include <fstream>
+#include <thread>
 // Provide a no-op image orientation dependency for the standalone MVC test.
 SDL_Surface* Core::orientSurface(SDL_Surface* surface, const std::string&) { return surface; }
 
 // Verify native stereo frames, timing, seeking, clip transitions, and looping on a supplied MVC disc.
 int main(int argc, char** argv) {
-    if (argc < 2) { std::cerr << "Usage: MvcPlaybackTest <disc> [title index] [seek seconds] [frame.yuv] [frame count]\n"; return 1; }
+    if (argc < 2) { std::cerr << "Usage: MvcPlaybackTest <disc> [title index] [seek seconds] [frame.yuv] [frame count] [realtime]\n"; return 1; }
     const int dumpFrameCount = argc > 5 ? std::stoi(argv[5]) : 240;
+    const bool realtime = argc > 6 && std::string(argv[6]) == "realtime";
     if (dumpFrameCount < 24 || dumpFrameCount > 10000) {
         std::cerr << "Frame count must be between 24 and 10000\n"; return 1;
     }
@@ -55,6 +57,7 @@ int main(int argc, char** argv) {
         const auto started = std::chrono::steady_clock::now();
         const auto deadline = started + std::chrono::seconds(std::max(40, count / 20 + 20));
         int received = 0; bool different = false; double previous = -1;
+        double firstPts = 0.0;
         auto generation = player.generation(); bool looped = false;
         auto firstFrameTime = started;
         auto previousFrameTime = started;
@@ -68,7 +71,7 @@ int main(int argc, char** argv) {
             // audio paused fills its queue and stalls longer playback tests.
             player.setAudioBuffering(false);
             const auto frameTime = std::chrono::steady_clock::now();
-            if (!received) firstFrameTime = frameTime;
+            if (!received) { firstFrameTime = frameTime; firstPts = frame->presentationTime; }
             else frameGaps.push_back(std::chrono::duration<double, std::milli>(frameTime - previousFrameTime).count());
             previousFrameTime = frameTime;
             if (loop && frame->generation != generation) {
@@ -91,6 +94,9 @@ int main(int argc, char** argv) {
             previous = frame->presentationTime;
             if (!received) std::cout << "Frame " << frame->width << 'x' << frame->height << " pts=" << previous << std::endl;
             ++received;
+            if (realtime) std::this_thread::sleep_until(firstFrameTime +
+                std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(previous - firstPts)));
         }
         const double steadySeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - firstFrameTime).count();
         if (received > 1 && steadySeconds > 0)

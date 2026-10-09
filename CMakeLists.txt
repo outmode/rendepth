@@ -365,7 +365,7 @@ target_sources(Rendepth PUBLIC Source/Main.cpp Source/Core.cpp Source/Image.cpp 
 		Source/GettingStarted.cpp
 		Source/ScreenCapture.cpp Source/BrowserBridge.cpp
         Source/Style.cpp Source/Utils.cpp Source/DepthEstimator.cpp
-        Source/ModelDownloader.cpp Source/SuperResolution.cpp Source/CubeViCalibration.cpp)
+        Source/ModelDownloader.cpp Source/DiagnosticLog.cpp Source/SuperResolution.cpp Source/CubeViCalibration.cpp)
 
 target_include_directories(Rendepth PUBLIC
         ThirdParty/glm ThirdParty/SDL/include ThirdParty/SDL_image/include
@@ -387,7 +387,6 @@ if(UNIX AND NOT APPLE)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(GTK3 REQUIRED IMPORTED_TARGET gtk+-3.0)
     target_link_libraries(Rendepth PRIVATE PkgConfig::GTK3)
-    target_compile_definitions(Rendepth PRIVATE RENDEPTH_GTK_MEDIA_DIALOG)
 endif()
 
 if(TARGET zlibstatic)
@@ -1358,15 +1357,6 @@ if(RENDEPTH_ENABLE_FFMPEG AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_options(AudioCdPlaybackTest PRIVATE -UNDEBUG)
     target_link_options(AudioCdPlaybackTest PRIVATE -Wl,--wrap=open,--wrap=close,--wrap=ioctl)
 endif()
-if(UNIX AND NOT APPLE)
-    add_executable(MediaOpenDialogTest EXCLUDE_FROM_ALL
-        Source/MediaOpenDialogTest.cpp Source/MediaOpenDialog.cpp Source/DiscSource.cpp Source/AudioCdReader.cpp)
-    target_include_directories(MediaOpenDialogTest PRIVATE ThirdParty/SDL/include)
-    target_compile_definitions(MediaOpenDialogTest PRIVATE RENDEPTH_GTK_MEDIA_DIALOG)
-    target_compile_options(MediaOpenDialogTest PRIVATE -UNDEBUG)
-    target_link_libraries(MediaOpenDialogTest PRIVATE SDL3::SDL3 PkgConfig::GTK3)
-endif()
-
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(SettingsFileTest EXCLUDE_FROM_ALL Source/SettingsFileTest.cpp Source/SettingsFile.cpp)
     target_include_directories(SettingsFileTest PRIVATE ThirdParty/rapidjson/include)

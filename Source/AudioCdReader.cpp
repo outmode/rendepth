@@ -233,7 +233,8 @@ AudioCdReader::AudioCdReader() = default;
 AudioCdReader::~AudioCdReader() = default;
 // Resolve a supported drive path or audio-CD URI to its underlying optical device.
 std::filesystem::path AudioCdReader::devicePath(const std::filesystem::path& path) {
-    const auto value = path.string();
+    const auto bytes = path.u8string();
+    const std::string value(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 #ifdef __linux__
     if (value.starts_with("/dev/")) {
         std::error_code ec;
