@@ -102,7 +102,7 @@ const image = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR
 
 try {
   const {id} = await call('Extensions.loadUnpacked', {path: join(temporary, 'extension')});
-  assert.equal(id, 'ocmhnmfbdiamechohheannkbhdpbnjgl');
+  assert.equal(id, 'hffdjljngfgobaekdbgfgfodecmehgbh');
   const worker = await waitFor(async () => (await call('Target.getTargets')).targetInfos.find(t =>
     t.type === 'service_worker' && t.url.startsWith('chrome-extension://' + id)));
   const {sessionId} = await call('Target.attachToTarget', {targetId: worker.targetId, flatten: true});

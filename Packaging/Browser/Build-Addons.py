@@ -15,8 +15,8 @@ FIXED_TIME = (2020, 1, 1, 0, 0, 0)
 def package(source: Path, destination: Path, *, chrome: bool) -> None:
     manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
     if chrome:
-        # The Web Store assigns the real item ID at draft upload. The key in
-        # the checkout only preserves the ID of local unpacked installations.
+        # The checkout key gives unpacked installs the store item's ID; the
+        # upload ZIP still omits it because the Web Store supplies its own key.
         manifest.pop("key", None)
     files = sorted(path for path in source.rglob("*") if path.is_file())
     destination.parent.mkdir(parents=True, exist_ok=True)

@@ -27,12 +27,12 @@ them; Inno signs the setup and uninstaller. A signing or verification failure
 leaves the previous installer in place. Pass `-SignToolPath` or `-TimestampUrl`
 if this machine uses different tools or a different timestamp service.
 
-Pass `-ChromeExtensionId` with the Item ID shown after the Chrome upload ZIP
-is added to the Chrome Web Store dashboard. The local unpacked ID is not a
-substitute. Pass `-BuildDir` for another configured CMake directory,
+Pass `-ChromeExtensionId` with the Item ID shown in the Chrome Web Store
+dashboard. The checkout's unpacked extension now uses this same ID. Pass
+`-BuildDir` for another configured CMake directory,
 `-InnoCompiler` for an ISCC.exe outside the usual installation paths, or
 `-Python` for a Python installation with PyInstaller. The script reconfigures with browser WebRTC
-required, builds Rendepth with 28 parallel jobs, stages the CMake install tree,
+required, builds Rendepth with 10 parallel jobs, stages the CMake install tree,
 checks the required CPU runtime, Visual C++ and GStreamer files, and writes
 `Distribution/<version>/Windows/Rendepth-<version>-windows-x64-setup.exe`.
 The installer includes the CPU runtime, program DLLs, GStreamer WebRTC runtime
@@ -92,7 +92,7 @@ No CUDA toolkit, cuDNN, DirectML SDK, or ORT import library is needed to compile
 cmake -S . -B build-windows -G "Visual Studio 18 2026" -A x64 `
   -DRENDEPTH_ONNXRUNTIME_DIR=C:/SDKs/onnxruntime-win-x64-1.22.1 `
   -DRENDEPTH_CPU_RUNTIME_DIR=C:/SDKs/onnxruntime-win-x64-1.22.1
-cmake --build build-windows --config Release --target Rendepth --parallel 28
+cmake --build build-windows --config Release --target Rendepth --parallel 10
 ```
 
 Retain the project's other machine-specific FFmpeg and NASM options. In CLion,

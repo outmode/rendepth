@@ -12,6 +12,9 @@ import install
 
 
 class InstallerTest(unittest.TestCase):
+    def test_local_extension_matches_store_identity(self):
+        self.assertEqual(install.extension_id(), 'hffdjljngfgobaekdbgfgfodecmehgbh')
+
     @unittest.skipIf(os.name == 'nt', 'POSIX launcher test')
     def test_manifest_scope_and_launcher(self):
         with tempfile.TemporaryDirectory(prefix='rendepth chrome ') as temporary:

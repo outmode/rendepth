@@ -15,13 +15,10 @@ permanently.
 The Chrome ZIP has been uploaded as a draft in the
 [Chrome Web Store Developer Dashboard](https://chrome.google.com/webstore/devconsole/).
 Its **Item ID** is `hffdjljngfgobaekdbgfgfodecmehgbh`; public
-publication is not needed to learn it. Give that 32-letter ID to the desktop
-installer with `-ChromeExtensionId` and to the macOS package with
-`--chrome-extension-id`. Do not use the unpacked development ID
-`ocmhnmfbdiamechohheannkbhdpbnjgl` for public installers. Once the dashboard
-has assigned its public key, replace the local manifest `key` with it so an
-unpacked copy can use the store ID during testing. Rebuild the upload ZIP after
-any source change.
+publication is not needed to learn it. The local manifest now contains the
+store item's public key, so unpacked copies use the same ID. Give that 32-letter
+ID to the desktop installer with `-ChromeExtensionId` and to the macOS package
+with `--chrome-extension-id`. Rebuild the upload ZIP after any source change.
 
 Upload the Firefox ZIP through the
 [AMO developer hub](https://addons.mozilla.org/developers/). Select a listed

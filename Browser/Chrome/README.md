@@ -63,11 +63,13 @@ or signing is required for local testing.
    or **Open in Rendepth** in the media's right-click menu. An existing Rendepth
    window is reused; otherwise the host launches it.
 
-The manifest's public key gives unpacked installations a stable development ID:
-`ocmhnmfbdiamechohheannkbhdpbnjgl`. The Chrome Web Store item receives its
-own ID when the upload ZIP is added as a draft. Pass that Item ID to the desktop
-installer and to `native/install.py --extension-id` for store-extension tests.
-The public key is an identity anchor for local loading, not a signing credential.
+The manifest's public key gives unpacked installations the same ID as the
+Chrome Web Store item: `hffdjljngfgobaekdbgfgfodecmehgbh`. The native host
+installed with the desktop app allows this ID. If you previously loaded this
+checkout under the old development ID `ocmhnmfbdiamechohheannkbhdpbnjgl`,
+remove that unpacked extension in `chrome://extensions` and load it again so
+Chrome assigns the current ID. The public key is an identity anchor for local
+loading, not a signing credential.
 See `Packaging/Browser/STORE_SUBMISSION.md` for the upload sequence.
 
 After updating the extension, use **Reload** in `chrome://extensions` and reload

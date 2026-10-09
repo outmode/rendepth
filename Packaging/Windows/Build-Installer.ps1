@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 if ($ChromeExtensionId -cnotmatch '^[a-p]{32}$') {
-    throw "Pass -ChromeExtensionId with the Item ID from the Chrome Web Store dashboard. The local unpacked ID is not the store ID."
+    throw "Pass -ChromeExtensionId with the 32-letter Item ID from the Chrome Web Store dashboard."
 }
 if (-not $Python) {
     $localPython = Join-Path $repo "build/installer-tools/Scripts/python.exe"
@@ -90,7 +90,7 @@ if ($cmakeMatch.Success -and (Test-Path $cmakeMatch.Groups[1].Value.Trim())) {
 # cached build without GStreamer cannot silently produce an incomplete setup.
 & $cmake -S $repo -B $BuildDir -DRENDEPTH_REQUIRE_GSTREAMER=ON -DRENDEPTH_INSTALLER_BUILD=ON
 if ($LASTEXITCODE -ne 0) { throw "Release configuration requires GStreamer WebRTC development files" }
-& $cmake --build $BuildDir --config Release --target Rendepth --parallel 28
+& $cmake --build $BuildDir --config Release --target Rendepth --parallel 10
 if ($LASTEXITCODE -ne 0) { throw "Release build failed" }
 
 $stage = Join-Path $BuildDir ("installer-stage-" + [guid]::NewGuid().ToString("N"))

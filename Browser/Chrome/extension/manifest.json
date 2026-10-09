@@ -4,7 +4,7 @@
   "version": "3.0",
   "minimum_chrome_version": "120",
   "description": "Send web photos and videos to the Rendepth desktop app for 3D viewing. Requires Rendepth.",
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvtHv/13lKFNn1QlIM8SGNDbIx1eX8UHa4/NvRs7rFi3GLNjWKGcsK6YlUrY02rFfhJFmZofb4Zj1yY3482Kxau/Da22Pw8SBsgfr0YGW/NfQuu+pSCDgJ/Vs9a2ccB4RFVQddiaKubiPEqLLKc9Fn9mrKCWHLxNgetwgL/CxJAtASufmHsXi4Id8itmw14shAjTPGUda6d+743JSEgOVG7Zt+KrTgjdFV2EKveFffN6dWHF02eFat2+0rSuwRwtad6CZAAxrGTNMcWo61L0CCCI5YOqXnJ0fP5NDWTBZWqq7O9XeJp3lyZb+vsqCo8RHuqBEgDUdXOGRgRqlcjmJOwIDAQAB",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmcMdVjqnNA+/1+fKGNJDu/u7huk4hC4PD6LnRBrHFnUFtE9aQ6+vJNJauvvVxy+Ycy9RTvg3yjC9PYZ9sNYmQAL8wsl4ASxRByt62+1kPD4E50zoPNZPXrU8PFtiRLAs+edBqSRMZrA5yKQeOOEhtSaqdvrxSwt5R7Lb3mXL+v9pwpBfzt0zDxHDJdTDD5xVeki7F0XvZNpwJkWtgSfMyg11Nb/Psc4JT9gNc1CEuWtWVSou2+WGrC0SuKJRyLDltAcFIyVAtcm9MSR3qF2K8tr29qyJ58wRHvwknlB9VwujfEM2Jh9+HZrIV75cZAaOgA49lF8KljYhW/ytLEIinwIDAQAB",
   "icons": {
     "512": "icons/rendepth.png"
   },
