@@ -32,7 +32,7 @@ dashboard. The checkout's unpacked extension now uses this same ID. Pass
 `-BuildDir` for another configured CMake directory,
 `-InnoCompiler` for an ISCC.exe outside the usual installation paths, or
 `-Python` for a Python installation with PyInstaller. The script reconfigures with browser WebRTC
-required, builds Rendepth with 10 parallel jobs, stages the CMake install tree,
+required, builds Rendepth with 28 parallel jobs, stages the CMake install tree,
 checks the required CPU runtime, Visual C++ and GStreamer files, and writes
 `Distribution/<version>/Windows/Rendepth-<version>-windows-x64-setup.exe`.
 The installer includes the CPU runtime, program DLLs, GStreamer WebRTC runtime
@@ -92,7 +92,7 @@ No CUDA toolkit, cuDNN, DirectML SDK, or ORT import library is needed to compile
 cmake -S . -B build-windows -G "Visual Studio 18 2026" -A x64 `
   -DRENDEPTH_ONNXRUNTIME_DIR=C:/SDKs/onnxruntime-win-x64-1.22.1 `
   -DRENDEPTH_CPU_RUNTIME_DIR=C:/SDKs/onnxruntime-win-x64-1.22.1
-cmake --build build-windows --config Release --target Rendepth --parallel 10
+cmake --build build-windows --config Release --target Rendepth --parallel 28
 ```
 
 Retain the project's other machine-specific FFmpeg and NASM options. In CLion,

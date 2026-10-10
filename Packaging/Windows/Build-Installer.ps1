@@ -90,7 +90,7 @@ if ($cmakeMatch.Success -and (Test-Path $cmakeMatch.Groups[1].Value.Trim())) {
 # cached build without GStreamer cannot silently produce an incomplete setup.
 & $cmake -S $repo -B $BuildDir -DRENDEPTH_REQUIRE_GSTREAMER=ON -DRENDEPTH_INSTALLER_BUILD=ON
 if ($LASTEXITCODE -ne 0) { throw "Release configuration requires GStreamer WebRTC development files" }
-& $cmake --build $BuildDir --config Release --target Rendepth --parallel 10
+& $cmake --build $BuildDir --config Release --target Rendepth --parallel 28
 if ($LASTEXITCODE -ne 0) { throw "Release build failed" }
 
 $stage = Join-Path $BuildDir ("installer-stage-" + [guid]::NewGuid().ToString("N"))

@@ -114,6 +114,22 @@ Type: files; Name: "{app}\Browser\Firefox\com.outmode.rendepth.json"
 Type: files; Name: "{app}\Browser\Chrome\com.outmode.rendepth.json"
 
 [Code]
+function SetForegroundWindow(hWnd: HWND): Boolean;
+  external 'SetForegroundWindow@user32.dll stdcall';
+
+var
+  InitialPageShown: Boolean;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if not InitialPageShown and not WizardSilent then
+  begin
+    InitialPageShown := True;
+    { The elevated setup process can appear behind the window that launched it. }
+    SetForegroundWindow(WizardForm.Handle);
+  end;
+end;
+
 function JsonEscape(Value: String): String;
 begin
   StringChangeEx(Value, '\', '\\', True);
