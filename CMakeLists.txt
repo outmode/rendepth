@@ -632,6 +632,11 @@ if(RENDEPTH_ENABLE_FFMPEG)
         set(RENDEPTH_FFMPEG_LIBRARY_DIR "${RENDEPTH_FFMPEG_PREFIX}/lib")
         set(RENDEPTH_FFMPEG_INCLUDE_DIR "${RENDEPTH_FFMPEG_PREFIX}/include")
         file(MAKE_DIRECTORY "${RENDEPTH_FFMPEG_INCLUDE_DIR}")
+        set(RENDEPTH_FFMPEG_PATH_OPTIONS)
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+            list(APPEND RENDEPTH_FFMPEG_PATH_OPTIONS
+                    "--extra-cflags=-ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -ffile-prefix-map=${CMAKE_BINARY_DIR}=.")
+        endif()
 
         ExternalProject_Add(RendepthFFmpeg
             SOURCE_DIR "${CMAKE_SOURCE_DIR}/ThirdParty/FFmpeg"
@@ -642,6 +647,7 @@ if(RENDEPTH_ENABLE_FFMPEG)
                 "--host-cc=${CMAKE_C_COMPILER}"
                 "--pkg-config=${PKG_CONFIG_EXECUTABLE}"
                 "--prefix=${RENDEPTH_FFMPEG_PREFIX}"
+                ${RENDEPTH_FFMPEG_PATH_OPTIONS}
                 --disable-programs
                 --disable-doc
                 --disable-debug
