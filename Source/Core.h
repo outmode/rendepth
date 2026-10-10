@@ -221,9 +221,7 @@ struct Context {
 	glm::vec2 safeSize;
 	glm::vec2 displayAspect;
 	bool fullscreen;
-#if defined(_WIN32) && defined(_MSC_VER)
 	bool lenticular;
-#endif
 	bool maximized;
 	float visibility;
 	bool loading;

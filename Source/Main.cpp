@@ -1895,7 +1895,7 @@ static bool downloadBlocksInput() {
 }
 
 Choice ChoiceVersion {
-	.label = "Rendepth 3.0.3 (Free Version)",
+	.label = "Rendepth 3.0.4 (Free Version)",
 	.options = {},
 	.inlineText = true,
 	.bold = true,
@@ -1995,6 +1995,16 @@ static constexpr bool isHalfSbsPreference(ViewMode mode) {
 	return mode == SBS_Half;
 #endif
 }
+
+static constexpr bool isLenticularPreference(ViewMode mode) {
+#if defined(_WIN32) && defined(_MSC_VER)
+	return mode == Lenticular;
+#else
+	(void)mode;
+	return false;
+#endif
+}
+
 // All interactive Pro entry points use the same locally persisted activation.
 static constexpr const char* proUpgradeMessage = "Upgrade to Pro to Unlock Feature";
 // Check the saved Pro activation and show the upgrade prompt when a feature is locked.
@@ -4498,7 +4508,7 @@ static void setFullscreen(bool fullscreen = true) {
 	if (fullscreen && context.window != nullptr) {
 		SDL_DisplayID displayID = SDL_GetDisplayForWindow(context.window);
 		if (displayID != 0) {
-			if (preferredStereoMode == Lenticular) {
+			if (isLenticularPreference(preferredStereoMode)) {
 				const bool selected = SDL_SetWindowFullscreenMode(context.window, nullptr);
 				DiagnosticLog::write(selected ? "INFO" : "WARN", "fullscreen_mode",
 					std::format("source=desktop display={} result={}",
@@ -5152,7 +5162,7 @@ static void refreshLicenseMenu(bool rebuild) {
         menuSelection[label] = -1; menuRollover[label] = -1;
         original.label = label;
     };
-    rename(ChoiceVersion, licensed ? "Rendepth 3.0.3 (Pro License)" : "Rendepth 3.0.3 (Free Version)");
+    rename(ChoiceVersion, licensed ? "Rendepth 3.0.4 (Pro License)" : "Rendepth 3.0.4 (Free Version)");
     rename(ChoiceLicense, licensed ? "Manage Rendepth Pro License" : "Upgrade to Rendepth Pro");
     if (rebuild) {
         Image::initMenuTexture();
@@ -5164,7 +5174,7 @@ static void refreshLicenseMenu(bool rebuild) {
 // Initialize application services, the SDL window and GPU, preferences, and the initial media source.
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	if (!homeDir.empty()) DiagnosticLog::start(homePath);
-	DiagnosticLog::write("INFO", "app_start", "version=3.0.3");
+	DiagnosticLog::write("INFO", "app_start", "version=3.0.4");
 	// Keep fullscreen visible when a native dialog or another application takes focus.
 	SDL_SetHintWithPriority(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0", SDL_HINT_OVERRIDE);
 #if defined(__APPLE__) && defined(RENDEPTH_ENABLE_ONNX_RUNTIME)
@@ -5185,7 +5195,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	context.appName = "Rendepth";
 	// Keep the desktop entry name, Wayland app_id, and X11 window class aligned
 	// so the running window is grouped under the installed launcher icon.
-	SDL_SetAppMetadata("Rendepth", "3.0.3", "rendepth");
+	SDL_SetAppMetadata("Rendepth", "3.0.4", "rendepth");
 	context.windowSize = { 1920, 1080 };
 	context.appIcons = &appIcons;
 	context.menuChoices = &menuChoices;
@@ -7578,7 +7588,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			"display={} width={} height={} refresh_hz={:.2f} fullscreen={}",
 			static_cast<unsigned>(currentDisplay), displayMode->w, displayMode->h,
 			displayMode->refresh_rate, isFullscreen ? 1 : 0));
-		if (isFullscreen && preferredStereoMode != Lenticular)
+		if (isFullscreen && !isLenticularPreference(preferredStereoMode))
 			Image::configureFullscreenMode(context.window, currentDisplay);
 		Image::currentDisplay = currentDisplay;
 		auto virtualSize = glm::vec2(displayMode->w, displayMode->h) * displayMode->pixel_density;

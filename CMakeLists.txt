@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(Rendepth VERSION 3.0.3 LANGUAGES C CXX)
+project(Rendepth VERSION 3.0.4 LANGUAGES C CXX)
 if(APPLE)
     enable_language(OBJCXX)
 endif()
@@ -1330,6 +1330,12 @@ if(RENDEPTH_ENABLE_FFMPEG AND RENDEPTH_HAVE_DVD)
 endif()
 
 if(RENDEPTH_ENABLE_FFMPEG)
+    add_executable(VideoLoopTest EXCLUDE_FROM_ALL
+        Source/VideoLoopTest.cpp Source/VideoPlayer.cpp Source/AudioCdReader.cpp
+        Source/DiscSource.cpp Source/BlurayReader.cpp Source/DvdReader.cpp Source/MvcDecoder.cpp)
+    target_include_directories(VideoLoopTest PRIVATE $<TARGET_PROPERTY:Rendepth,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(VideoLoopTest PRIVATE $<TARGET_PROPERTY:Rendepth,COMPILE_DEFINITIONS>)
+    target_link_libraries(VideoLoopTest PRIVATE $<TARGET_PROPERTY:Rendepth,LINK_LIBRARIES>)
     add_executable(VideoAudioTrackTest EXCLUDE_FROM_ALL
         Source/VideoAudioTrackTest.cpp Source/VideoPlayer.cpp Source/AudioCdReader.cpp
         Source/DiscSource.cpp Source/BlurayReader.cpp Source/DvdReader.cpp Source/MvcDecoder.cpp)

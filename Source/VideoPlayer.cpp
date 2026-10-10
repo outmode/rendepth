@@ -1489,6 +1489,39 @@ struct VideoPlayer::Impl {
 					break;
 				}
 				if (totalDuration > 0.0) {
+					// Decoding can reach EOF while the renderer still has a full buffer
+					// of frames. Seeking now clears that buffer and cuts off the end of
+					// short clips. Keep this generation until its final frame has been
+					// shown for the remainder of its display interval.
+					const double lastFrameTime = currentPosition.load();
+					const double finalFrameDuration = std::clamp(
+						totalDuration.load() - lastFrameTime, 0.0, fallbackFrameDuration);
+					auto finalFramePresentedAt = std::chrono::steady_clock::time_point{};
+					for (;;) {
+						std::unique_lock lock(stateMutex);
+						if (stopRequested || requestedSeek.has_value()) break;
+						stateChanged.wait_for(lock, std::chrono::milliseconds(10), [&] {
+							return stopRequested || requestedSeek.has_value() || !isPlaying.load();
+						});
+						if (stopRequested || requestedSeek.has_value()) break;
+						if (!isPlaying) {
+							finalFramePresentedAt = {};
+							stateChanged.wait(lock, [&] {
+								return stopRequested || requestedSeek.has_value() || isPlaying.load();
+							});
+							continue;
+						}
+						if (presentedPosition.load() + 0.001 < lastFrameTime) continue;
+						const auto now = std::chrono::steady_clock::now();
+						if (finalFramePresentedAt == std::chrono::steady_clock::time_point{})
+							finalFramePresentedAt = now;
+						const bool frameFinished =
+							std::chrono::duration<double>(now - finalFramePresentedAt).count() >=
+							finalFrameDuration;
+						lock.unlock();
+						if (frameFinished && queuedAudioDuration() <= 0.02) break;
+					}
+					if (interrupted()) continue;
 					if (!applySeek({0.0, false}, seekFloor, audioSeekFloor)) break;
 					playbackGeneration.fetch_add(1);
 					clockValid = false;
