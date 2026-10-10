@@ -79,6 +79,7 @@ ID3D12CommandQueue* setupQueue = nullptr;
 ID3D12Resource* inputCopy = nullptr;
 ID3D12DescriptorHeap* rtvHeap = nullptr;
 SDL_Window* activeWindow = nullptr;
+SDL_GPUDevice* activeGpu = nullptr;
 bool failureLogged = false;
 bool weaveFailed = false;
 unsigned successfulFrames = 0;
@@ -194,6 +195,10 @@ SR::SRContext* createContext() {
 }
 
 void release() {
+    // Draw submissions can still refer to the weaver's D3D12 resources.
+    // Synchronize only when replacing or shutting down the bridge.
+    if (activeGpu && (weaver || inputCopy || setupQueue))
+        SDL_WaitForGPUIdle(activeGpu);
     if (activeWindow) SDL_Log("SR lenticular: fullscreen output disengaged");
     if (lens) {
         try { lens->disable(); } catch (const std::exception&) { }
@@ -295,6 +300,7 @@ bool initialize(SDL_Window* window, ID3D12Resource* source, ID3D12Resource* back
 
 bool LenticularBridge::supported(SDL_GPUDevice* gpu, SDL_Window* window) {
     if (!gpu || !window) return false;
+    activeGpu = gpu;
     const char* driver = SDL_GetGPUDeviceDriver(gpu);
     return driver && std::string_view(driver) == "direct3d12" &&
            !failureLogged && !weaveFailed && loadRuntime();
@@ -389,7 +395,7 @@ bool LenticularBridge::weave(SDL_GPUCommandBuffer* command, SDL_Window* window,
     } catch (const std::exception& e) {
         SDL_Log("SR lenticular weave failed: %s", e.what());
         // The command list may already refer to weaver-owned GPU resources.
-        // Keep them alive until fullscreen exits, after SDL's frame fence.
+        // Keep them alive until fullscreen exits; stop waits for queued GPU work.
         if (lens) {
             try { lens->disable(); } catch (const std::exception&) { }
         }
@@ -407,6 +413,7 @@ bool LenticularBridge::weave(SDL_GPUCommandBuffer* command, SDL_Window* window,
 
 void LenticularBridge::stop() {
     release();
+    activeGpu = nullptr;
     failureLogged = false;
     weaveFailed = false;
     runtimeUnavailable = false;

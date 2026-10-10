@@ -89,9 +89,9 @@ namespace {
 	AudioWaveform::Bars smoothedAudioWaveform{};
 	BlurClock::time_point waveformDrawTime{};
 
-	// Opt-in diagnostics count distinct video frames after a real window draw,
-	// not decoder output or repeated redraws. This is GPU completion, not a
-	// measurement of the compositor's physical scanout.
+	// Opt-in diagnostics count distinct video frames after a window draw is
+	// submitted, not decoder output or repeated redraws. This does not measure
+	// the compositor's physical scanout.
 	void recordBrowserDraw(Context* context, bool hasSwapchain) {
 		static const bool enabled = SDL_getenv("RENDEPTH_BROWSER_STATS") != nullptr;
 		if (!enabled) return;
@@ -714,9 +714,15 @@ void Image::configureFullscreenMode(SDL_Window* window, SDL_DisplayID displayID)
 		}
 	}
 	if (bestMode != nullptr) {
-		SDL_SetWindowFullscreenMode(window, bestMode);
+		const bool selected = SDL_SetWindowFullscreenMode(window, bestMode);
+		if (!selected)
+			SDL_Log("Could not select fullscreen display mode: %s", SDL_GetError());
 		SDL_Log("Selected native fullscreen display mode: %dx%d (%.2f Hz) for display %u",
 			bestMode->w, bestMode->h, bestMode->refresh_rate, (unsigned int)displayID);
+		DiagnosticLog::write("INFO", "fullscreen_mode", std::format(
+			"display={} width={} height={} refresh_hz={:.2f} result={}",
+			static_cast<unsigned>(displayID), bestMode->w, bestMode->h,
+			bestMode->refresh_rate, selected ? "ok" : "failed"));
 	} else {
 		SDL_SetWindowFullscreenMode(window, nullptr);
 	}
@@ -3395,6 +3401,7 @@ SDL_GPUTexture* lenticularTarget(Context* context, SDL_GPUTexture* backbuffer,
     if (!context->lenticular || !context->fullscreen ||
         !LenticularBridge::supported(context->device, context->window)) {
         if (lenticularFrame) {
+            SDL_WaitForGPUIdle(context->device);
             SDL_ReleaseGPUTexture(context->device, lenticularFrame);
             lenticularFrame = nullptr;
         }
@@ -3403,7 +3410,10 @@ SDL_GPUTexture* lenticularTarget(Context* context, SDL_GPUTexture* backbuffer,
     const auto format = SDL_GetGPUSwapchainTextureFormat(context->device, context->window);
     if (!lenticularFrame || lenticularWidth != width || lenticularHeight != height ||
         lenticularFormat != format) {
-        if (lenticularFrame) SDL_ReleaseGPUTexture(context->device, lenticularFrame);
+        if (lenticularFrame) {
+            SDL_WaitForGPUIdle(context->device);
+            SDL_ReleaseGPUTexture(context->device, lenticularFrame);
+        }
         SDL_GPUTextureCreateInfo info{};
         info.type = SDL_GPU_TEXTURETYPE_2D;
         info.format = format;
@@ -3508,6 +3518,8 @@ int drawGettingStarted(Context* context) {
 
 // Render media, backgrounds, subtitles, and UI overlays for the active presentation mode.
 int Image::draw(Context* context) {
+	const bool measureLenticular = context->lenticular && context->fullscreen;
+	const Uint64 drawStarted = measureLenticular ? SDL_GetTicksNS() : 0;
 	if (GettingStarted::visible) {
 		bool drawCustomCursor = context->fullscreen && SDL_GetMouseFocus() == context->window;
 #ifdef __APPLE__
@@ -3538,7 +3550,9 @@ int Image::draw(Context* context) {
 		nativeOutputSourceReady = imageTexture != nullptr;
 		if (nativeOutputSourceReady) drawNativeOutput(context);
 	}
+	const Uint64 commandStarted = measureLenticular ? SDL_GetTicksNS() : 0;
 	SDL_GPUCommandBuffer* commandBuffer = SDL_AcquireGPUCommandBuffer(context->device);
+	const Uint64 commandsReady = measureLenticular ? SDL_GetTicksNS() : 0;
 	if (commandBuffer == nullptr) {
 		SDL_Log("Acquire GPU Command Buffer Failed.");
 		return -1;
@@ -3546,12 +3560,20 @@ int Image::draw(Context* context) {
 
 	Uint32 swapchainWidth = 0, swapchainHeight = 0;
 	SDL_GPUTexture* swapchainTexture;
-	if (!SDL_AcquireGPUSwapchainTexture(commandBuffer, context->window, &swapchainTexture,
-			&swapchainWidth, &swapchainHeight)) {
+	const Uint64 acquireStarted = SDL_GetTicksNS();
+	const bool acquired = SDL_AcquireGPUSwapchainTexture(commandBuffer, context->window,
+		&swapchainTexture, &swapchainWidth, &swapchainHeight);
+	const Uint64 acquireDuration = SDL_GetTicksNS() - acquireStarted;
+	const Uint64 swapchainReady = measureLenticular ? SDL_GetTicksNS() : 0;
+	if (context->lenticular && context->fullscreen && acquireDuration > 100000000)
+		DiagnosticLog::write("WARN", "lenticular_swapchain_wait", std::format(
+			"duration_ms={}", acquireDuration / 1000000));
+	if (!acquired) {
 		SDL_Log("Acquire GPU Swap Chain Failed.");
 		return -1;
 	}
 
+	Uint64 weaveDuration = 0;
 	if (swapchainTexture != nullptr) {
 		if (context->backgroundStyle == Solid) clearColorCurrent = clearColorSolid;
 		else if (context->backgroundStyle == Light) clearColorCurrent = clearColorLight;
@@ -4323,14 +4345,38 @@ int Image::draw(Context* context) {
 
 		SDL_EndGPURenderPass(renderPass);
 #if defined(_WIN32) && defined(_MSC_VER)
+		const Uint64 weaveStarted = measureLenticular ? SDL_GetTicksNS() : 0;
 		presentLenticular(commandBuffer, context, colorTargetInfo.texture,
 			swapchainTexture, swapchainWidth, swapchainHeight);
+		if (measureLenticular) weaveDuration = SDL_GetTicksNS() - weaveStarted;
 #endif
 	}
 
-	SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commandBuffer);
-	SDL_WaitForGPUFences(context->device, true, &fence, 1);
-	SDL_ReleaseGPUFence(context->device, fence);
+	// SDL bounds queued frames on this device. Synchronizing every draw held
+	// the presentation thread behind the GPU; bridge teardown and resize wait
+	// for idle before releasing their shared D3D12 resources.
+	const Uint64 submitStarted = SDL_GetTicksNS();
+	if (!SDL_SubmitGPUCommandBuffer(commandBuffer)) return -1;
+	const Uint64 submitDuration = SDL_GetTicksNS() - submitStarted;
+	if (measureLenticular) {
+		const Uint64 totalDuration = SDL_GetTicksNS() - drawStarted;
+		static Uint64 lastTimingLog = 0;
+		if (totalDuration > 80000000 &&
+			(lastTimingLog == 0 || SDL_GetTicksNS() - lastTimingLog >= 1000000000)) {
+			DiagnosticLog::write("WARN", "lenticular_draw_timing", std::format(
+				"total_ms={} precommand_ms={} command_ms={} swapchain_ms={} render_ms={} weave_ms={} submit_ms={}",
+				totalDuration / 1000000,
+				(commandStarted - drawStarted) / 1000000,
+				(commandsReady - commandStarted) / 1000000,
+				(swapchainReady - commandsReady) / 1000000,
+				(submitStarted - swapchainReady - weaveDuration) / 1000000,
+				weaveDuration / 1000000, submitDuration / 1000000));
+			lastTimingLog = SDL_GetTicksNS();
+		}
+	}
+	if (context->lenticular && context->fullscreen && submitDuration > 100000000)
+		DiagnosticLog::write("WARN", "lenticular_gpu_submit", std::format(
+			"duration_ms={}", submitDuration / 1000000));
 
 	recordBrowserDraw(context, swapchainTexture != nullptr);
 	return 0;

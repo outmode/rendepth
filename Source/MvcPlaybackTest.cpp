@@ -24,9 +24,9 @@ int main(int argc, char** argv) {
     SDL_Init(SDL_INIT_AUDIO);
     BlurayReader reader;
     std::string error;
-    if (!reader.open(argv[1], error)) { std::cerr << error << '\n'; return 2; }
-    const BlurayTitle* title = nullptr;
     const int requestedTitle = argc < 3 ? -1 : std::stoi(argv[2]);
+    if (!reader.open(argv[1], error, requestedTitle)) { std::cerr << error << '\n'; return 2; }
+    const BlurayTitle* title = nullptr;
     for (const auto& candidate : reader.titles())
         if (candidate.mvc && (requestedTitle < 0 ? (!title || candidate.duration > title->duration) : candidate.index == requestedTitle)) title = &candidate;
     if (!title) { std::cerr << "No MVC title\n"; return 3; }

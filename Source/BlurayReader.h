@@ -52,7 +52,8 @@ public:
     static bool isBluraySource(const std::filesystem::path& path);
     static std::filesystem::path resolveDiscRoot(const std::filesystem::path& path);
 
-    bool open(const std::filesystem::path& path, std::string& error);
+    bool open(const std::filesystem::path& path, std::string& error,
+              int preferredTitleIndex = -1);
     void close();
 
     int read(uint8_t* buffer, int size);

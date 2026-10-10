@@ -17,6 +17,7 @@
 #include <set>
 #include <thread>
 #include <vector>
+#include <SDL3/SDL_log.h>
 #ifdef RENDEPTH_ENABLE_MVC
 #include <edge264.h>
 extern "C" {
@@ -44,8 +45,8 @@ struct MvcDecoder::Impl {
     // Only the reader thread touches the dependent demuxer during playback.
     // Keep compressed data ahead of the decoder without borrowing edge264
     // pictures across threads. Both packet count and bytes are bounded.
-    static constexpr size_t maxPendingPackets = 128;
-    static constexpr size_t maxPendingBytes = 4 * 1024 * 1024;
+    static constexpr size_t maxPendingPackets = 256;
+    static constexpr size_t maxPendingBytes = 8 * 1024 * 1024;
     std::mutex inputMutex;
     std::condition_variable inputChanged;
     std::thread inputThread;
@@ -497,11 +498,22 @@ bool MvcDecoder::send(const AVPacket& base, std::string& error) {
             edge264_flush(impl->decoder);
             impl->timestamps.clear(); impl->baseViews.clear(); impl->dependentViews.clear(); impl->lastPoc = -1;
         }
+        const auto openStarted = std::chrono::steady_clock::now();
         if (!impl->openClip(index, pts, error)) return false;
+        const auto openMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - openStarted).count();
+        if (openMs > 250)
+            SDL_Log("MVC: clip %d open took %lld ms", index, static_cast<long long>(openMs));
         impl->needSeek = false;
     }
     std::vector<uint8_t> dependent;
+    const auto waitStarted = std::chrono::steady_clock::now();
     if (!impl->takePacket(pts, dependent, error)) return false;
+    const auto waitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - waitStarted).count();
+    if (waitMs > 250)
+        SDL_Log("MVC: dependent picture in clip %d took %lld ms", index,
+            static_cast<long long>(waitMs));
     const auto nals = Impl::nals(dependent);
     // Announce the second view before decoding the first picture, preventing
     // the decoder from treating an initial base frame as a complete 2D frame.

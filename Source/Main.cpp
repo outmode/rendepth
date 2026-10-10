@@ -665,7 +665,7 @@ static void serviceVideo() {
 	const bool discSource = videoPlayer.discSource();
 	// Keep enough decoded stereo frames to cover a slow optical seek between
 	// the base and dependent views. The decoder holds up to another 24 frames.
-	const double maximumBufferDuration = nativeStereo ? 2.5 : discSource ? 1.5 : 1.0;
+	const double maximumBufferDuration = nativeStereo ? 4.5 : discSource ? 2.0 : 1.0;
 	while (bufferedVideoFrames.empty() ||
 		bufferedVideoFrames.back().frame->presentationTime -
 		bufferedVideoFrames.front().frame->presentationTime < maximumBufferDuration) {
@@ -706,14 +706,15 @@ static void serviceVideo() {
 		}
 	}
 
-	const double targetBufferDuration = nativeStereo ? 2.0 :
-		discSource ? 0.75 : videoDepthLookaheadDuration;
+	const double targetBufferDuration = nativeStereo ? 4.0 :
+		discSource ? 1.25 : videoDepthLookaheadDuration;
 	if (!videoPlaybackBufferReady && !bufferedVideoFrames.empty()) {
 		const double bufferedDuration = bufferedVideoFrames.back().frame->presentationTime -
 			bufferedVideoFrames.front().frame->presentationTime;
 		const bool audioBuffered = !videoPlayer.hasAudio() ||
 			(videoPlayer.audioReady() && videoPlayer.bufferedAudioDuration() >= 0.12);
-		const bool startupTimeout = now - videoBufferStartedAt >= (nativeStereo ? 3.0 : 1.0);
+		const bool startupTimeout = now - videoBufferStartedAt >=
+			(nativeStereo ? 6.0 : discSource ? 2.0 : 1.0);
 		if ((bufferedDuration >= targetBufferDuration && audioBuffered) || startupTimeout) {
 			videoPlaybackBufferReady = true;
 			videoPresentationMediaOrigin = bufferedVideoFrames.front().frame->presentationTime;
@@ -724,17 +725,23 @@ static void serviceVideo() {
 	}
 
 	const bool playing = videoPlayer.playing();
-	if (discSource && playing && videoPlaybackBufferReady && bufferedVideoFrames.empty() &&
-		lastVideoFrame != nullptr) {
+	if (discSource && playing && videoPlaybackBufferReady &&
+		lastVideoFrame != nullptr && lastVideoFrame->generation == videoPlaybackGeneration) {
 		const double audioPosition = videoPlayer.audioPlaybackPosition();
+		const bool hasPlaybackClock = audioPosition >= 0.0 || !videoPlayer.hasAudio();
+		const double playbackPosition = audioPosition >= 0.0 ? audioPosition :
+			videoPresentationMediaOrigin + (now - videoPresentationWallOrigin);
+		const bool videoUnderrun = bufferedVideoFrames.empty() && hasPlaybackClock &&
+			playbackPosition > lastVideoFrame->presentationTime + 0.15;
 		static double lastUnderrunLog = -1.0;
-		if (audioPosition > lastVideoFrame->presentationTime + 0.15 &&
-			(lastUnderrunLog < 0.0 || now - lastUnderrunLog >= 1.0)) {
-			DiagnosticLog::write("WARN", "disc_video_underrun", std::format(
-				"behind_ms={} audio_buffer_ms={}",
-				static_cast<int>((audioPosition - lastVideoFrame->presentationTime) * 1000.0),
-				static_cast<int>(videoPlayer.bufferedAudioDuration() * 1000.0)));
-			lastUnderrunLog = now;
+		if (videoUnderrun) {
+			if (lastUnderrunLog < 0.0 || now - lastUnderrunLog >= 1.0) {
+				DiagnosticLog::write("WARN", "disc_video_underrun", std::format(
+					"behind_ms={} audio_buffer_ms={} media_time={:.3f}",
+					static_cast<int>((playbackPosition - lastVideoFrame->presentationTime) * 1000.0),
+					static_cast<int>(videoPlayer.bufferedAudioDuration() * 1000.0), playbackPosition));
+				lastUnderrunLog = now;
+			}
 		}
 	}
 	if (!playing) {
@@ -751,6 +758,7 @@ static void serviceVideo() {
 		const double presentationTime = audioPosition >= 0.0 ? audioPosition :
 			videoPresentationMediaOrigin + (now - videoPresentationWallOrigin);
 		BufferedVideoFrame selected;
+		unsigned skippedFrames = 0;
 		auto canPresent = [](const std::shared_ptr<VideoFrame>& candidate) {
 			return !display3D || videoDepthTransitionGeneration == 0 ||
 				candidate->generation != videoDepthTransitionGeneration ||
@@ -759,10 +767,22 @@ static void serviceVideo() {
 		while (!bufferedVideoFrames.empty() &&
 			bufferedVideoFrames.front().frame->presentationTime <= presentationTime + 0.001) {
 			if (!canPresent(bufferedVideoFrames.front().frame)) break;
+			if (selected.frame != nullptr) ++skippedFrames;
 			selected = std::move(bufferedVideoFrames.front());
 			bufferedVideoFrames.pop_front();
 		}
 		if (selected.frame != nullptr) {
+			if (discSource && skippedFrames >= 2) {
+				static double lastSkipLog = -1.0;
+				if (lastSkipLog < 0.0 || now - lastSkipLog >= 1.0) {
+					DiagnosticLog::write("WARN", "disc_frame_skip", std::format(
+						"media_time={:.3f} skipped={} queued_frames={} audio_buffer_ms={}",
+						selected.frame->presentationTime, skippedFrames,
+						bufferedVideoFrames.size(),
+						static_cast<int>(videoPlayer.bufferedAudioDuration() * 1000.0)));
+					lastSkipLog = now;
+				}
+			}
 			if (selected.frame->generation == videoDepthTransitionGeneration)
 				videoDepthTransitionGeneration = 0;
 			presentVideoFrame(selected.frame, selected.preview);
@@ -4478,7 +4498,13 @@ static void setFullscreen(bool fullscreen = true) {
 	if (fullscreen && context.window != nullptr) {
 		SDL_DisplayID displayID = SDL_GetDisplayForWindow(context.window);
 		if (displayID != 0) {
-			Image::configureFullscreenMode(context.window, displayID);
+			if (preferredStereoMode == Lenticular) {
+				const bool selected = SDL_SetWindowFullscreenMode(context.window, nullptr);
+				DiagnosticLog::write(selected ? "INFO" : "WARN", "fullscreen_mode",
+					std::format("source=desktop display={} result={}",
+						static_cast<unsigned>(displayID), selected ? "ok" : "failed"));
+			} else
+				Image::configureFullscreenMode(context.window, displayID);
 		}
 	}
 	if (!SDL_SetWindowFullscreen(context.window, fullscreen))
@@ -4486,6 +4512,13 @@ static void setFullscreen(bool fullscreen = true) {
 	else if (!SDL_SyncWindow(context.window))
 		SDL_Log("Could not synchronize main window fullscreen state: %s", SDL_GetError());
 	updateFullscreenState();
+	if (const auto display = SDL_GetDisplayForWindow(context.window); display != 0) {
+		if (const auto* mode = SDL_GetCurrentDisplayMode(display))
+			DiagnosticLog::write("INFO", "fullscreen_active_mode", std::format(
+				"fullscreen={} display={} width={} height={} refresh_hz={:.2f}",
+				isFullscreen ? 1 : 0, static_cast<unsigned>(display), mode->w, mode->h,
+				mode->refresh_rate));
+	}
 	showCustomCursor(true);
 }
 
@@ -4588,6 +4621,9 @@ static std::string beginBrowserCapture(const BrowserBridge::Request& request) {
 		stopCapture();
 		return "Could not start video depth conversion.";
 	}
+	DiagnosticLog::write("INFO", "browser_capture_start", std::format(
+		"mono={} depth={} half_sbs={}", request.mono ? 1 : 0,
+		convertMono ? 1 : 0, request.half ? 1 : 0));
 	context.loading = true;
 	currentVisibility = 0.0;
 	targetVisibility = 1.0;
@@ -5737,7 +5773,19 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		discBackgroundPreview = std::move(preview);
 	} else discBackgroundPreview.reset();
 	discBrowserWasVisible = discTitleMenu.visible();
+	const bool measuringDiscVideo = activeVideo && videoPlayer.discSource();
+	const Uint64 videoTickStartedAt = measuringDiscVideo ? SDL_GetTicksNS() : 0;
 	serviceVideo();
+	if (measuringDiscVideo) {
+		const Uint64 elapsed = SDL_GetTicksNS() - videoTickStartedAt;
+		if (elapsed > 100000000)
+			DiagnosticLog::write("WARN", "disc_video_tick_stall", std::format(
+					"duration_ms={} media_time={:.3f} queued_frames={} audio_buffer_ms={}",
+					elapsed / 1000000,
+					lastVideoFrame ? lastVideoFrame->presentationTime : 0.0,
+					bufferedVideoFrames.size(),
+					static_cast<int>(videoPlayer.bufferedAudioDuration() * 1000.0)));
+	}
 	Image::updateVideoBackgroundAnimation();
 	serviceScreenCapture();
 	// Screen capture shares the depth processor with video, but does not enter
@@ -6024,6 +6072,25 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	pollMacFullscreenMouse();
 #endif
 	if (doingFileOp) hideUI(false);
+	// SDL's main-callback scheduler paces the whole draw loop without changing
+	// the monitor's selected mode. Video and browser capture need no more than
+	// 60 submissions/s; still photos retain a more responsive 120/s UI.
+	const int lenticularFrameCap = context.lenticular && context.fullscreen
+		? (activeVideo || activeScreenCapture ? 60 : 120) : 0;
+	static int appliedLenticularFrameCap = -1;
+	static Uint64 frameRateSampleStarted = 0;
+	static unsigned frameRateSampleCount = 0;
+	if (lenticularFrameCap != appliedLenticularFrameCap) {
+		const char* rate = lenticularFrameCap == 60 ? "60" :
+			lenticularFrameCap == 120 ? "120" : nullptr;
+		const bool applied = SDL_SetHint(SDL_HINT_MAIN_CALLBACK_RATE, rate);
+		DiagnosticLog::write(applied ? "INFO" : "WARN", "lenticular_frame_cap",
+			std::format("fps={} result={}", lenticularFrameCap,
+				applied ? "ok" : "failed"));
+		appliedLenticularFrameCap = lenticularFrameCap;
+		frameRateSampleStarted = 0;
+		frameRateSampleCount = 0;
+	}
 
 	const bool measuringDiscDraw = activeVideo && videoPlayer.discSource();
 	const Uint64 drawStartedAt = measuringDiscDraw ? SDL_GetTicksNS() : 0;
@@ -6032,12 +6099,30 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		const Uint64 elapsed = SDL_GetTicksNS() - drawStartedAt;
 		if (elapsed > 100000000)
 			DiagnosticLog::write("WARN", "disc_render_stall", std::format(
-				"duration_ms={}", elapsed / 1000000));
+				"duration_ms={} media_time={:.3f} lenticular={} queued_frames={} audio_buffer_ms={}",
+				elapsed / 1000000,
+				lastVideoFrame ? lastVideoFrame->presentationTime : 0.0,
+				context.lenticular && context.fullscreen ? 1 : 0,
+				bufferedVideoFrames.size(),
+				static_cast<int>(videoPlayer.bufferedAudioDuration() * 1000.0)));
 	}
 	if (drawResult < 0) {
 		DiagnosticLog::write("ERROR", "app_draw", "result=failed");
 		SDL_Log("Image Draw Failed.");
 		return SDL_APP_FAILURE;
+	}
+	if (lenticularFrameCap > 0) {
+		const Uint64 now = SDL_GetTicksNS();
+		if (frameRateSampleStarted == 0) frameRateSampleStarted = now;
+		++frameRateSampleCount;
+		const Uint64 elapsed = now - frameRateSampleStarted;
+		if (elapsed >= 10000000000ULL) {
+			DiagnosticLog::write("INFO", "lenticular_draw_rate", std::format(
+				"fps={:.1f} cap={}", frameRateSampleCount * 1e9 / elapsed,
+				lenticularFrameCap));
+			frameRateSampleStarted = now;
+			frameRateSampleCount = 0;
+		}
 	}
 	if (startupNativeDiscoveryPending) {
 		const Uint64 now = SDL_GetTicks();
@@ -7334,6 +7419,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 	static bool resumeAfterGuide = false;
 	if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
 	if (event->type == SDL_EVENT_DISPLAY_ADDED || event->type == SDL_EVENT_DISPLAY_REMOVED) {
+		DiagnosticLog::write("INFO", "display_event", std::format("kind={} display={}",
+			event->type == SDL_EVENT_DISPLAY_ADDED ? "added" : "removed",
+			static_cast<unsigned>(event->display.displayID)));
 		if (!startupNativeDiscoveryPending && preferredStereoMode == Light_Field)
 			Image::initNativeOutput(&context);
 		return SDL_APP_CONTINUE;
@@ -7486,6 +7574,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		if (currentDisplay == 0) return SDL_APP_CONTINUE;
 		auto displayMode = SDL_GetCurrentDisplayMode(currentDisplay);
 		if (displayMode == nullptr) return SDL_APP_CONTINUE;
+		DiagnosticLog::write("INFO", "window_display_changed", std::format(
+			"display={} width={} height={} refresh_hz={:.2f} fullscreen={}",
+			static_cast<unsigned>(currentDisplay), displayMode->w, displayMode->h,
+			displayMode->refresh_rate, isFullscreen ? 1 : 0));
+		if (isFullscreen && preferredStereoMode != Lenticular)
+			Image::configureFullscreenMode(context.window, currentDisplay);
 		Image::currentDisplay = currentDisplay;
 		auto virtualSize = glm::vec2(displayMode->w, displayMode->h) * displayMode->pixel_density;
 		context.virtualSize = virtualSize;
@@ -7502,13 +7596,13 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			Image::initNativeOutput(&context);
 	} else if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
 		event->type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
+		if (isFullscreen && event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+			DiagnosticLog::write("INFO", "fullscreen_pixel_size_changed", std::format(
+				"width={} height={}", event->window.data1, event->window.data2));
 		refreshWindowSize();
 		context.displayScale = SDL_GetWindowDisplayScale(context.window);
 		context.pixelDensity = SDL_GetWindowPixelDensity(context.window);
 		updateDisplayScale();
-		if (isFullscreen) {
-			Image::configureFullscreenMode(context.window, SDL_GetDisplayForWindow(context.window));
-		}
 		if (!startupNativeDiscoveryPending && preferredStereoMode == Light_Field) {
 			Image::initNativeOutput(&context);
 		}
@@ -7540,6 +7634,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 		Image::saveMenuLayout(&context);
 	} else if (event->type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN ||
 		event->type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
+		DiagnosticLog::write("INFO", "fullscreen_event", std::format("kind={}",
+			event->type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN ? "entered" : "left"));
 		updateFullscreenState();
 		showCustomCursor(true);
 	} else if (event->type == SDL_EVENT_WINDOW_MOUSE_ENTER) {

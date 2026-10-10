@@ -248,7 +248,7 @@ struct VideoPlayer::Impl {
 	static constexpr int audioChannels = 2;
 	static constexpr int audioBytesPerFrame = audioChannels * static_cast<int>(sizeof(float));
 	static constexpr int maxQueuedAudioBytes = audioSampleRate * audioBytesPerFrame * 3;
-	static constexpr int maxDiscQueuedAudioBytes = audioSampleRate * audioBytesPerFrame * 5;
+	static constexpr int maxDiscQueuedAudioBytes = audioSampleRate * audioBytesPerFrame * 8;
 
 	// Decode embedded cover art into an oriented surface suitable for the audio display.
 	SDL_Surface* decodeAlbumArt() {
@@ -1396,7 +1396,14 @@ struct VideoPlayer::Impl {
 			}
 			if (!isPlaying && !seekPreviewPending) continue;
 
+			const auto readStarted = std::chrono::steady_clock::now();
 			const int readResult = av_read_frame(format, packet);
+			if (blurayReader || dvdReader) {
+				const auto readMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now() - readStarted).count();
+				if (readMs > 250)
+					SDL_Log("Video: disc demux read took %lld ms", static_cast<long long>(readMs));
+			}
 			const bool scanLimitReached = readResult < 0 && blurayReader &&
 				bluraySeekReadRemaining == 0 && !interrupted();
 			if (readResult == AVERROR_EOF || scanLimitReached) {
@@ -1675,8 +1682,7 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 			impl->avioContext = impl->audioCdReader->stream().createAVIOContext();
 		} else if (isBluray) {
 			impl->blurayReader = std::make_unique<BlurayReader>();
-			if (!impl->blurayReader->open(path, error)) { close(); return false; }
-			if (discTitle >= 0 && !impl->blurayReader->selectTitle(discTitle, error)) { close(); return false; }
+			if (!impl->blurayReader->open(path, error, discTitle)) { close(); return false; }
 			const auto& titles = impl->blurayReader->titles();
 			const auto selected = std::find_if(titles.begin(), titles.end(), [&](const BlurayTitle& title) {
 				return title.index == impl->blurayReader->activeTitle();

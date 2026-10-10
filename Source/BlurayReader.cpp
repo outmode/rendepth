@@ -170,7 +170,8 @@ void BlurayReader::inspectTitles() {
 }
 
 // Open the disc, inspect its capabilities and titles, and prepare an initial title for playback.
-bool BlurayReader::open(const std::filesystem::path& path, std::string& error) {
+bool BlurayReader::open(const std::filesystem::path& path, std::string& error,
+                        int preferredTitleIndex) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     close();
 
@@ -223,7 +224,7 @@ bool BlurayReader::open(const std::filesystem::path& path, std::string& error) {
     for (auto& title : titles_)
         title.mainFeatureCandidate = title.index == bestTitleIndex;
 
-    if (!selectTitle(bestTitleIndex, error)) {
+    if (!selectTitle(preferredTitleIndex >= 0 ? preferredTitleIndex : bestTitleIndex, error)) {
         close();
         return false;
     }
@@ -445,7 +446,7 @@ bool BlurayReader::encryptionHandled() const {
 #else
 
 // Report that disc playback is unavailable in this build.
-bool BlurayReader::open(const std::filesystem::path&, std::string& error) {
+bool BlurayReader::open(const std::filesystem::path&, std::string& error, int) {
     error = "Blu-ray playback is not enabled in this build.";
     return false;
 }
