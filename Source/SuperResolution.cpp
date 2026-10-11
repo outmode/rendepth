@@ -14,6 +14,7 @@
 #include <onnxruntime_cxx_api.h>
 #ifdef RENDEPTH_ENABLE_COREML
 #include "CoreMLInference.h"
+#include "CoreMLSuperResolutionModel.h"
 #endif
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 #include "InferenceRuntime.h"
@@ -27,6 +28,11 @@ struct SuperResolution::State {
 	std::unique_ptr<Ort::Session> session;
 	std::string inputName;
 	std::string outputName;
+	int inputWidth = 0;
+	int inputHeight = 0;
+#ifdef RENDEPTH_ENABLE_COREML
+	std::unique_ptr<CoreMLSuperResolutionModel> nativeCoreML;
+#endif
 #endif
 };
 
@@ -63,7 +69,11 @@ bool SuperResolution::load(const Config& config, std::string& error) {
 		return false;
 	}
 	#endif
-	if (config.modelPath.empty() || !std::filesystem::is_regular_file(config.modelPath)) {
+	const bool nativeModelPath = config.provider == DepthEstimator::Provider::CoreML &&
+		config.modelPath.extension() == ".mlmodelc" &&
+		std::filesystem::is_directory(config.modelPath);
+	if (config.modelPath.empty() ||
+		(!nativeModelPath && !std::filesystem::is_regular_file(config.modelPath))) {
 		error = "SR model was not found: " + config.modelPath.string();
 		return false;
 	}
@@ -81,12 +91,45 @@ bool SuperResolution::load(const Config& config, std::string& error) {
 	std::unique_ptr<State> nextState;
 	try {
 		nextState = std::make_unique<State>();
+#ifdef RENDEPTH_ENABLE_COREML
+		if (provider == DepthEstimator::Provider::CoreML &&
+			config.inputWidth >= 16 && config.inputWidth <= 720 &&
+			config.inputHeight >= 16 && config.inputHeight <= 720) {
+			auto nativePath = config.modelPath;
+			if (!nativeModelPath) nativePath.replace_extension(".mlmodelc");
+			if (std::filesystem::is_directory(nativePath))
+				nextState->nativeCoreML = CoreMLSuperResolutionModel::load(nativePath, error);
+			else error = "compiled model was not found";
+			if (nextState->nativeCoreML) {
+				activeProvider = "Native Core ML (CPU + GPU)";
+				state = nextState.release();
+				return true;
+			}
+			SDL_Log("Native Core ML super-resolution model unavailable (%s); using CPU: %s",
+				nativePath.string().c_str(), error.c_str());
+			if (nativeModelPath) return false;
+			nextState.reset();
+			auto cpuConfig = config;
+			cpuConfig.provider = DepthEstimator::Provider::CPU;
+			return load(cpuConfig, error);
+		}
+#endif
 		if (config.intraOpThreads > 0)
 			nextState->sessionOptions.SetIntraOpNumThreads(static_cast<int>(config.intraOpThreads));
 		nextState->sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 		if (provider == DepthEstimator::Provider::CoreML) {
 #ifdef RENDEPTH_ENABLE_COREML
-			CoreMLInference::append(nextState->sessionOptions);
+			if (config.inputWidth > 0 && config.inputHeight > 0) {
+				nextState->sessionOptions.AddFreeDimensionOverrideByName("height", config.inputHeight);
+				nextState->sessionOptions.AddFreeDimensionOverrideByName("width", config.inputWidth);
+				CoreMLInference::append(nextState->sessionOptions, config.modelPath,
+					config.inputWidth, config.inputHeight);
+				nextState->inputWidth = config.inputWidth;
+				nextState->inputHeight = config.inputHeight;
+			} else {
+				Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_CoreML(
+					nextState->sessionOptions, COREML_FLAG_USE_CPU_AND_GPU));
+			}
 #else
 			error = "Core ML requires a macOS build with Core ML support.";
 			return false;
@@ -187,6 +230,11 @@ SDL_Surface* SuperResolution::predict(const SDL_Surface* image, std::string& err
 		modelDimensionMultiple * modelDimensionMultiple;
 	const int modelHeight = (image->h + modelDimensionMultiple - 1) /
 		modelDimensionMultiple * modelDimensionMultiple;
+	if ((state->inputWidth > 0 && modelWidth != state->inputWidth) ||
+		(state->inputHeight > 0 && modelHeight != state->inputHeight)) {
+		error = "Super-resolution input size differs from the loaded Core ML model.";
+		return nullptr;
+	}
 	const size_t planeSize = static_cast<size_t>(modelWidth) * modelHeight;
 	std::vector<float> input(planeSize * 3);
 	for (int y = 0; y < modelHeight; ++y) {
@@ -207,44 +255,54 @@ SDL_Surface* SuperResolution::predict(const SDL_Surface* image, std::string& err
 	}
 	const std::array<int64_t, 4> shape{1, 3, modelHeight, modelWidth};
 	try {
-		Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(
-			OrtArenaAllocator, OrtMemTypeDefault);
-		Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo,
-			input.data(), input.size(), shape.data(), shape.size());
-		const char* inputNames[] = { state->inputName.c_str() };
-		const char* outputNames[] = { state->outputName.c_str() };
-		auto outputs = state->session->Run(Ort::RunOptions{nullptr}, inputNames,
-			&inputTensor, 1, outputNames, 1);
-		if (outputs.empty() || !outputs[0].IsTensor()) {
-			error = "SR model returned no tensor output.";
-			return nullptr;
+		std::vector<float> outputValues;
+		std::vector<Ort::Value> ortOutputs;
+		const float* ortValues = nullptr;
+		const Ort::Float16_t* ortValues16 = nullptr;
+		int modelOutputHeight = 0;
+		int modelOutputWidth = 0;
+#ifdef RENDEPTH_ENABLE_COREML
+		if (state->nativeCoreML) {
+			if (!state->nativeCoreML->predict(input.data(), modelWidth, modelHeight,
+				outputValues, modelOutputWidth, modelOutputHeight, error)) return nullptr;
+		} else
+#endif
+		{
+			Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(
+				OrtArenaAllocator, OrtMemTypeDefault);
+			Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo,
+				input.data(), input.size(), shape.data(), shape.size());
+			const char* inputNames[] = { state->inputName.c_str() };
+			const char* outputNames[] = { state->outputName.c_str() };
+			ortOutputs = state->session->Run(Ort::RunOptions{nullptr}, inputNames,
+				&inputTensor, 1, outputNames, 1);
+			if (ortOutputs.empty() || !ortOutputs[0].IsTensor()) {
+				error = "SR model returned no tensor output.";
+				return nullptr;
+			}
+			const auto typeInfo = ortOutputs[0].GetTensorTypeAndShapeInfo();
+			const auto outputShape = typeInfo.GetShape();
+			if (outputShape.size() != 4 || outputShape[0] != 1 || outputShape[1] != 3 ||
+				outputShape[2] <= 0 || outputShape[3] <= 0) {
+				error = "SR model returned an unsupported output shape.";
+				return nullptr;
+			}
+			modelOutputHeight = static_cast<int>(outputShape[2]);
+			modelOutputWidth = static_cast<int>(outputShape[3]);
+			const auto elementType = typeInfo.GetElementType();
+			if (elementType == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+				ortValues = ortOutputs[0].GetTensorData<float>();
+			} else if (elementType == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
+				ortValues16 = ortOutputs[0].GetTensorData<Ort::Float16_t>();
+			} else {
+				error = "SR model output must use float32 or float16 values.";
+				return nullptr;
+			}
 		}
-		const auto typeInfo = outputs[0].GetTensorTypeAndShapeInfo();
-		const auto outputShape = typeInfo.GetShape();
-		if (outputShape.size() != 4 || outputShape[0] != 1 || outputShape[1] != 3 ||
-			outputShape[2] <= 0 || outputShape[3] <= 0) {
-			error = "SR model returned an unsupported output shape.";
-			return nullptr;
-		}
-		const int modelOutputHeight = static_cast<int>(outputShape[2]);
-		const int modelOutputWidth = static_cast<int>(outputShape[3]);
 		const double scaleX = static_cast<double>(modelOutputWidth) / modelWidth;
 		const double scaleY = static_cast<double>(modelOutputHeight) / modelHeight;
 		const int outputWidth = std::max(1, static_cast<int>(std::lround(image->w * scaleX)));
 		const int outputHeight = std::max(1, static_cast<int>(std::lround(image->h * scaleY)));
-		const auto elementType = typeInfo.GetElementType();
-		if (elementType != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT &&
-			elementType != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
-			error = "SR model output must use float32 or float16 values.";
-			return nullptr;
-		}
-		const float* values = elementType == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
-			? outputs[0].GetTensorData<float>() : nullptr;
-		const Ort::Float16_t* values16 = elementType == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16
-			? outputs[0].GetTensorData<Ort::Float16_t>() : nullptr;
-		const auto readValue = [values, values16](size_t index) {
-			return values != nullptr ? values[index] : values16[index].ToFloat();
-		};
 		SDL_Surface* result = SDL_CreateSurface(outputWidth, outputHeight,
 			SDL_PIXELFORMAT_RGBA32);
 		if (result == nullptr) {
@@ -253,6 +311,10 @@ SDL_Surface* SuperResolution::predict(const SDL_Surface* image, std::string& err
 		}
 		const auto* outputFormat = SDL_GetPixelFormatDetails(SDL_PIXELFORMAT_RGBA32);
 		const size_t modelOutputPlane = static_cast<size_t>(modelOutputWidth) * modelOutputHeight;
+		const auto readValue = [&outputValues, ortValues, ortValues16](size_t index) {
+			return ortValues != nullptr ? ortValues[index] :
+				ortValues16 != nullptr ? ortValues16[index].ToFloat() : outputValues[index];
+		};
 		for (int y = 0; y < outputHeight; ++y) {
 			auto* row = reinterpret_cast<Uint32*>(static_cast<Uint8*>(result->pixels) +
 				static_cast<size_t>(y) * result->pitch);

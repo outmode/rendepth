@@ -22,6 +22,12 @@ struct Progress {
 std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 	const std::string& filename, std::string& error, Progress* progress = nullptr);
 
+#ifdef __APPLE__
+// Download and verify a compiled native Core ML model for an ONNX model name.
+std::filesystem::path ensureCoreMLAvailable(const std::filesystem::path& directory,
+	const std::string& onnxFilename, std::string& error, Progress* progress = nullptr);
+#endif
+
 }
 
 #endif

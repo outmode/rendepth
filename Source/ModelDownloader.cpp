@@ -54,6 +54,30 @@ constexpr ModelInfo models[] = {
 	{"RFDN_x4.onnx", "62117fd1de33bc27d16d24edc82ce2f6e4c6c07a3bd8b510fbfce3b21445a1f0", "727b539a5d3abc311aa6546b005c47c778003f8ac6815df2c7686de7f7c099ee"},
 };
 
+#ifdef __APPLE__
+struct CoreMLModelInfo {
+	std::string_view name;
+	std::string_view archiveSha256;
+	std::string_view directorySha256;
+};
+
+// Pinned hashes of the published -coreml.zip bytes and their compiled contents.
+constexpr CoreMLModelInfo coreMLModels[] = {
+	{"DA2-SMALL-280", "93bcc4bf0b45792bde87a22fd0879de850fc8709053fd4c9c92b0a3f2e33e042", "a28abba2dc86643972c01139172b936dabd3a89e508c119638408a0dba9e1975"},
+	{"DA2-SMALL-336", "97b36daef191e0bba403251e35f76d384b56758da6f513fd2c56dcbb6e11925e", "a9e60bceb5efc707bbb8f65cb9c274e886462787146a609f1edf9032578dfd70"},
+	{"DA2-SMALL-392", "1c23c4bc04f2badd6720367504736d19ad607e919241946711f7adff5c1fc480", "0d8483238c2a52d3728b5dc529a284c8defd5f02e5b615cf1a5310ef32523994"},
+	{"DA2-SMALL-560", "4192fefd03c4937766432418ed4e02ea8863870b95639d36685b58ebd7e02030", "cc5085e393ec89167ca64346ce88bb25cca2703c304b3cd9978c03cf2d978152"},
+	{"DA2-BASE-644", "30b73866dccd66acd5c248d7df66bcaddc8859a53fa400168d45ac962b9a635a", "4e3c8f759d39cad6972e03419e8d1f61b88f7f22c8ce0f6a03d1414f85b59c07"},
+	{"DA2-LARGE-714", "6e1aee8edead455e25e1bd7a3a593de5dc918d03cb82ff3e74dfdfaae14af874", "d0bf9e49092a698e539f65c1d62e94a567985fe47f194a85684ac99495b7f218"},
+	{"RFDN_x4", "81f60e98df9730e65bc13c567e3b5c13a316fe6c7fb6b24797146371538c9546", "dfd7105de83afce7ff23b697c20dce9ef52c39a188e92823873e5099f2d75999"},
+};
+
+constexpr std::array<std::string_view, 5> coreMLFiles = {
+	"analytics/coremldata.bin", "coremldata.bin", "metadata.json",
+	"model.mil", "weights/weight.bin"
+};
+#endif
+
 const ModelInfo* modelInfoFor(std::string_view filename) {
 	for (const auto& model : models)
 		if (model.filename == filename) return &model;
@@ -121,6 +145,102 @@ bool sha256File(const std::filesystem::path& path, std::string& digest) {
 	}
 	return true;
 }
+
+#ifdef __APPLE__
+// Hash the exact fixed set of compiled files, including their relative names.
+bool sha256CoreMLDirectory(const std::filesystem::path& directory, std::string& digest) {
+	if (std::filesystem::is_symlink(directory) || !std::filesystem::is_directory(directory))
+		return false;
+	std::string manifest;
+	for (const auto relative : coreMLFiles) {
+		const auto path = directory / relative;
+		if (std::filesystem::is_symlink(path) || !std::filesystem::is_regular_file(path))
+			return false;
+		std::string fileHash;
+		if (!sha256File(path, fileHash)) return false;
+		manifest += std::string(relative) + "  " + fileHash + "\n";
+	}
+	std::error_code filesystemError;
+	size_t count = 0;
+	for (std::filesystem::recursive_directory_iterator it(directory, filesystemError), end;
+		it != end && !filesystemError; it.increment(filesystemError)) {
+		if (it->is_symlink(filesystemError) ||
+			(!it->is_directory(filesystemError) && !it->is_regular_file(filesystemError))) return false;
+		if (it->is_regular_file(filesystemError)) ++count;
+	}
+	if (filesystemError || count != coreMLFiles.size()) return false;
+	unsigned char bytes[EVP_MAX_MD_SIZE]{};
+	unsigned length = 0;
+	if (EVP_Digest(manifest.data(), manifest.size(), bytes, &length, EVP_sha256(), nullptr) != 1 ||
+		length != 32) return false;
+	constexpr char hex[] = "0123456789abcdef";
+	digest.clear();
+	for (unsigned i = 0; i < length; ++i) {
+		digest += hex[bytes[i] >> 4];
+		digest += hex[bytes[i] & 15];
+	}
+	return true;
+}
+
+// Extract only the five expected files beneath the named model directory.
+bool extractCoreMLModel(const std::filesystem::path& archivePath,
+	const std::filesystem::path& temporaryDirectory, std::string_view modelName,
+	ModelDownloader::Progress* progress, std::string& error) {
+	const std::string archiveName = archivePath.string();
+	unzFile archive = unzOpen64(archiveName.c_str());
+	if (archive == nullptr) { error = "Could not open Core ML model ZIP."; return false; }
+	std::array<bool, coreMLFiles.size()> seen{};
+	std::uint64_t total = 0;
+	bool valid = unzGoToFirstFile(archive) == UNZ_OK;
+	while (valid) {
+		char member[256]{};
+		unz_file_info64 entry{};
+		if (unzGetCurrentFileInfo64(archive, &entry, member, sizeof(member),
+			nullptr, 0, nullptr, 0) != UNZ_OK) { valid = false; break; }
+		const std::string prefix = std::string(modelName) + ".mlmodelc/";
+		const std::string filename(member);
+		if (!filename.starts_with(prefix)) { valid = false; break; }
+		const std::string_view relative(filename.data() + prefix.size(),
+			filename.size() - prefix.size());
+		const auto found = std::find(coreMLFiles.begin(), coreMLFiles.end(), relative);
+		const auto index = static_cast<size_t>(found - coreMLFiles.begin());
+		if (found == coreMLFiles.end() || seen[index] || (entry.flag & 1) ||
+			(entry.compression_method != 0 && entry.compression_method != 8) ||
+			((entry.external_fa >> 16) & 0170000) != 0100000 ||
+			entry.uncompressed_size > maxModelBytes - total) { valid = false; break; }
+		seen[index] = true;
+		total += entry.uncompressed_size;
+		const auto outputPath = temporaryDirectory / relative;
+		std::error_code filesystemError;
+		std::filesystem::create_directories(outputPath.parent_path(), filesystemError);
+		if (filesystemError || unzOpenCurrentFile(archive) != UNZ_OK) { valid = false; break; }
+		FILE* output = std::fopen(outputPath.c_str(), "wb");
+		std::array<char, 64 * 1024> buffer{};
+		std::uint64_t written = 0;
+		int read = 0;
+		bool fileValid = output != nullptr;
+		while (fileValid && (!progress || !progress->cancel.load()) &&
+			(read = unzReadCurrentFile(archive, buffer.data(),
+				static_cast<unsigned>(buffer.size()))) > 0) {
+			written += read;
+			fileValid = written <= entry.uncompressed_size &&
+				std::fwrite(buffer.data(), 1, read, output) == static_cast<size_t>(read);
+		}
+		const bool closed = output != nullptr && std::fclose(output) == 0;
+		fileValid = fileValid && read == 0 && written == entry.uncompressed_size && closed &&
+			(!progress || !progress->cancel.load()) && unzCloseCurrentFile(archive) == UNZ_OK;
+		if (!fileValid) { valid = false; break; }
+		const int next = unzGoToNextFile(archive);
+		if (next == UNZ_END_OF_LIST_OF_FILE) break;
+		valid = next == UNZ_OK;
+	}
+	valid = valid && std::all_of(seen.begin(), seen.end(), [](bool value) { return value; });
+	unzClose(archive);
+	if (!valid) error = progress && progress->cancel.load() ?
+		"Core ML model download cancelled." : "Core ML ZIP contains invalid model files.";
+	return valid;
+}
+#endif
 
 // Only install the expected model file from the archive, through a temporary path.
 bool extractModel(const std::filesystem::path& archivePath,
@@ -565,5 +685,144 @@ std::filesystem::path ensureAvailable(const std::filesystem::path& directory,
 	DiagnosticLog::write("INFO", "model_installed", std::format("model={}", filename));
 	return destination;
 }
+
+#ifdef __APPLE__
+std::filesystem::path ensureCoreMLAvailable(const std::filesystem::path& directory,
+	const std::string& onnxFilename, std::string& error, Progress* progress) {
+	if (progress != nullptr) {
+		progress->active = false;
+		progress->received = 0;
+		progress->total = 0;
+	}
+	error.clear();
+	const std::filesystem::path onnxName(onnxFilename);
+	if (directory.empty() || onnxName.filename() != onnxName ||
+		onnxName.extension() != ".onnx") {
+		error = "Core ML model name or directory is invalid.";
+		return {};
+	}
+	const std::string stem = onnxName.stem().string();
+	const auto found = std::find_if(std::begin(coreMLModels), std::end(coreMLModels),
+		[&](const CoreMLModelInfo& info) { return info.name == stem; });
+	if (found == std::end(coreMLModels)) {
+		error = "Core ML model is not supported: " + onnxFilename;
+		return {};
+	}
+	std::error_code filesystemError;
+	std::filesystem::create_directories(directory, filesystemError);
+	if (filesystemError) {
+		error = "Could not create Core ML model directory: " + filesystemError.message();
+		return {};
+	}
+	const auto destination = directory / (stem + ".mlmodelc");
+	if (std::filesystem::exists(destination, filesystemError)) {
+		std::string cachedHash;
+		if (!filesystemError && sha256CoreMLDirectory(destination, cachedHash) &&
+			cachedHash == found->directorySha256) {
+			DiagnosticLog::write("INFO", "coreml_model_cached", std::format("model={}", stem));
+			return destination;
+		}
+		error = "Cached Core ML model failed its SHA-256 integrity check: " +
+			destination.string();
+		return {};
+	}
+	const std::string archiveFilename = stem + "-coreml.zip";
+	const auto temporaryArchive = directory / (archiveFilename + ".download");
+	const auto temporaryChecksum = directory / (archiveFilename + ".sha256.download");
+	const auto temporaryModel = directory / (stem + ".mlmodelc.download");
+	std::filesystem::remove(temporaryArchive, filesystemError);
+	std::filesystem::remove(temporaryChecksum, filesystemError);
+	std::filesystem::remove_all(temporaryModel, filesystemError);
+	if (filesystemError || !std::filesystem::create_directory(temporaryModel, filesystemError)) {
+		error = "Could not prepare Core ML model download: " + filesystemError.message();
+		return {};
+	}
+	if (progress != nullptr) {
+		progress->sequence.fetch_add(1);
+		progress->active = true;
+	}
+	const auto finish = [&] {
+		std::error_code ignored;
+		std::filesystem::remove(temporaryArchive, ignored);
+		std::filesystem::remove(temporaryChecksum, ignored);
+		std::filesystem::remove_all(temporaryModel, ignored);
+		if (progress != nullptr) progress->active = false;
+	};
+	FILE* output = std::fopen(temporaryChecksum.c_str(), "wb");
+	if (output == nullptr) {
+		error = "Could not write Core ML ZIP checksum.";
+		finish();
+		return {};
+	}
+	bool downloaded = downloadFile(archiveFilename + ".sha256", output, progress,
+		256, error);
+	const bool closed = std::fclose(output) == 0;
+	if (!downloaded || !closed) {
+		if (error.empty()) error = "Could not download Core ML ZIP checksum.";
+		finish();
+		return {};
+	}
+	std::ifstream checksumInput(temporaryChecksum, std::ios::binary);
+	const std::string checksum((std::istreambuf_iterator<char>(checksumInput)),
+		std::istreambuf_iterator<char>());
+	const std::string expectedLine = std::string(found->archiveSha256) + "  " + archiveFilename;
+	if (checksum != expectedLine + "\n" && checksum != expectedLine + "\r\n") {
+		error = "Core ML ZIP checksum does not match this app release.";
+		finish();
+		return {};
+	}
+	if (progress != nullptr) {
+		progress->received = 0;
+		progress->total = 0;
+	}
+	output = std::fopen(temporaryArchive.c_str(), "wb");
+	if (output == nullptr) {
+		error = "Could not write Core ML model ZIP.";
+		finish();
+		return {};
+	}
+	downloaded = downloadFile(archiveFilename, output, progress, maxModelBytes, error);
+	const bool archiveClosed = std::fclose(output) == 0;
+	if (!downloaded || !archiveClosed) {
+		if (error.empty()) error = "Could not download Core ML model ZIP.";
+		finish();
+		return {};
+	}
+	const auto expectedSize = progress != nullptr ? progress->total.load() : 0;
+	if (expectedSize != 0 && std::filesystem::file_size(temporaryArchive, filesystemError) !=
+		expectedSize) {
+		error = "Core ML model ZIP download was incomplete.";
+		finish();
+		return {};
+	}
+	std::string archiveHash;
+	if (!sha256File(temporaryArchive, archiveHash) ||
+		archiveHash != found->archiveSha256) {
+		error = "Downloaded Core ML model ZIP failed its SHA-256 integrity check.";
+		finish();
+		return {};
+	}
+	if (!extractCoreMLModel(temporaryArchive, temporaryModel, stem, progress, error)) {
+		finish();
+		return {};
+	}
+	std::string directoryHash;
+	if (!sha256CoreMLDirectory(temporaryModel, directoryHash) ||
+		directoryHash != found->directorySha256) {
+		error = "Extracted Core ML model failed its SHA-256 integrity check.";
+		finish();
+		return {};
+	}
+	std::filesystem::rename(temporaryModel, destination, filesystemError);
+	if (filesystemError) {
+		error = "Could not install Core ML model: " + filesystemError.message();
+		finish();
+		return {};
+	}
+	finish();
+	DiagnosticLog::write("INFO", "coreml_model_installed", std::format("model={}", stem));
+	return destination;
+}
+#endif
 
 }

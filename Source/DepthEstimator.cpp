@@ -15,6 +15,7 @@
 #include <onnxruntime_cxx_api.h>
 #ifdef RENDEPTH_ENABLE_COREML
 #include "CoreMLInference.h"
+#include "CoreMLDepthModel.h"
 #endif
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 #include "InferenceRuntime.h"
@@ -30,6 +31,9 @@ struct DepthEstimator::State {
 	Ort::Env environment{ORT_LOGGING_LEVEL_WARNING, "Rendepth"};
 	Ort::SessionOptions sessionOptions;
 	std::unique_ptr<Ort::Session> session;
+	#ifdef RENDEPTH_ENABLE_COREML
+	std::unique_ptr<CoreMLDepthModel> nativeCoreML;
+	#endif
 	Ort::RunOptions runOptions;
 	std::string inputName;
 	std::string outputName;
@@ -77,7 +81,11 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 		return false;
 	}
 	#endif
-	if (config.modelPath.empty() || !std::filesystem::is_regular_file(config.modelPath)) {
+	const bool nativeModelPath = config.provider == Provider::CoreML &&
+		config.preferNativeCoreML && config.modelPath.extension() == ".mlmodelc" &&
+		std::filesystem::is_directory(config.modelPath);
+	if (config.modelPath.empty() ||
+		(!nativeModelPath && !std::filesystem::is_regular_file(config.modelPath))) {
 		error = "Depth model was not found: " + config.modelPath.string();
 		return false;
 	}
@@ -88,7 +96,10 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 		? DepthEstimator::Provider::CPU : InferenceRuntime::provider();
 #else
 #ifdef RENDEPTH_ENABLE_COREML
-	const auto provider = CoreMLInference::resolve(config.provider);
+	// Keep CPU as the default for predictable startup; an explicit Core ML choice
+	// uses a compiled native model for still images when one is available.
+	const auto provider = config.provider == Provider::Auto
+		? Provider::CPU : CoreMLInference::resolve(config.provider);
 #else
 	const auto provider = config.provider;
 #endif
@@ -98,6 +109,32 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 	try {
 		nextState = std::make_unique<State>();
 		nextState->config = config;
+		#ifdef RENDEPTH_ENABLE_COREML
+		if (provider == Provider::CoreML && config.preferNativeCoreML) {
+			auto nativePath = config.modelPath;
+			if (!nativeModelPath) nativePath.replace_extension(".mlmodelc");
+			if (std::filesystem::is_directory(nativePath)) {
+				nextState->nativeCoreML = CoreMLDepthModel::load(
+					nativePath, config.processSize, error);
+			} else error = "compiled model was not found";
+			if (nextState->nativeCoreML) {
+				nextState->inputWidth = config.processSize;
+				nextState->inputHeight = config.processSize;
+				nextState->channelFirst = true;
+				activeProvider = "Native Core ML (CPU + GPU)";
+				state = nextState.release();
+				return true;
+			}
+			SDL_Log("Native Core ML depth model unavailable (%s); using CPU: %s",
+				nativePath.string().c_str(), error.c_str());
+			if (nativeModelPath) return false;
+			nextState.reset();
+			auto cpuConfig = config;
+			cpuConfig.provider = Provider::CPU;
+			cpuConfig.preferNativeCoreML = false;
+			return load(cpuConfig, error);
+		}
+		#endif
 		if (config.intraOpThreads > 0) {
 			nextState->sessionOptions.SetIntraOpNumThreads(static_cast<int>(config.intraOpThreads));
 		}
@@ -109,7 +146,11 @@ bool DepthEstimator::load(const Config& config, std::string& error) {
 
 		if (provider == Provider::CoreML) {
 #ifdef RENDEPTH_ENABLE_COREML
-			CoreMLInference::append(nextState->sessionOptions);
+			nextState->sessionOptions.AddFreeDimensionOverrideByName("batch_size", 1);
+			nextState->sessionOptions.AddFreeDimensionOverrideByName("height", config.processSize);
+			nextState->sessionOptions.AddFreeDimensionOverrideByName("width", config.processSize);
+			CoreMLInference::append(nextState->sessionOptions, config.modelPath,
+				config.processSize, config.processSize);
 #else
 			error = "Core ML requires a macOS build with Core ML support.";
 			return false;
@@ -341,52 +382,63 @@ DepthEstimator::Result DepthEstimator::predict(const SDL_Surface* image, std::st
 	}
 
 	try {
-		state->runOptions.UnsetTerminate();
-		Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-		std::array<int64_t, 4> inputShape = state->channelFirst
-			? std::array<int64_t, 4>{1, 3, processHeight, processWidth}
-			: std::array<int64_t, 4>{1, processHeight, processWidth, 3};
-		auto inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, input.data(), input.size(),
-			inputShape.data(), inputShape.size());
-		const char* inputNames[] = {state->inputName.c_str()};
-		const char* outputNames[] = {state->outputName.c_str()};
-		auto outputs = state->session->Run(state->runOptions, inputNames, &inputTensor, 1,
-			outputNames, 1);
-		if (outputs.empty() || !outputs[0].IsTensor()) {
-			error = "Depth model did not return a tensor output.";
-			return result;
-		}
-		const auto outputInfo = outputs[0].GetTensorTypeAndShapeInfo();
-		const auto outputShape = outputInfo.GetShape();
-		if (outputShape.size() == 4 && outputShape[0] == 1 && outputShape[1] == 1) {
-			if (outputShape[2] <= 0 || outputShape[3] <= 0 ||
-				outputShape[2] > std::numeric_limits<int>::max() ||
-				outputShape[3] > std::numeric_limits<int>::max()) {
-				error = "Depth output has dynamic or invalid dimensions.";
+		std::vector<float> modelOutput;
+		#ifdef RENDEPTH_ENABLE_COREML
+		if (state->nativeCoreML) {
+			if (!state->nativeCoreML->predict(input.data(), input.size(), modelOutput,
+				result.width, result.height, error)) return result;
+		} else
+		#endif
+		{
+			state->runOptions.UnsetTerminate();
+			Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+			std::array<int64_t, 4> inputShape = state->channelFirst
+				? std::array<int64_t, 4>{1, 3, processHeight, processWidth}
+				: std::array<int64_t, 4>{1, processHeight, processWidth, 3};
+			auto inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, input.data(), input.size(),
+				inputShape.data(), inputShape.size());
+			const char* inputNames[] = {state->inputName.c_str()};
+			const char* outputNames[] = {state->outputName.c_str()};
+			auto outputs = state->session->Run(state->runOptions, inputNames, &inputTensor, 1,
+				outputNames, 1);
+			if (outputs.empty() || !outputs[0].IsTensor()) {
+				error = "Depth model did not return a tensor output.";
 				return result;
 			}
-			result.height = static_cast<int>(outputShape[2]);
-			result.width = static_cast<int>(outputShape[3]);
-		} else if (outputShape.size() == 3 && outputShape[0] == 1) {
-			if (outputShape[1] <= 0 || outputShape[2] <= 0 ||
-				outputShape[1] > std::numeric_limits<int>::max() ||
-				outputShape[2] > std::numeric_limits<int>::max()) {
-				error = "Depth output has dynamic or invalid dimensions.";
+			const auto outputInfo = outputs[0].GetTensorTypeAndShapeInfo();
+			const auto outputShape = outputInfo.GetShape();
+			if (outputShape.size() == 4 && outputShape[0] == 1 && outputShape[1] == 1) {
+				if (outputShape[2] <= 0 || outputShape[3] <= 0 ||
+					outputShape[2] > std::numeric_limits<int>::max() ||
+					outputShape[3] > std::numeric_limits<int>::max()) {
+					error = "Depth output has dynamic or invalid dimensions.";
+					return result;
+				}
+				result.height = static_cast<int>(outputShape[2]);
+				result.width = static_cast<int>(outputShape[3]);
+			} else if (outputShape.size() == 3 && outputShape[0] == 1) {
+				if (outputShape[1] <= 0 || outputShape[2] <= 0 ||
+					outputShape[1] > std::numeric_limits<int>::max() ||
+					outputShape[2] > std::numeric_limits<int>::max()) {
+					error = "Depth output has dynamic or invalid dimensions.";
+					return result;
+				}
+				result.height = static_cast<int>(outputShape[1]);
+				result.width = static_cast<int>(outputShape[2]);
+			} else {
+				error = "Depth output must have shape [1, 1, H, W] or [1, H, W].";
 				return result;
 			}
-			result.height = static_cast<int>(outputShape[1]);
-			result.width = static_cast<int>(outputShape[2]);
-		} else {
-			error = "Depth output must have shape [1, 1, H, W] or [1, H, W].";
-			return result;
+			const size_t outputSize = static_cast<size_t>(result.width) * result.height;
+			const float* outputData = outputs[0].GetTensorData<float>();
+			modelOutput.assign(outputData, outputData + outputSize);
 		}
-		const size_t outputSize = static_cast<size_t>(result.width) *
-			static_cast<size_t>(result.height);
-		if (outputSize != static_cast<size_t>(result.width) * static_cast<size_t>(result.height)) {
+		if (result.width <= 0 || result.height <= 0 ||
+			modelOutput.size() != static_cast<size_t>(result.width) * result.height) {
 			error = "Depth output dimensions do not match its tensor size.";
 			return result;
 		}
-		const float* outputData = outputs[0].GetTensorData<float>();
+		const float* outputData = modelOutput.data();
 		// Crop by output-pixel centers rather than rounding the rectangle
 		// boundaries. This prevents a letterbox/border row from being included
 		// when the model output and input sizes do not map exactly.
@@ -436,7 +488,7 @@ DepthEstimator::Result DepthEstimator::predict(const SDL_Surface* image, std::st
 		error = exception.what();
 		return result;
 	} catch (const std::exception& exception) {
-		error = "ONNX Runtime inference failed: ";
+		error = "Depth inference failed: ";
 		error += exception.what();
 		return result;
 	}

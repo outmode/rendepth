@@ -17,6 +17,8 @@ public:
 		std::filesystem::path modelPath;
 		DepthEstimator::Provider provider = DepthEstimator::Provider::Auto;
 		unsigned int intraOpThreads = 0;
+		int inputWidth = 0;
+		int inputHeight = 0;
 	};
 
 	~SuperResolution();

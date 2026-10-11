@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(Rendepth VERSION 3.0.4 LANGUAGES C CXX)
+project(Rendepth VERSION 3.0.5 LANGUAGES C CXX)
 if(APPLE)
     enable_language(OBJCXX)
 endif()
@@ -452,6 +452,16 @@ else()
     target_link_libraries(Rendepth PUBLIC CURL::libcurl)
     find_package(OpenSSL REQUIRED COMPONENTS Crypto)
     target_link_libraries(Rendepth PRIVATE OpenSSL::Crypto)
+    if(APPLE)
+        add_executable(CoreMLDownloadTest EXCLUDE_FROM_ALL
+            Tools/CoreMLDownloadTest.cpp Source/ModelDownloader.cpp Source/DiagnosticLog.cpp
+            ThirdParty/SDL_image/external/zlib/contrib/minizip/unzip.c
+            ThirdParty/SDL_image/external/zlib/contrib/minizip/ioapi.c)
+        target_include_directories(CoreMLDownloadTest PRIVATE
+            Source ThirdParty/SDL_image/external/zlib/contrib/minizip)
+        target_link_libraries(CoreMLDownloadTest PRIVATE
+            CURL::libcurl OpenSSL::Crypto ${RENDEPTH_MODEL_ZLIB})
+    endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND RENDEPTH_ENABLE_ONNX_RUNTIME)
         target_sources(Rendepth PRIVATE Source/RuntimePackDownloaderLinux.cpp)
     endif()
@@ -776,6 +786,10 @@ elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
     target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_ONNX_RUNTIME)
     if(APPLE)
         target_compile_definitions(Rendepth PUBLIC RENDEPTH_ENABLE_COREML)
+        target_sources(Rendepth PRIVATE Source/CoreMLDepthModel.mm Source/CoreMLSuperResolutionModel.mm)
+        set_source_files_properties(Source/CoreMLDepthModel.mm Source/CoreMLSuperResolutionModel.mm
+                PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+        target_link_libraries(Rendepth PRIVATE "-framework CoreML" "-framework Foundation")
     endif()
     target_include_directories(Rendepth PUBLIC
             "${RENDEPTH_ONNXRUNTIME_INCLUDE_DIR}")
@@ -881,6 +895,9 @@ elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
         target_compile_definitions(DepthTest PUBLIC RENDEPTH_ENABLE_ONNX_RUNTIME)
         if(APPLE)
             target_compile_definitions(DepthTest PUBLIC RENDEPTH_ENABLE_COREML)
+            target_sources(DepthTest PRIVATE Source/CoreMLDepthModel.mm)
+            set_property(TARGET DepthTest PROPERTY OBJCXX_STANDARD 20)
+            target_link_libraries(DepthTest PRIVATE "-framework CoreML" "-framework Foundation")
         endif()
         target_include_directories(DepthTest PUBLIC
                 Source ThirdParty/SDL/include ThirdParty/SDL_image/include
@@ -928,6 +945,9 @@ elseif(RENDEPTH_ENABLE_ONNX_RUNTIME)
         target_compile_definitions(SuperTest PUBLIC RENDEPTH_ENABLE_ONNX_RUNTIME)
         if(APPLE)
             target_compile_definitions(SuperTest PUBLIC RENDEPTH_ENABLE_COREML)
+            target_sources(SuperTest PRIVATE Source/CoreMLSuperResolutionModel.mm)
+            set_property(TARGET SuperTest PROPERTY OBJCXX_STANDARD 20)
+            target_link_libraries(SuperTest PRIVATE "-framework CoreML" "-framework Foundation")
         endif()
         target_include_directories(SuperTest PUBLIC
                 Source ThirdParty/SDL/include ThirdParty/SDL_image/include

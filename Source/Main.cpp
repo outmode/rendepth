@@ -826,8 +826,30 @@ static bool nativeSuperResolutionAttempted = false;
 static bool nativeSuperResolutionLoaded = false;
 static std::string nativeSuperResolutionError;
 static std::mutex nativeSuperResolutionMutex;
+#if defined(__APPLE__) && defined(RENDEPTH_ENABLE_COREML)
+static int nativeSuperResolutionInputWidth = 0;
+static int nativeSuperResolutionInputHeight = 0;
+#endif
 static std::uint64_t nextDepthGeneration = 0;
-static std::uint64_t activeDepthGeneration = 0;
+static std::atomic<std::uint64_t> activeDepthGeneration{0};
+static std::mutex depthGenerationStatusMutex;
+
+// Invalidate errors as well as completions when a depth request is replaced.
+static std::uint64_t advanceDepthGeneration() {
+	std::lock_guard lock(depthGenerationStatusMutex);
+	const auto generation = ++nextDepthGeneration;
+	activeDepthGeneration.store(generation, std::memory_order_release);
+	depthGenerationError.store(false, std::memory_order_release);
+	return generation;
+}
+
+// A cancelled worker must not show an error over the image selected afterward.
+static void reportDepthGenerationError(std::uint64_t generation, const char* message) {
+	std::lock_guard lock(depthGenerationStatusMutex);
+	if (generation != activeDepthGeneration.load(std::memory_order_acquire)) return;
+	depthGenerationErrorText.store(message, std::memory_order_relaxed);
+	depthGenerationError.store(true, std::memory_order_release);
+}
 
 std::filesystem::path exePath = std::filesystem::path(
 	SDL_GetBasePath()).parent_path().parent_path();
@@ -979,7 +1001,7 @@ static void resetRapidBrowseState() {
 
 // Invalidate pending conversion and preload results so rapid browsing can respond immediately.
 static void cancelPendingWorkForRapidBrowse() {
-	activeDepthGeneration = ++nextDepthGeneration;
+	advanceDepthGeneration();
 	nativeDepthEstimator.cancel();
 	isConverting = false;
 	isSpeculativeDepth = false;
@@ -1862,12 +1884,13 @@ static void pollRuntimePackInstall();
 Choice ChoiceInference {
 	.label = "AI Engine",
 #ifdef RENDEPTH_ENABLE_COREML
-	.options = { "Core ML (CPU + GPU)" },
+	.options = { "CPU", "Core ML (CPU + GPU)" },
 #else
 	.options = { "CPU" },
 #endif
 	.readOnly = true,
 	.inlineText = true,
+	.restartLabel = "AI Engine (Restart Required)",
 };
 Choice ChoiceRuntimePacks {
 #ifdef RENDEPTH_ENABLE_ONNX_RUNTIME
@@ -1878,11 +1901,23 @@ Choice ChoiceRuntimePacks {
 };
 Choice ChoiceRuntimeTools {
 	.label = "GPU Support",
+#ifdef RENDEPTH_ENABLE_COREML
+	.options = { "Choose AI Engine", "Open Data Folder" },
+#else
 	.options = { "Open Data Folder" },
+#endif
 	.inlineText = true,
 	.linkOptionOnly = true,
 };
 static void openDataFolder();
+#ifdef RENDEPTH_ENABLE_COREML
+static int macStartupInferenceEngine = 0;
+static void chooseMacInferenceEngine();
+static DepthEstimator::Provider macInferenceProvider() {
+	return macStartupInferenceEngine == 1 ? DepthEstimator::Provider::CoreML :
+		DepthEstimator::Provider::CPU;
+}
+#endif
 #endif
 
 static bool downloadBlocksInput() {
@@ -1895,7 +1930,7 @@ static bool downloadBlocksInput() {
 }
 
 Choice ChoiceVersion {
-	.label = "Rendepth 3.0.4 (Free Version)",
+	.label = "Rendepth 3.0.5 (Free Version)",
 	.options = {},
 	.inlineText = true,
 	.bold = true,
@@ -2028,7 +2063,7 @@ static void changeStereo(int option) {
 			stopVideoDepth();
 		}
 		if (isConverting) {
-			activeDepthGeneration = ++nextDepthGeneration;
+			advanceDepthGeneration();
 			isSpeculativeDepth = false;
 			nativeDepthEstimator.cancel();
 			waitForDepthThread();
@@ -2158,7 +2193,7 @@ static void resetDepthGeneration() {
 	// Invalidate any completion that may already be queued by the worker. The
 	// current conversion is still joined below, but its result must not restore
 	// an image after the user changes the depth settings.
-	activeDepthGeneration = ++nextDepthGeneration;
+	advanceDepthGeneration();
 	isSpeculativeDepth = false;
 	nativeDepthEstimator.cancel();
 	waitForDepthThread();
@@ -2267,6 +2302,8 @@ static bool startVideoDepth(bool preserveTexture) {
 	config.provider = DepthEstimator::Provider::CUDA;
 	#elif defined(RENDEPTH_ENABLE_ROCM)
 	config.provider = DepthEstimator::Provider::ROCM;
+	#elif defined(__APPLE__) && defined(RENDEPTH_ENABLE_COREML)
+	config.provider = macInferenceProvider();
 	#endif
 	if (activeVideo) videoPlayer.setInferenceSize(config.processSize, config.targetFramesPerSecond);
 	if (!videoDepthProcessor.start(config)) {
@@ -2531,7 +2568,13 @@ static std::unordered_map<std::string, std::function<void(int)>> menuCallback = 
 #elif defined(__APPLE__)
 	{ ChoiceRuntimeTools.label, [](int option) {
 		menuSelection[ChoiceRuntimeTools.label] = -1;
-		if (!firstInit && option == 0) openDataFolder();
+		if (firstInit) return;
+#ifdef RENDEPTH_ENABLE_COREML
+		if (option == 0) chooseMacInferenceEngine();
+		else if (option == 1) openDataFolder();
+#else
+		if (option == 0) openDataFolder();
+#endif
 	} },
 #endif
 	{ ChoiceStereo.label, [](int option) { changeStereo(option); } },
@@ -2662,6 +2705,32 @@ static void changeInference(int option) {
 	displayTipTime = getTimeNow();
 }
 
+#endif
+#if defined(__APPLE__) && defined(RENDEPTH_ENABLE_COREML) && !defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME)
+// Apply one macOS inference preference to depth and super resolution after restart.
+static void chooseMacInferenceEngine() {
+	const char* message = "Choose the AI engine for image depth, video depth, and "
+		"super resolution. Core ML can use the Mac GPU, but performance depends "
+		"on the model. Restart Rendepth to apply the choice.";
+	const SDL_MessageBoxButtonData buttons[] = {
+		{ SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, -1, "Cancel" },
+		{ 0, 0, "CPU" },
+		{ 0, 1, "Core ML" }
+	};
+	const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_INFORMATION, context.window,
+		"AI Engine", message, static_cast<int>(std::size(buttons)), buttons, nullptr };
+	int selected = -1;
+	if (!SDL_ShowMessageBox(&dialog, &selected) || selected < 0) return;
+	menuSelection[ChoiceInference.label] = selected;
+	for (auto& choice : menuChoices) {
+		if (choice.label == ChoiceInference.label) {
+			choice.restartRequired = selected != macStartupInferenceEngine;
+			break;
+		}
+	}
+	Image::saveMenuLayout(&context);
+	saveOptions();
+}
 #endif
 #if defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME) || defined(__APPLE__)
 // Open the application data folder through the OS file manager.
@@ -2886,10 +2955,12 @@ static void showStartupEngineTip() {
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	usingGpu = inferenceRuntimeLoaded &&
 		InferenceRuntime::provider() != DepthEstimator::Provider::CPU;
-#elif defined(RENDEPTH_ENABLE_COREML) || defined(RENDEPTH_ENABLE_CUDA) || defined(RENDEPTH_ENABLE_ROCM)
+#elif defined(RENDEPTH_ENABLE_COREML)
+	usingGpu = macInferenceProvider() == DepthEstimator::Provider::CoreML;
+#elif defined(RENDEPTH_ENABLE_CUDA) || defined(RENDEPTH_ENABLE_ROCM)
 	usingGpu = true;
 #endif
-	Core::drawText(&context, std::string("Running on ") + (usingGpu ? "GPU" : "CPU") +
+	Core::drawText(&context, std::string("AI engine: ") + (usingGpu ? "GPU requested" : "CPU") +
 		". Check Options to Configure AI Engine", Image::helpFont,
 		Image::helpTexture, Image::helpTextSize, "Help Texture");
 	Image::displayTip = true;
@@ -3988,8 +4059,11 @@ void saveOptions() {
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 		if (transientInferenceSetting(setting.first)) continue;
 #elif defined(__APPLE__)
-		if (setting.first == ChoiceInference.label || setting.first == ChoiceRuntimePacks.label ||
+		if (setting.first == ChoiceRuntimePacks.label ||
 			setting.first == ChoiceRuntimeTools.label) continue;
+#ifndef RENDEPTH_ENABLE_COREML
+		if (setting.first == ChoiceInference.label) continue;
+#endif
 #endif
         const char* settingName = setting.first.c_str();
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
@@ -4091,6 +4165,11 @@ void loadOptions() {
 	if (const int engine = AIEngineSettings::read(document); engine >= 0) {
 		changeInference(engine);
 		SDL_Log("Restored AI Engine=%d from %s", engine, optionsFilePath.c_str());
+	}
+#elif defined(__APPLE__) && defined(RENDEPTH_ENABLE_COREML)
+	if (document.HasMember("AI Engine") && document["AI Engine"].IsInt()) {
+		const int engine = document["AI Engine"].GetInt();
+		if (engine == 0 || engine == 1) menuSelection[ChoiceInference.label] = engine;
 	}
 #endif
 
@@ -5103,12 +5182,14 @@ static void updateDisplayScale() {
 
 static auto grabMargin = 32.0;
 static auto resizeMargin = 12.0;
-static auto windowDraggable = false;
 // Identify draggable and resizable regions of the custom window frame.
 static SDL_HitTestResult windowHitCallback(SDL_Window* window,
 	const SDL_Point* area, void *data) {
 	auto context = (Context*)data;
-	windowDraggable = false;
+	// Fullscreen has no custom frame to drag or resize. In particular, the
+	// windowed title-bar hit test must not intercept fullscreen controls.
+	if (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN)
+		return SDL_HITTEST_NORMAL;
 
 	auto topBarSize = grabMargin * context->displayScale / context->pixelDensity;
 	auto sideEdgeSize = resizeMargin * context->displayScale / context->pixelDensity;
@@ -5134,7 +5215,6 @@ static SDL_HitTestResult windowHitCallback(SDL_Window* window,
 	}
 
 	if (area->y < topBarSize) {
-		windowDraggable = true;
 		return SDL_HITTEST_DRAGGABLE;
 	}
 
@@ -5162,7 +5242,7 @@ static void refreshLicenseMenu(bool rebuild) {
         menuSelection[label] = -1; menuRollover[label] = -1;
         original.label = label;
     };
-    rename(ChoiceVersion, licensed ? "Rendepth 3.0.4 (Pro License)" : "Rendepth 3.0.4 (Free Version)");
+    rename(ChoiceVersion, licensed ? "Rendepth 3.0.5 (Pro License)" : "Rendepth 3.0.5 (Free Version)");
     rename(ChoiceLicense, licensed ? "Manage Rendepth Pro License" : "Upgrade to Rendepth Pro");
     if (rebuild) {
         Image::initMenuTexture();
@@ -5174,7 +5254,7 @@ static void refreshLicenseMenu(bool rebuild) {
 // Initialize application services, the SDL window and GPU, preferences, and the initial media source.
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	if (!homeDir.empty()) DiagnosticLog::start(homePath);
-	DiagnosticLog::write("INFO", "app_start", "version=3.0.4");
+	DiagnosticLog::write("INFO", "app_start", "version=3.0.5");
 	// Keep fullscreen visible when a native dialog or another application takes focus.
 	SDL_SetHintWithPriority(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0", SDL_HINT_OVERRIDE);
 #if defined(__APPLE__) && defined(RENDEPTH_ENABLE_ONNX_RUNTIME)
@@ -5195,7 +5275,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	context.appName = "Rendepth";
 	// Keep the desktop entry name, Wayland app_id, and X11 window class aligned
 	// so the running window is grouped under the installed launcher icon.
-	SDL_SetAppMetadata("Rendepth", "3.0.4", "rendepth");
+	SDL_SetAppMetadata("Rendepth", "3.0.5", "rendepth");
 	context.windowSize = { 1920, 1080 };
 	context.appIcons = &appIcons;
 	context.menuChoices = &menuChoices;
@@ -5218,6 +5298,9 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	context.swapLeftRight = false;
 
 	loadOptions();
+#if defined(__APPLE__) && defined(RENDEPTH_ENABLE_COREML) && !defined(RENDEPTH_DYNAMIC_ONNX_RUNTIME)
+	macStartupInferenceEngine = menuSelection[ChoiceInference.label];
+#endif
 #ifdef RENDEPTH_DYNAMIC_ONNX_RUNTIME
 	startupInferenceOption = menuSelection[ChoiceInference.label];
 	const auto preferred = inferenceProviderForOption(startupInferenceOption);
@@ -6241,7 +6324,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		}
 	}
 
-	if (depthGenerationError) {
+	if (depthGenerationError.exchange(false, std::memory_order_acq_rel)) {
 		batchDepthGeneration = false;
 		batchExportActive = false;
 		context.loading = false;
@@ -6254,7 +6337,6 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 			Image::helpTextSize, "Help Texture");
 		Image::displayTip = true;
 		displayTipTime = getTimeNow();
-		depthGenerationError = false;
 	}
 
 	// Once batch inference finishes, enumerate its input images for incremental GPU export.
@@ -6274,14 +6356,6 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 	}
 	processBatchExport();
 	showFullscreen3DPromptIfReady();
-
-	if (windowDraggable && isFullscreen && SDL_GetMouseFocus() == context.window) {
-		auto mouseX = 0.0f, mouseY = 0.0f;
-		auto mouseFlags = SDL_GetGlobalMouseState(&mouseX, &mouseY);
-		if (mouseFlags & SDL_BUTTON_LMASK) {
-			setFullscreen(false);
-		}
-	}
 
 	if (quitAppNextFrame) return SDL_APP_SUCCESS;
 	return SDL_APP_CONTINUE;
@@ -7037,6 +7111,18 @@ static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
 		DiagnosticLog::write("INFO", "super_resolution_skip", "reason=large_image");
 		return color;
 	}
+	#if defined(__APPLE__) && defined(RENDEPTH_ENABLE_COREML)
+	const int modelWidth = (color->w + 3) / 4 * 4;
+	const int modelHeight = (color->h + 3) / 4 * 4;
+	if (macInferenceProvider() == DepthEstimator::Provider::CoreML &&
+		nativeSuperResolutionAttempted &&
+		(modelWidth != nativeSuperResolutionInputWidth ||
+		modelHeight != nativeSuperResolutionInputHeight)) {
+		nativeSuperResolution.unload();
+		nativeSuperResolutionLoaded = false;
+		nativeSuperResolutionAttempted = false;
+	}
+	#endif
 
 	if (!nativeSuperResolutionAttempted) {
 		nativeSuperResolutionAttempted = true;
@@ -7044,19 +7130,54 @@ static SDL_Surface* maybeSuperResolveNativeColor(SDL_Surface* color,
 		SuperResolution::Config config;
 		const auto modelDirectoryPath = modelDirectory.empty()
 			? homePath / "Models" : std::filesystem::path(modelDirectory);
-		config.modelPath = ModelDownloader::ensureAvailable(
-			modelDirectoryPath, "RFDN_x4.onnx", nativeSuperResolutionError,
-			&superResolutionModelDownload);
 	#ifdef RENDEPTH_ENABLE_CUDA
 		config.provider = DepthEstimator::Provider::CUDA;
 	#elif defined(RENDEPTH_ENABLE_ROCM)
 		config.provider = DepthEstimator::Provider::ROCM;
+	#elif defined(__APPLE__) && defined(RENDEPTH_ENABLE_COREML)
+		config.provider = macInferenceProvider();
+		if (config.provider == DepthEstimator::Provider::CoreML) {
+			config.inputWidth = modelWidth;
+			config.inputHeight = modelHeight;
+			nativeSuperResolutionInputWidth = modelWidth;
+			nativeSuperResolutionInputHeight = modelHeight;
+			if (modelWidth >= 16 && modelWidth <= 720 &&
+				modelHeight >= 16 && modelHeight <= 720) {
+				config.modelPath = ModelDownloader::ensureCoreMLAvailable(
+					modelDirectoryPath, "RFDN_x4.onnx", nativeSuperResolutionError,
+					&superResolutionModelDownload);
+			}
+			if (config.modelPath.empty() && !superResolutionModelDownload.cancel.load()) {
+				SDL_Log("Core ML super-resolution download unavailable; using CPU: %s",
+					nativeSuperResolutionError.c_str());
+				config.provider = DepthEstimator::Provider::CPU;
+			}
+		}
 	#endif
+		if (config.modelPath.empty() && !superResolutionModelDownload.cancel.load())
+			config.modelPath = ModelDownloader::ensureAvailable(
+				modelDirectoryPath, "RFDN_x4.onnx", nativeSuperResolutionError,
+				&superResolutionModelDownload);
 		if (!config.modelPath.empty())
 			nativeSuperResolutionLoaded = nativeSuperResolution.load(
 				config, nativeSuperResolutionError);
+	#if defined(__APPLE__) && defined(RENDEPTH_ENABLE_COREML)
+		if (!nativeSuperResolutionLoaded &&
+			config.provider == DepthEstimator::Provider::CoreML &&
+			!superResolutionModelDownload.cancel.load()) {
+			SDL_Log("Core ML super-resolution load failed; using CPU: %s",
+				nativeSuperResolutionError.c_str());
+			config.provider = DepthEstimator::Provider::CPU;
+			config.modelPath = ModelDownloader::ensureAvailable(
+				modelDirectoryPath, "RFDN_x4.onnx", nativeSuperResolutionError,
+				&superResolutionModelDownload);
+			if (!config.modelPath.empty()) nativeSuperResolutionLoaded =
+				nativeSuperResolution.load(config, nativeSuperResolutionError);
+		}
+	#endif
 		if (nativeSuperResolutionLoaded) {
-			DiagnosticLog::write("INFO", "super_resolution_model_ready");
+			DiagnosticLog::write("INFO", "super_resolution_model_ready", std::format(
+				"provider={}", nativeSuperResolution.providerName()));
 		} else {
 			DiagnosticLog::write("ERROR", "super_resolution_model", "result=unavailable");
 		}
@@ -7163,9 +7284,29 @@ static int nativeDepthRun(void* ptr) {
 		DepthEstimator::Config config;
 		const auto modelDirectoryPath = modelDirectory.empty()
 			? homePath / "Models" : std::filesystem::path(modelDirectory);
-		config.modelPath = ModelDownloader::ensureAvailable(
-			modelDirectoryPath, depthModelFiles[modelOption], nativeDepthEstimatorError,
-			&stillDepthModelDownload);
+	#ifdef RENDEPTH_ENABLE_CUDA
+		config.provider = DepthEstimator::Provider::CUDA;
+	#elif defined(RENDEPTH_ENABLE_ROCM)
+		config.provider = DepthEstimator::Provider::ROCM;
+	#elif defined(__APPLE__) && defined(RENDEPTH_ENABLE_COREML)
+		config.provider = macInferenceProvider();
+		config.preferNativeCoreML = config.provider == DepthEstimator::Provider::CoreML;
+		if (config.preferNativeCoreML) {
+			config.modelPath = ModelDownloader::ensureCoreMLAvailable(
+				modelDirectoryPath, depthModelFiles[modelOption], nativeDepthEstimatorError,
+				&stillDepthModelDownload);
+			if (config.modelPath.empty() && !stillDepthModelDownload.cancel.load()) {
+				SDL_Log("Core ML depth download unavailable; using CPU: %s",
+					nativeDepthEstimatorError.c_str());
+				config.provider = DepthEstimator::Provider::CPU;
+				config.preferNativeCoreML = false;
+			}
+		}
+	#endif
+		if (config.modelPath.empty() && !stillDepthModelDownload.cancel.load())
+			config.modelPath = ModelDownloader::ensureAvailable(
+				modelDirectoryPath, depthModelFiles[modelOption], nativeDepthEstimatorError,
+				&stillDepthModelDownload);
 		if (config.modelPath.empty()) {
 			DiagnosticLog::write("ERROR", "depth_model", "result=unavailable");
 			SDL_DestroySurface(suppliedSurface);
@@ -7175,22 +7316,29 @@ static int nativeDepthRun(void* ptr) {
 			}
 			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Native depth model download failed: %s",
 				nativeDepthEstimatorError.c_str());
-			depthGenerationErrorText = "Could Not Download Depth Model";
-			depthGenerationError = true;
+			reportDepthGenerationError(generation, "Could Not Download Depth Model");
 			depthGenAlive = false;
 			return 0;
 		}
-	#ifdef RENDEPTH_ENABLE_CUDA
-		config.provider = DepthEstimator::Provider::CUDA;
-	#elif defined(RENDEPTH_ENABLE_ROCM)
-		config.provider = DepthEstimator::Provider::ROCM;
-	#endif
 		config.processSize = depthProcessSizes[modelOption];
 		nativeDepthEstimatorLoaded = nativeDepthEstimator.load(
 			config, nativeDepthEstimatorError);
+	#if defined(__APPLE__) && defined(RENDEPTH_ENABLE_COREML)
+		if (!nativeDepthEstimatorLoaded && config.preferNativeCoreML) {
+			SDL_Log("Core ML depth load failed; using CPU: %s",
+				nativeDepthEstimatorError.c_str());
+			config.provider = DepthEstimator::Provider::CPU;
+			config.preferNativeCoreML = false;
+			config.modelPath = ModelDownloader::ensureAvailable(
+				modelDirectoryPath, depthModelFiles[modelOption], nativeDepthEstimatorError,
+				&stillDepthModelDownload);
+			if (!config.modelPath.empty()) nativeDepthEstimatorLoaded =
+				nativeDepthEstimator.load(config, nativeDepthEstimatorError);
+		}
+	#endif
 		if (nativeDepthEstimatorLoaded) {
 			DiagnosticLog::write("INFO", "depth_model_ready", std::format(
-				"size={}", config.processSize));
+				"size={} provider={}", config.processSize, nativeDepthEstimator.providerName()));
 		}
 	}
 	if (!nativeDepthEstimatorLoaded) {
@@ -7198,8 +7346,7 @@ static int nativeDepthRun(void* ptr) {
 		SDL_DestroySurface(suppliedSurface);
 		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Native depth model failed to load: %s",
 			nativeDepthEstimatorError.c_str());
-		depthGenerationErrorText = "Could Not Load Depth Model";
-		depthGenerationError = true;
+		reportDepthGenerationError(generation, "Could Not Load Depth Model");
 		depthGenAlive = false;
 		return 0;
 	}
@@ -7251,8 +7398,7 @@ static int nativeDepthRun(void* ptr) {
 	if (!color) {
 		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not prepare image for depth: %s",
 			SDL_GetError());
-		depthGenerationErrorText = "Could Not Prepare Depth Image";
-		depthGenerationError = true;
+		reportDepthGenerationError(generation, "Could Not Prepare Depth Image");
 		depthGenAlive = false;
 		return 0;
 	}
@@ -7289,13 +7435,12 @@ static int nativeDepthRun(void* ptr) {
 		if (output != nullptr) {
 			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not save depth image to %s: %s",
 				result.string().c_str(), error.c_str());
-			depthGenerationErrorText = "Could Not Save Depth Image";
+			reportDepthGenerationError(generation, "Could Not Save Depth Image");
 		} else {
 			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Native depth inference failed: %s",
 				error.c_str());
-			depthGenerationErrorText = "Could Not Generate Image Depth";
+			reportDepthGenerationError(generation, "Could Not Generate Image Depth");
 		}
-		depthGenerationError = true;
 	}
 	depthGenAlive = false;
 	return 0;
@@ -7315,7 +7460,7 @@ static void serviceDepthCompletions() {
 		completions.swap(depthCompletions);
 	}
 	for (const auto& completion : completions) {
-		if (completion.generation != activeDepthGeneration) continue;
+		if (completion.generation != activeDepthGeneration.load(std::memory_order_acquire)) continue;
 		const auto& path = completion.path;
 		const auto imageId = completion.imageId;
 	if (isSpeculativeDepth && imageId == preloadDepthIndex &&
@@ -7382,9 +7527,9 @@ static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int 
 	depthGenAlive = true;
 	stillDepthModelDownload.cancel = false;
 	superResolutionModelDownload.cancel = false;
-	activeDepthGeneration = ++nextDepthGeneration;
+	const auto generation = advanceDepthGeneration();
 	auto request = new NativeDepthRequest{
-		std::filesystem::path(fileFolderPath), genMode, imageId, activeDepthGeneration,
+		std::filesystem::path(fileFolderPath), genMode, imageId, generation,
 		inputSurface};
 	depthGenThread = SDL_CreateThread(nativeDepthRun, "nativeDepthRun", request);
 	if (depthGenThread == nullptr) {
@@ -7392,8 +7537,7 @@ static int callDepthGenOnce(const std::string& fileFolderPath, int genMode, int 
 		delete request;
 		depthGenAlive = false;
 		isConverting = false;
-		depthGenerationErrorText = "Could Not Start Depth Conversion";
-		depthGenerationError = true;
+		reportDepthGenerationError(generation, "Could Not Start Depth Conversion");
 		isSpeculativeDepth = false;
 		return 1;
 	}
@@ -7934,7 +8078,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 			auto clickDiff = timeNow - lastClick;
 			lastClick = timeNow;
 			if (!isIconCaptured && !context.displayMenu) {
-				if (clickDiff < doubleClickTime) toggleMaximized();
+				if (!isFullscreen && clickDiff < doubleClickTime) toggleMaximized();
 			}
 		}
 	} else if (event->type == SDL_EVENT_MOUSE_MOTION) {

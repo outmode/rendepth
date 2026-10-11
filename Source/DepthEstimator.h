@@ -29,6 +29,7 @@ public:
 		int processSize = 504;
 		unsigned int intraOpThreads = 0;
 		bool allowThreadSpinning = true;
+		bool preferNativeCoreML = false;
 	};
 
 	struct Result {

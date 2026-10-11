@@ -113,6 +113,14 @@ int main(int argc, char** argv) {
 			return 2;
 		}
 	}
+	if (config.provider == DepthEstimator::Provider::CoreML &&
+		std::filesystem::is_regular_file(argv[2])) {
+		if (SDL_Surface* input = IMG_Load(argv[2])) {
+			config.inputWidth = (input->w + 3) / 4 * 4;
+			config.inputHeight = (input->h + 3) / 4 * 4;
+			SDL_DestroySurface(input);
+		}
+	}
 	SuperResolution estimator;
 	std::string error;
 	if (!estimator.load(config, error)) {

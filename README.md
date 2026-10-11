@@ -82,10 +82,25 @@ generator, use CLion's bundled CMake rather than an older system CMake.
 See [Windows inference packaging](Packaging/Windows/README.md) for pack details.
 On macOS, provide an ONNX Runtime SDK via `RENDEPTH_ONNXRUNTIME_DIR` and the
 libbluray and libdvdread development packages; see the disc playback notes below.
-The SDK must include the Core ML execution provider. Depth and super resolution
-use Core ML's CPU and GPU compute units by default, with CPU fallback when a
-model cannot load through Core ML. The `DepthTest` and `SuperTest` tools accept
-`--provider coreml` or `--provider cpu` to select an engine explicitly.
+The SDK must include the Core ML execution provider. macOS uses ONNX Runtime's
+CPU provider by default for predictable startup. **GPU Support > Choose AI Engine**
+selects CPU or Core ML for still-image depth, video depth, and super resolution
+after a restart. On macOS, depth uses native Core ML from a compiled
+`DA2-*.mlmodelc` directory. Super resolution uses `RFDN_x4.mlmodelc` for
+inputs 16–720 pixels per side. When a compiled model is missing, the app
+downloads the matching `-coreml.zip` from `rendepth.com/models/`,
+verifies its SHA-256, and caches the compiled model in the configured Models
+folder. If download or loading fails, it downloads the ONNX model and uses CPU.
+See [the local conversion instructions](Tools/README.md) for rebuilding assets.
+The remaining ONNX Runtime Core ML paths compile on first load and reuse a
+cache beside the ONNX model; large cached models may still take minutes to load.
+The compiled depth cache can take several hundred megabytes or more per model
+and input size; remove `.RendepthCoreMLCache` from the model folder to reclaim it.
+Core ML uses CPU and GPU compute units, with CPU fallback if a model cannot load.
+The `DepthTest` and `SuperTest` tools accept `--provider coreml` or
+`--provider cpu` to select an engine explicitly. `DepthTest` also accepts
+`--repeat N` to check repeated predictions in one session, or `--load-only`
+to measure model startup without running inference.
 
 The Release executable is written to `Binary` in the repository root. Keep
 `Assets`, `Binary`, `Library`, `Runtimes`, and `Shaders` together when running or

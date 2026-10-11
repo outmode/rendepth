@@ -6,6 +6,7 @@
 #include "SDL3_image/SDL_image.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -129,7 +130,7 @@ static float sampleCatmullRomDepth(const std::vector<float>& source,
 int main(int argc, char** argv) {
 	if (argc < 4) {
 		std::cerr << "Usage: DepthTest <model.onnx> <input-image> <output-depth.png> "
-			"[process-size] [--provider auto|cpu|coreml|cuda|rocm|directml] [--upscale cpu|gpu]\n";
+			"[process-size] [--provider auto|cpu|coreml|cuda|rocm|directml] [--upscale cpu|gpu] [--repeat N] [--load-only]\n";
 		return 2;
 	}
 
@@ -149,6 +150,8 @@ int main(int argc, char** argv) {
 	DepthEstimator::Config config;
 	config.modelPath = argv[1];
 	bool useGpuUpscale = false;
+	bool loadOnly = false;
+	int repeatCount = 1;
 	for (int argument = 4; argument < argc; ++argument) {
 		const std::string value = argv[argument];
 		if (value == "--provider" && argument + 1 < argc) {
@@ -170,6 +173,19 @@ int main(int argc, char** argv) {
 				std::cerr << "Unknown upscale mode: " << upscale << '\n';
 				return 2;
 			}
+		} else if (value == "--load-only") {
+			loadOnly = true;
+		} else if (value == "--repeat" && argument + 1 < argc) {
+			try {
+				repeatCount = std::stoi(argv[++argument]);
+			} catch (...) {
+				std::cerr << "Invalid repeat count.\n";
+				return 2;
+			}
+			if (repeatCount < 1 || repeatCount > 100) {
+				std::cerr << "Repeat count must be between 1 and 100.\n";
+				return 2;
+			}
 		} else if (value.rfind("--", 0) == 0) {
 			std::cerr << "Unknown option: " << value << '\n';
 			return 2;
@@ -186,16 +202,37 @@ int main(int argc, char** argv) {
 		}
 	}
 
+	#ifdef __APPLE__
+	config.preferNativeCoreML = config.provider == DepthEstimator::Provider::CoreML;
+	#endif
 	DepthEstimator estimator;
 	std::string error;
+	const auto loadStarted = std::chrono::steady_clock::now();
 	if (!estimator.load(config, error)) {
 		std::cerr << "Model load failed: " << error << '\n';
 		SDL_DestroySurface(input);
 		SDL_Quit();
 		return 1;
 	}
+	std::cout << "Model load (" << estimator.providerName() << "): "
+		<< std::chrono::duration<double>(std::chrono::steady_clock::now() - loadStarted).count()
+		<< " s\n" << std::flush;
+	if (loadOnly) {
+		SDL_DestroySurface(input);
+		SDL_Quit();
+		return 0;
+	}
 
-	auto depth = estimator.predict(input, error);
+	DepthEstimator::Result depth;
+	for (int run = 0; run < repeatCount; ++run) {
+		const auto started = std::chrono::steady_clock::now();
+		depth = estimator.predict(input, error);
+		const auto elapsed = std::chrono::duration<double>(
+			std::chrono::steady_clock::now() - started).count();
+		std::cout << "Inference " << run + 1 << "/" << repeatCount << ": "
+			<< elapsed << " s\n" << std::flush;
+		if (!depth.valid()) break;
+	}
 	SDL_DestroySurface(input);
 	if (!depth.valid()) {
 		std::cerr << "Inference failed: " << error << '\n';

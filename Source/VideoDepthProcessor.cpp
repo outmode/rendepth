@@ -237,10 +237,25 @@ VideoDepthFrame VideoDepthProcessor::stabilize(const DepthEstimator::Result& dep
 void VideoDepthProcessor::run() {
 	std::string error;
 	DepthEstimator::Config estimatorConfig;
-	estimatorConfig.modelPath = ModelDownloader::ensureAvailable(activeConfig.modelDirectory,
-		activeConfig.modelFilename, error, activeConfig.downloadProgress);
 	estimatorConfig.provider = activeConfig.provider;
 	estimatorConfig.processSize = activeConfig.processSize;
+#ifdef RENDEPTH_ENABLE_COREML
+	estimatorConfig.preferNativeCoreML = activeConfig.provider == DepthEstimator::Provider::CoreML;
+	if (estimatorConfig.preferNativeCoreML) {
+		estimatorConfig.modelPath = ModelDownloader::ensureCoreMLAvailable(
+			activeConfig.modelDirectory, activeConfig.modelFilename, error,
+			activeConfig.downloadProgress);
+		if (estimatorConfig.modelPath.empty() && !stopRequested) {
+			SDL_Log("Core ML video model download unavailable; using CPU: %s", error.c_str());
+			estimatorConfig.provider = DepthEstimator::Provider::CPU;
+			estimatorConfig.preferNativeCoreML = false;
+		}
+	}
+#endif
+	if (estimatorConfig.modelPath.empty() && !stopRequested)
+		estimatorConfig.modelPath = ModelDownloader::ensureAvailable(
+			activeConfig.modelDirectory, activeConfig.modelFilename, error,
+			activeConfig.downloadProgress);
 	// Live decoding, browser encoding and rendering share this CPU. ORT's
 	// default pool uses every physical core and spins between jobs, which can
 	// starve playback even though inference itself runs on a separate thread.
@@ -248,7 +263,19 @@ void VideoDepthProcessor::run() {
 		? activeConfig.intraOpThreads
 		: std::clamp(std::thread::hardware_concurrency() / 4, 1u, 4u);
 	estimatorConfig.allowThreadSpinning = false;
-	if (estimatorConfig.modelPath.empty() || !estimator.load(estimatorConfig, error)) {
+	bool loaded = !estimatorConfig.modelPath.empty() && estimator.load(estimatorConfig, error);
+#ifdef RENDEPTH_ENABLE_COREML
+	if (!loaded && estimatorConfig.preferNativeCoreML && !stopRequested) {
+		SDL_Log("Core ML video model load failed; using CPU: %s", error.c_str());
+		estimatorConfig.provider = DepthEstimator::Provider::CPU;
+		estimatorConfig.preferNativeCoreML = false;
+		estimatorConfig.modelPath = ModelDownloader::ensureAvailable(
+			activeConfig.modelDirectory, activeConfig.modelFilename, error,
+			activeConfig.downloadProgress);
+		loaded = !estimatorConfig.modelPath.empty() && estimator.load(estimatorConfig, error);
+	}
+#endif
+	if (!loaded) {
 		std::lock_guard lock(mutex);
 		runtimeError = error.empty() ? "Could not load the video depth model." : error;
 		isRunning = false;
