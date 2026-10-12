@@ -907,6 +907,7 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData,
 		diagnosticImageExtension(imageInfo.path)));
 	context->currentZoom = 1.0f;
 	context->loading = true;
+	const bool decodedHere = imageData == nullptr;
 	if (imageData == nullptr) {
 		imageData = Core::loadImageDirect(imageInfo.path);
 		if (imageData == nullptr) {
@@ -926,8 +927,9 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData,
 	DiagnosticLog::write("INFO", "image_decoded", std::format("width={} height={}",
 		imageData->w, imageData->h));
 
-	if (imageData->w > maxImageSize || imageData->h > maxImageSize) {
+	if (!Core::imageDimensionsSupported(imageData->w, imageData->h)) {
 		DiagnosticLog::write("ERROR", "image_dimensions", "result=too_large");
+		if (decodedHere) SDL_DestroySurface(imageData);
 		SDL_SetWindowTitle(context->window, context->appName);
 		Core::drawText(context, "Image Dimensions Exceeded", helpFont,
 			helpTexture, helpTextSize, "Help Texture");
@@ -960,7 +962,16 @@ int Image::load(Context* context, FileInfo& imageInfo, SDL_Surface* imageData,
 	// The image is already decoded before reaching this point. Submit the
 	// upload and let the GPU queue order it before rendering instead of blocking
 	// the UI thread on a fence during navigation.
-	uploadTexture(context, imageData, &imageTexture, "Image Texture", false, false);
+	DiagnosticLog::write("INFO", "image_upload_start");
+	if (uploadTexture(context, imageData, &imageTexture, "Image Texture", false, false) != 0) {
+		DiagnosticLog::write("ERROR", "image_upload", "result=failed");
+		if (decodedHere) SDL_DestroySurface(imageData);
+		Core::drawText(context, "Could Not Display Image", helpFont,
+			helpTexture, helpTextSize, "Help Texture");
+		displayHelp = true;
+		return 4;
+	}
+	DiagnosticLog::write("INFO", "image_upload", "result=submitted");
 	blitBlurTexture(context, imageTexture, (Uint32)imageData->w,
 		(Uint32)imageData->h, false, false);
 	clearColorSolid = getBackgroundColor(imageData, 4, imageData->w, imageData->h);
@@ -2467,6 +2478,11 @@ int Image::initFonts(Context* context) {
 // Transfer an RGBA surface to a new or reusable GPU texture with optional mipmaps and synchronization.
 int Image::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTexture** gpuTexture,
 		const std::string& textureName, bool reuseTexture, bool waitForGpu, bool generateMipmaps) {
+	if (context == nullptr || context->device == nullptr || imageData == nullptr ||
+		gpuTexture == nullptr || imageData->pixels == nullptr || imageData->w <= 0 ||
+		imageData->h <= 0 || !Core::imageDimensionsSupported(imageData->w, imageData->h) ||
+		imageData->pitch < static_cast<size_t>(imageData->w) * 4)
+		return -1;
 	auto textureMipLevels = generateMipmaps
 		? (Uint32) std::floor(log2(std::max(imageData->w, imageData->h))) + 1 : 1;
 	auto gpuFormat = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -2480,15 +2496,14 @@ int Image::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTextur
 		.layer_count_or_depth = 1,
 		.num_levels = textureMipLevels
 	};
-	if (!reuseTexture || *gpuTexture == nullptr) {
-		if (*gpuTexture != nullptr) SDL_ReleaseGPUTexture(context->device, *gpuTexture);
-		*gpuTexture = SDL_CreateGPUTexture(context->device, &textureCreateInfo);
-	}
-	if (*gpuTexture == nullptr) return -1;
+	const bool createTexture = !reuseTexture || *gpuTexture == nullptr;
+	SDL_GPUTexture* target = createTexture
+		? SDL_CreateGPUTexture(context->device, &textureCreateInfo) : *gpuTexture;
+	if (target == nullptr) return -1;
 
 	SDL_SetGPUTextureName(
 		context->device,
-		*gpuTexture,
+		target,
 		textureName.c_str()
 	);
 
@@ -2499,7 +2514,15 @@ int Image::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTextur
 
 	SDL_GPUTransferBuffer* textureTransferBuffer = SDL_CreateGPUTransferBuffer(
 		context->device, &transferBufferInfo);
-	if (textureTransferBuffer == nullptr) return -1;
+	if (textureTransferBuffer == nullptr) {
+		if (createTexture) SDL_ReleaseGPUTexture(context->device, target);
+		return -1;
+	}
+	auto fail = [&]() {
+		SDL_ReleaseGPUTransferBuffer(context->device, textureTransferBuffer);
+		if (createTexture) SDL_ReleaseGPUTexture(context->device, target);
+		return -1;
+	};
 
 	auto textureTransferPtr = (Uint8*)SDL_MapGPUTransferBuffer(
 		context->device,
@@ -2507,8 +2530,7 @@ int Image::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTextur
 		false
 	);
 	if (textureTransferPtr == nullptr) {
-		SDL_ReleaseGPUTransferBuffer(context->device, textureTransferBuffer);
-		return -1;
+		return fail();
 	}
 	const size_t rowBytes = static_cast<size_t>(imageData->w) * bytesPerPixel;
 	for (int row = 0; row < imageData->h; ++row) {
@@ -2519,13 +2541,18 @@ int Image::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTextur
 	SDL_UnmapGPUTransferBuffer(context->device, textureTransferBuffer);
 
 	SDL_GPUCommandBuffer* uploadCmdBuf = SDL_AcquireGPUCommandBuffer(context->device);
+	if (uploadCmdBuf == nullptr) return fail();
 	SDL_GPUCopyPass* copyPass = SDL_BeginGPUCopyPass(uploadCmdBuf);
+	if (copyPass == nullptr) {
+		SDL_CancelGPUCommandBuffer(uploadCmdBuf);
+		return fail();
+	}
 
 	SDL_GPUTextureTransferInfo textureTransferInfo = {
 		.transfer_buffer = textureTransferBuffer
 	};
 	SDL_GPUTextureRegion textureRegion = {
-		.texture = *gpuTexture,
+		.texture = target,
 		.w = (Uint32)imageData->w,
 		.h = (Uint32)imageData->h,
 		.d = 1
@@ -2536,16 +2563,25 @@ int Image::uploadTexture(Context* context, SDL_Surface* imageData, SDL_GPUTextur
 	);
 
 	SDL_EndGPUCopyPass(copyPass);
-	if (generateMipmaps) SDL_GenerateMipmapsForGPUTexture(uploadCmdBuf, *gpuTexture);
+	if (generateMipmaps) SDL_GenerateMipmapsForGPUTexture(uploadCmdBuf, target);
 
+	bool submitted = false;
 	if (waitForGpu) {
 		SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(uploadCmdBuf);
-		SDL_WaitForGPUFences(context->device, true, &fence, 1);
-		SDL_ReleaseGPUFence(context->device, fence);
+		if (fence != nullptr) {
+			submitted = SDL_WaitForGPUFences(context->device, true, &fence, 1);
+			SDL_ReleaseGPUFence(context->device, fence);
+		}
 	} else {
-		SDL_SubmitGPUCommandBuffer(uploadCmdBuf);
+		submitted = SDL_SubmitGPUCommandBuffer(uploadCmdBuf);
 	}
+	if (!submitted) return fail();
 	SDL_ReleaseGPUTransferBuffer(context->device, textureTransferBuffer);
+	if (createTexture) {
+		SDL_GPUTexture* previous = *gpuTexture;
+		*gpuTexture = target;
+		if (previous != nullptr) SDL_ReleaseGPUTexture(context->device, previous);
+	}
 
 	return 0;
 }

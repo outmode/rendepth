@@ -32,6 +32,7 @@
 #include <map>
 #include <filesystem>
 #include <atomic>
+#include <cstdint>
 
 enum ViewMode {
 	Native,
@@ -300,6 +301,9 @@ struct AsyncData {
 
 class Core {
 public:
+	static constexpr int maxImageDimension = 16384;
+	static constexpr std::uint64_t maxImagePixels = 64ULL * 1024 * 1024;
+	static bool imageDimensionsSupported(std::uint64_t width, std::uint64_t height);
 	static void quit(Context* context);
 	static SDL_GPUShader* loadShader(SDL_GPUDevice* device, const std::string& shaderFilename, Uint32 samplerCount,
 		Uint32 uniformBufferCount, Uint32 storageBufferCount, Uint32 storageTextureCount);

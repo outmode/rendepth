@@ -28,8 +28,74 @@
 #include <cctype>
 #include <regex>
 #include <string_view>
+#include <array>
+#include <optional>
+#include <utility>
 
 namespace {
+	using ImageDimensions = std::pair<std::uint32_t, std::uint32_t>;
+
+	std::optional<ImageDimensions> probeImageDimensions(SDL_IOStream* stream) {
+		std::array<Uint8, 24> header{};
+		const size_t bytesRead = SDL_ReadIO(stream, header.data(), header.size());
+		constexpr std::array<Uint8, 8> pngSignature{137, 80, 78, 71, 13, 10, 26, 10};
+		if (bytesRead >= header.size() &&
+			std::equal(pngSignature.begin(), pngSignature.end(), header.begin()) &&
+			header[8] == 0 && header[9] == 0 && header[10] == 0 && header[11] == 13 &&
+			std::memcmp(header.data() + 12, "IHDR", 4) == 0) {
+			const auto read32 = [&](size_t offset) {
+				return (static_cast<std::uint32_t>(header[offset]) << 24) |
+					(static_cast<std::uint32_t>(header[offset + 1]) << 16) |
+					(static_cast<std::uint32_t>(header[offset + 2]) << 8) |
+					static_cast<std::uint32_t>(header[offset + 3]);
+			};
+			return ImageDimensions{read32(16), read32(20)};
+		}
+		if (bytesRead < 2 || header[0] != 0xff || header[1] != 0xd8 ||
+			SDL_SeekIO(stream, 2, SDL_IO_SEEK_SET) < 0) return std::nullopt;
+
+		// JPEG dimensions are in a start-of-frame marker, after optional metadata segments.
+		for (int segment = 0; segment < 512; ++segment) {
+			Uint8 markerBytes[2]{};
+			if (SDL_ReadIO(stream, markerBytes, 2) != 2 || markerBytes[0] != 0xff)
+				return std::nullopt;
+			while (markerBytes[1] == 0xff) {
+				if (SDL_ReadIO(stream, markerBytes + 1, 1) != 1) return std::nullopt;
+			}
+			const Uint8 marker = markerBytes[1];
+			if (marker == 0xd9 || marker == 0xda) return std::nullopt;
+			if (marker == 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+			Uint8 lengthBytes[2]{};
+			if (SDL_ReadIO(stream, lengthBytes, 2) != 2) return std::nullopt;
+			const auto length = (static_cast<unsigned>(lengthBytes[0]) << 8) | lengthBytes[1];
+			if (length < 2) return std::nullopt;
+			const bool startOfFrame =
+				(marker >= 0xc0 && marker <= 0xc3) ||
+				(marker >= 0xc5 && marker <= 0xc7) ||
+				(marker >= 0xc9 && marker <= 0xcb) ||
+				(marker >= 0xcd && marker <= 0xcf);
+			if (startOfFrame) {
+				Uint8 frame[5]{};
+				if (length < 7 || SDL_ReadIO(stream, frame, sizeof(frame)) != sizeof(frame))
+					return std::nullopt;
+				return ImageDimensions{
+					(static_cast<unsigned>(frame[3]) << 8) | frame[4],
+					(static_cast<unsigned>(frame[1]) << 8) | frame[2]};
+			}
+			if (SDL_SeekIO(stream, length - 2, SDL_IO_SEEK_CUR) < 0)
+				return std::nullopt;
+		}
+		return std::nullopt;
+	}
+
+	std::optional<ImageDimensions> probeImageDimensions(const std::string& path) {
+		SDL_IOStream* stream = SDL_IOFromFile(path.c_str(), "rb");
+		if (stream == nullptr) return std::nullopt;
+		auto dimensions = probeImageDimensions(stream);
+		SDL_CloseIO(stream);
+		return dimensions;
+	}
+
 	// Use a fixed format label so diagnostic entries never include a media path.
 	std::string_view diagnosticImageFormat(const std::string& path) {
 		const auto dot = path.find_last_of('.');
@@ -135,6 +201,11 @@ namespace {
 		}
 		return true;
 	}
+}
+
+bool Core::imageDimensionsSupported(std::uint64_t width, std::uint64_t height) {
+	return width > 0 && height > 0 && width <= maxImageDimension &&
+		height <= maxImageDimension && width * height <= maxImagePixels;
 }
 
 // Release the main window and GPU device after rendering resources have been freed.
@@ -353,9 +424,21 @@ SDL_Surface* Core::orientSurface(SDL_Surface* surface, const std::string& filepa
 // Load an image, apply orientation, and normalize its pixel format for rendering.
 SDL_Surface* Core::loadImageDirect(const std::string& imageFilename) {
 	DiagnosticLog::write("INFO", "image_decode_start", diagnosticImageFormat(imageFilename));
+	if (const auto dimensions = probeImageDimensions(imageFilename);
+		dimensions && !imageDimensionsSupported(dimensions->first, dimensions->second)) {
+		DiagnosticLog::write("ERROR", "image_decode_end", "result=failed stage=dimensions");
+		SDL_SetError("Image dimensions exceed the safe limit");
+		return nullptr;
+	}
 	SDL_Surface* surface = IMG_Load(imageFilename.c_str());
 	if (surface == nullptr) {
 		DiagnosticLog::write("ERROR", "image_decode_end", "result=failed stage=decoder");
+		return nullptr;
+	}
+	if (!imageDimensionsSupported(surface->w, surface->h)) {
+		SDL_DestroySurface(surface);
+		DiagnosticLog::write("ERROR", "image_decode_end", "result=failed stage=dimensions");
+		SDL_SetError("Image dimensions exceed the safe limit");
 		return nullptr;
 	}
 

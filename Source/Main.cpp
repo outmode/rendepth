@@ -5665,10 +5665,15 @@ static int loadImage(void* ptr) {
 	if (imageData != nullptr)
 		DiagnosticLog::write("INFO", "image_prepare_start", std::format(
 			"width={} height={} mode3d={}", imageData->w, imageData->h, display3D ? 1 : 0));
-	if (imageData != nullptr)
+	const bool dimensionsSupported = imageData != nullptr &&
+		Core::imageDimensionsSupported(imageData->w, imageData->h);
+	if (dimensionsSupported)
 		imageData = prepareNativeColorSurface(imageData, sourceType);
-	DiagnosticLog::write("INFO", "image_prepare_end", imageData ? "result=ready" : "result=decode_failed");
+	DiagnosticLog::write(dimensionsSupported ? "INFO" : "ERROR", "image_prepare_end",
+		imageData == nullptr ? "result=decode_failed" :
+		dimensionsSupported ? "result=ready" : "result=dimensions_exceeded");
 	auto result = Image::load(&context, currentFile, imageData);
+	if (result != 0) SDL_DestroySurface(imageData);
 	currentFile.preload = nullptr;
 	doneLoadingImage = true;
 	if (result == 0 && display3D && sourceType == Color_Only && !isConverting) {
