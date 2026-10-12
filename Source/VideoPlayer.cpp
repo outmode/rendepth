@@ -161,7 +161,7 @@ struct VideoPlayer::Impl {
 	mutable std::deque<SubtitleCue> subtitleCues;
 	std::atomic<int> videoWidth{0};
 	std::atomic<int> videoHeight{0};
-	std::atomic<double> dvdDisplayAspectRatio{0.0};
+	std::atomic<double> discDisplayAspectRatio{0.0};
 	std::atomic<int> rotation{0};
 	std::atomic<int> outputMaxWidth{0};
 	std::atomic<int> outputMaxHeight{0};
@@ -1770,7 +1770,7 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 			impl->dvdReader = std::make_unique<DvdReader>();
 			if (!impl->dvdReader->open(path, error)) { close(); return false; }
 			if (discTitle >= 0 && !impl->dvdReader->selectTitle(discTitle, error)) { close(); return false; }
-			impl->dvdDisplayAspectRatio = impl->dvdReader->displayAspectRatio();
+			impl->discDisplayAspectRatio = impl->dvdReader->displayAspectRatio();
 			impl->avioContext = impl->dvdReader->createAVIOContext();
 		}
 		impl->format = avformat_alloc_context();
@@ -1846,6 +1846,15 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 		impl->audioOnly = false;
 	}
 	impl->stream = impl->format->streams[impl->streamIndex];
+	if (impl->blurayReader && !impl->audioOnly) {
+		for (const auto& title : impl->blurayReader->titles()) {
+			if (title.index != impl->blurayReader->activeTitle()) continue;
+			if (const auto aspect = title.videoStreamAspectRatios.find(impl->stream->id);
+				aspect != title.videoStreamAspectRatios.end())
+				impl->discDisplayAspectRatio = aspect->second * (impl->mvcDecoder ? 2.0 : 1.0);
+			break;
+		}
+	}
 	// Disc playlists can also carry secondary video. We only decode the
 	// selected video stream; parsing the others wastes work and can report
 	// missing parameter sets after seeks into those unselected streams.
@@ -2017,11 +2026,11 @@ bool VideoPlayer::open(const std::filesystem::path& path, std::string& error, in
 	impl->rotation = detectedRotation;
 	const int widthVal = (impl->codec && impl->codec->width > 0 ? impl->codec->width : impl->stream->codecpar->width) * (impl->mvcDecoder ? 2 : 1);
 	const int heightVal = impl->codec && impl->codec->height > 0 ? impl->codec->height : impl->stream->codecpar->height;
-	if (impl->dvdReader && impl->dvdDisplayAspectRatio.load() <= 0.0 &&
+	if ((impl->dvdReader || impl->blurayReader) && impl->discDisplayAspectRatio.load() <= 0.0 &&
 		widthVal > 0 && heightVal > 0) {
 		const auto sampleAspect = av_guess_sample_aspect_ratio(impl->format, impl->stream, nullptr);
 		if (sampleAspect.num > 0 && sampleAspect.den > 0)
-			impl->dvdDisplayAspectRatio = static_cast<double>(widthVal) * sampleAspect.num /
+			impl->discDisplayAspectRatio = static_cast<double>(widthVal) * sampleAspect.num /
 				(static_cast<double>(heightVal) * sampleAspect.den);
 	}
 	const bool swapDims = (detectedRotation == 90 || detectedRotation == 270);
@@ -2120,7 +2129,7 @@ void VideoPlayer::close() {
 	impl->totalDuration = 0.0;
 	impl->videoWidth = 0;
 	impl->videoHeight = 0;
-	impl->dvdDisplayAspectRatio = 0.0;
+	impl->discDisplayAspectRatio = 0.0;
 }
 
 // Pause or resume playback, restarting from the beginning when resuming after end of stream.
@@ -2617,9 +2626,9 @@ double VideoPlayer::duration() const { return impl->totalDuration; }
 std::uint64_t VideoPlayer::generation() const { return impl->playbackGeneration; }
 // Return the source width after applying display rotation.
 int VideoPlayer::width() const { return impl->videoWidth; }
-// Preserve decoded pixels while sizing DVD playback to the title's display ratio.
+// Preserve decoded pixels while sizing disc playback to the title's display ratio.
 int VideoPlayer::displayWidth(int decodedWidth, int decodedHeight) const {
-	const double aspect = impl->dvdDisplayAspectRatio.load();
+	const double aspect = impl->discDisplayAspectRatio.load();
 	return decodedHeight > 0 && aspect > 0.0 ?
 		std::max(1, static_cast<int>(std::lround(decodedHeight * aspect))) : decodedWidth;
 }

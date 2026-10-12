@@ -121,6 +121,13 @@ void BlurayReader::inspectTitles() {
                 const auto& streams = info->clips[clip];
                 contentKeys[title.index] += std::format("{}:{}:{};", streams.clip_id,
                     streams.in_time, streams.out_time);
+                for (unsigned video = 0; streams.video_streams && video < streams.video_stream_count; ++video) {
+                    const auto& stream = streams.video_streams[video];
+                    if (stream.aspect == BLURAY_ASPECT_RATIO_16_9)
+                        title.videoStreamAspectRatios.try_emplace(stream.pid, 16.0 / 9.0);
+                    else if (stream.aspect == BLURAY_ASPECT_RATIO_4_3)
+                        title.videoStreamAspectRatios.try_emplace(stream.pid, 4.0 / 3.0);
+                }
                 const auto collectLanguages = [](const BLURAY_STREAM_INFO* tracks, unsigned count,
                     std::map<int, std::string>& languages) {
                     for (unsigned track = 0; tracks && track < count; ++track) {

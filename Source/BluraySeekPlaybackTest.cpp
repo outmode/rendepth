@@ -5,6 +5,7 @@
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <vector>
 
@@ -24,7 +25,10 @@ int main(int argc, char** argv) {
     if (!title) { std::cerr << "No ordinary Blu-ray title\n"; return 3; }
     const int titleIndex = title->index;
     const double duration = title->duration;
-    std::cout << "Testing playlist " << title->playlist << ", title " << titleIndex << std::endl;
+    const double displayAspect = title->videoStreamAspectRatios.size() == 1
+        ? title->videoStreamAspectRatios.begin()->second : 0.0;
+    std::cout << "Testing playlist " << title->playlist << ", title " << titleIndex
+              << ", display aspect " << displayAspect << std::endl;
     reader.close();
 
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
@@ -52,6 +56,12 @@ int main(int argc, char** argv) {
                 return false;
             }
             if (!received) {
+                if (displayAspect > 0.0 &&
+                    player.displayWidth(frame->width, frame->height) !=
+                        static_cast<int>(std::lround(frame->height * displayAspect))) {
+                    std::cerr << "Blu-ray display aspect does not match playlist metadata\n";
+                    return false;
+                }
                 std::cout << "First frame at " << frame->presentationTime << " after "
                           << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
                           << " seconds" << std::endl;

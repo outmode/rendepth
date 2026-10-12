@@ -39,6 +39,8 @@ struct BlurayTitle {
     // Playlist languages keyed by transport-stream PID, not track order.
     std::map<int, std::string> audioStreamLanguages;
     std::map<int, std::string> subtitleStreamLanguages;
+    // Display aspect for each primary video PID in the playlist.
+    std::map<int, double> videoStreamAspectRatios;
     bool mainFeatureCandidate = false;
     bool mvc = false;
     std::string name;
