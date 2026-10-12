@@ -1930,7 +1930,7 @@ static bool downloadBlocksInput() {
 }
 
 Choice ChoiceVersion {
-	.label = "Rendepth 3.0.5 (Free Version)",
+	.label = "Rendepth 3.0.6 (Free Version)",
 	.options = {},
 	.inlineText = true,
 	.bold = true,
@@ -5242,7 +5242,7 @@ static void refreshLicenseMenu(bool rebuild) {
         menuSelection[label] = -1; menuRollover[label] = -1;
         original.label = label;
     };
-    rename(ChoiceVersion, licensed ? "Rendepth 3.0.5 (Pro License)" : "Rendepth 3.0.5 (Free Version)");
+    rename(ChoiceVersion, licensed ? "Rendepth 3.0.6 (Pro License)" : "Rendepth 3.0.6 (Free Version)");
     rename(ChoiceLicense, licensed ? "Manage Rendepth Pro License" : "Upgrade to Rendepth Pro");
     if (rebuild) {
         Image::initMenuTexture();
@@ -5254,7 +5254,7 @@ static void refreshLicenseMenu(bool rebuild) {
 // Initialize application services, the SDL window and GPU, preferences, and the initial media source.
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	if (!homeDir.empty()) DiagnosticLog::start(homePath);
-	DiagnosticLog::write("INFO", "app_start", "version=3.0.5");
+	DiagnosticLog::write("INFO", "app_start", "version=3.0.6");
 	// Keep fullscreen visible when a native dialog or another application takes focus.
 	SDL_SetHintWithPriority(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0", SDL_HINT_OVERRIDE);
 #if defined(__APPLE__) && defined(RENDEPTH_ENABLE_ONNX_RUNTIME)
@@ -5275,7 +5275,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv) {
 	context.appName = "Rendepth";
 	// Keep the desktop entry name, Wayland app_id, and X11 window class aligned
 	// so the running window is grouped under the installed launcher icon.
-	SDL_SetAppMetadata("Rendepth", "3.0.5", "rendepth");
+	SDL_SetAppMetadata("Rendepth", "3.0.6", "rendepth");
 	context.windowSize = { 1920, 1080 };
 	context.appIcons = &appIcons;
 	context.menuChoices = &menuChoices;

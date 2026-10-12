@@ -41,26 +41,26 @@ python3 Packaging/Mac/BuildInstaller.py \
   --ca-bundle /opt/homebrew/etc/ca-certificates/cert.pem \
   --application-identity 'Developer ID Application: Outmode LLC (PZBA2JJ2RQ)' \
   --installer-identity 'Developer ID Installer: Outmode LLC (PZBA2JJ2RQ)' \
-  --signed-bundle-output Distribution/3.0.5/macOS/Rendepth.app \
-  --output Distribution/3.0.5/macOS/Rendepth-3.0.5.pkg
+  --signed-bundle-output Distribution/3.0.6/macOS/Rendepth.app \
+  --output Distribution/3.0.6/macOS/Rendepth-3.0.6.pkg
 
-pkgutil --check-signature Distribution/3.0.5/macOS/Rendepth-3.0.5.pkg
-xcrun notarytool submit Distribution/3.0.5/macOS/Rendepth-3.0.5.pkg \
+pkgutil --check-signature Distribution/3.0.6/macOS/Rendepth-3.0.6.pkg
+xcrun notarytool submit Distribution/3.0.6/macOS/Rendepth-3.0.6.pkg \
   --keychain-profile rendepth-notary --wait
-xcrun stapler staple Distribution/3.0.5/macOS/Rendepth-3.0.5.pkg
-xcrun stapler validate Distribution/3.0.5/macOS/Rendepth-3.0.5.pkg
+xcrun stapler staple Distribution/3.0.6/macOS/Rendepth-3.0.6.pkg
+xcrun stapler validate Distribution/3.0.6/macOS/Rendepth-3.0.6.pkg
 
 # Notarize the standalone app separately, then ZIP the stapled bundle for download.
-ditto -c -k --keepParent Distribution/3.0.5/macOS/Rendepth.app \
-  Distribution/3.0.5/macOS/Rendepth-3.0.5.app.zip
-xcrun notarytool submit Distribution/3.0.5/macOS/Rendepth-3.0.5.app.zip \
+ditto -c -k --keepParent Distribution/3.0.6/macOS/Rendepth.app \
+  Distribution/3.0.6/macOS/Rendepth-3.0.6.app.zip
+xcrun notarytool submit Distribution/3.0.6/macOS/Rendepth-3.0.6.app.zip \
   --keychain-profile rendepth-notary --wait
-xcrun stapler staple Distribution/3.0.5/macOS/Rendepth.app
-xcrun stapler validate Distribution/3.0.5/macOS/Rendepth.app
-ditto -c -k --keepParent Distribution/3.0.5/macOS/Rendepth.app \
-  /private/tmp/Rendepth-3.0.5.app.zip
-mv /private/tmp/Rendepth-3.0.5.app.zip \
-  Distribution/3.0.5/macOS/Rendepth-3.0.5.app.zip
+xcrun stapler staple Distribution/3.0.6/macOS/Rendepth.app
+xcrun stapler validate Distribution/3.0.6/macOS/Rendepth.app
+ditto -c -k --keepParent Distribution/3.0.6/macOS/Rendepth.app \
+  /private/tmp/Rendepth-3.0.6.app.zip
+mv /private/tmp/Rendepth-3.0.6.app.zip \
+  Distribution/3.0.6/macOS/Rendepth-3.0.6.app.zip
 ```
 
 Before the first notarization, create an Apple Account app-specific password and
@@ -83,7 +83,7 @@ extensions to Finder as an alternate viewer. This makes Rendepth available in
 documents to SDL's file-open event handler.
 
 The builder reads the package version from the app's `Info.plist`, sets the
-Installer title to `Rendepth 3.0.5`, and presents the same
+Installer title to `Rendepth 3.0.6`, and presents the same
 `Legal/RENDEPTH_APP_LICENSE` text used by the Windows installer on macOS's
 License screen. Installer provides its standard Agree and Disagree controls.
 The builder embeds the

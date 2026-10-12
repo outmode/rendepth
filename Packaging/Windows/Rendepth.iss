@@ -114,20 +114,28 @@ Type: files; Name: "{app}\Browser\Firefox\com.outmode.rendepth.json"
 Type: files; Name: "{app}\Browser\Chrome\com.outmode.rendepth.json"
 
 [Code]
+function ShowWindow(hWnd: HWND; nCmdShow: Integer): Boolean;
+  external 'ShowWindow@user32.dll stdcall';
 function SetForegroundWindow(hWnd: HWND): Boolean;
   external 'SetForegroundWindow@user32.dll stdcall';
 
 var
-  InitialPageShown: Boolean;
+  InitialWizardShowHandled: Boolean;
 
-procedure CurPageChanged(CurPageID: Integer);
+procedure WizardShown(Sender: TObject);
 begin
-  if not InitialPageShown and not WizardSilent then
+  if not InitialWizardShowHandled and not WizardSilent then
   begin
-    InitialPageShown := True;
-    { The elevated setup process can appear behind the window that launched it. }
+    InitialWizardShowHandled := True;
+    { The first page changes before the wizard is visible. Restore it after it is shown. }
+    ShowWindow(WizardForm.Handle, 9); { SW_RESTORE }
     SetForegroundWindow(WizardForm.Handle);
   end;
+end;
+
+procedure InitializeWizard;
+begin
+  WizardForm.OnShow := @WizardShown;
 end;
 
 function JsonEscape(Value: String): String;
